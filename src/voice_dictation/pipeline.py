@@ -179,6 +179,8 @@ class StreamingPipeline:
             with self._raw_lock:
                 self._raw_chunks = []
 
+        joined = self.transcriber.postprocess(joined)
+
         if self.overlay is not None:
             self.overlay.set_status("done")
             # leave overlay visible briefly so user sees result, then hide

@@ -193,29 +193,23 @@ def delete_sample(sample: Sample) -> None:
 
 def transcribe_sample(sample: Sample, device: str, model_name: str) -> None:
     """Transcribe one sample, print expected vs actual + simple WER."""
-    if device == "cuda":
-        from voice_dictation._cuda_preload import preload
-        preload()
-    from faster_whisper import WhisperModel
+    from voice_dictation.stt import Transcriber
 
     # Lazy cache across calls in same session
     cache_key = (device, model_name)
     cache = transcribe_sample._cache  # type: ignore[attr-defined]
     if cache_key not in cache:
-        compute_type = "float16" if device == "cuda" else "int8"
         with console.status(f"loading {model_name} on {device}…"):
-            cache[cache_key] = WhisperModel(model_name, device=device, compute_type=compute_type)
-    model = cache[cache_key]
+            cache[cache_key] = Transcriber(model_name=model_name, device=device)
+    transcriber = cache[cache_key]
 
     data, sr = sf.read(sample.wav_path, dtype="float32")
     if data.ndim > 1:
         data = data.mean(axis=1)
 
     t0 = time.perf_counter()
-    segments, info = model.transcribe(
-        data, language="en", beam_size=5, vad_filter=False
-    )
-    text = " ".join(s.text.strip() for s in segments).strip()
+    result = transcriber.transcribe(data, vad_filter=False)
+    text = result.text
     elapsed = time.perf_counter() - t0
 
     wer = _wer(sample.ground_truth, text)

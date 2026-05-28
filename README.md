@@ -68,8 +68,18 @@ Daemon flags (edit `~/.config/systemd/user/voice-dictation.service` then `system
 --no-paste                 # transcribe but don't inject
 --no-overlay               # headless (testing / SSH)
 --input-device hw:2,0      # override sounddevice probe
+--vocabulary-file FILE     # bias Whisper with extra terms, one term per line
+--technical-vocabulary-bias # bias Whisper with the built-in programming glossary
+--no-technical-corrections # disable conservative programming-term cleanup
 --lazy-load                # delay model load until first toggle
 ```
+
+Technical dictation gets narrow cleanup by default for common ASR mistakes such
+as `origin slash monsters` → `origin/master`, `cube cuddle` → `kubectl`, and
+`type script` → `TypeScript`. Whisper vocabulary biasing is opt-in because large
+prompts can hurt general dictation: use `--technical-vocabulary-bias` for the
+built-in glossary or `--vocabulary-file FILE` for custom/product terms. Vocabulary
+files use one term per line; blank lines and `# comments` are ignored.
 
 Hotkey lives in `~/.config/hypr/voice-dictation.conf`. To rebind, edit the `bindd = SUPER, I, …` line and run `hyprctl reload`.
 

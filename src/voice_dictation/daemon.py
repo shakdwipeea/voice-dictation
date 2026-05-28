@@ -61,6 +61,9 @@ class DaemonConfig:
     no_overlay: bool = False
     socket_path: Path = field(default_factory=default_socket_path)
     input_device: object = None  # forwarded to pick_input()
+    vocabulary_file: Optional[Path] = None
+    technical_vocabulary_bias: bool = False
+    technical_corrections: bool = True
 
 
 @dataclass
@@ -89,7 +92,11 @@ class Daemon:
     def init_pipeline(self) -> None:
         if self.transcriber is None:
             self.transcriber = Transcriber(
-                model_name=self.cfg.model, device=self.cfg.device
+                model_name=self.cfg.model,
+                device=self.cfg.device,
+                vocabulary_file=self.cfg.vocabulary_file,
+                technical_vocabulary_bias=self.cfg.technical_vocabulary_bias,
+                technical_corrections=self.cfg.technical_corrections,
             )
         if self.pipeline is None:
             self.pipeline = StreamingPipeline(
@@ -107,6 +114,9 @@ class Daemon:
             "device": self.cfg.device,
             "no_paste": self.cfg.no_paste,
             "no_overlay": self.cfg.no_overlay,
+            "vocabulary_file": str(self.cfg.vocabulary_file) if self.cfg.vocabulary_file else None,
+            "technical_vocabulary_bias": self.cfg.technical_vocabulary_bias,
+            "technical_corrections": self.cfg.technical_corrections,
             "last_text": self.last_result.text,
             "model_loaded": self.transcriber is not None,
             "pipeline_ready": self.pipeline is not None,
@@ -291,6 +301,12 @@ def main() -> int:
     p.add_argument("--socket", type=Path, default=default_socket_path())
     p.add_argument("--input-device", default=None,
                    help="override input device (e.g. 'hw:2,0', 'default', or numeric index)")
+    p.add_argument("--vocabulary-file", type=Path, default=None,
+                   help="optional programming vocabulary file, one term per line")
+    p.add_argument("--technical-vocabulary-bias", action="store_true",
+                   help="bias Whisper with the built-in programming vocabulary (can affect general dictation)")
+    p.add_argument("--no-technical-corrections", action="store_true",
+                   help="disable deterministic programming-term transcript cleanup")
     p.add_argument("--lazy-load", action="store_true",
                    help="defer model load until first request (default: eager)")
     p.add_argument("--log-level", default="INFO")
@@ -308,6 +324,9 @@ def main() -> int:
         no_overlay=args.no_overlay,
         socket_path=args.socket,
         input_device=args.input_device,
+        vocabulary_file=args.vocabulary_file,
+        technical_vocabulary_bias=args.technical_vocabulary_bias,
+        technical_corrections=not args.no_technical_corrections,
     )
     daemon = Daemon(cfg)
 
