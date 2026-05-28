@@ -5,8 +5,9 @@ Strategy on Hyprland/Wayland:
   2. wl-copy the new text.
   3. Detect active window class via hyprctl activewindow -j.
      - Terminal classes  → send Ctrl+Shift+V.
+     - Zed              → send Ctrl+Shift+V; leave clipboard available for Super+V.
      - Everything else  → send Ctrl+V.
-  4. Restore prior clipboard after a short delay.
+  4. Restore prior clipboard after a short delay when auto-paste targets are reliable.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ TERMINAL_CLASS_REGEX = re.compile(
     r"^(ghostty|com\.mitchellh\.ghostty|alacritty|kitty|foot|wezterm|xterm|st|gnome-terminal|konsole)$",
     re.IGNORECASE,
 )
+ZED_CLASS_REGEX = re.compile(r"^(dev\.zed\.Zed|Zed)$", re.IGNORECASE)
 RESTORE_DELAY_S = 1.0  # how long to wait before restoring clipboard after paste succeeds
 
 
@@ -52,6 +54,12 @@ def is_terminal(window_class: Optional[str]) -> bool:
     if not window_class:
         return False
     return bool(TERMINAL_CLASS_REGEX.match(window_class))
+
+
+def is_zed(window_class: Optional[str]) -> bool:
+    if not window_class:
+        return False
+    return bool(ZED_CLASS_REGEX.match(window_class))
 
 
 def read_clipboard() -> Optional[bytes]:
@@ -137,13 +145,15 @@ def paste_text(text: str, *, preserve_clipboard: bool = True) -> dict:
         "shortcut_sent": False,
         "typed_direct": False,
         "clipboard_restored_scheduled": False,
+        "clipboard_restore_skipped_reason": None,
     }
     if not text:
         return result
 
     active = get_active_window_class()
     result["active_class"] = active
-    use_shift = is_terminal(active)
+    zed = is_zed(active)
+    use_shift = is_terminal(active) or zed
     result["used_shift_paste"] = use_shift
 
     saved = read_clipboard() if preserve_clipboard else None
@@ -159,11 +169,13 @@ def paste_text(text: str, *, preserve_clipboard: bool = True) -> dict:
     if not result["shortcut_sent"]:
         result["typed_direct"] = type_text_direct(text)
 
-    if preserve_clipboard and saved is not None and result["shortcut_sent"]:
+    if preserve_clipboard and saved is not None and result["shortcut_sent"] and not zed:
         def _restore():
             time.sleep(RESTORE_DELAY_S)
             write_clipboard_bytes(saved)
         threading.Thread(target=_restore, daemon=True).start()
         result["clipboard_restored_scheduled"] = True
+    elif preserve_clipboard and saved is not None and zed:
+        result["clipboard_restore_skipped_reason"] = "zed-super-v-manual-paste"
 
     return result

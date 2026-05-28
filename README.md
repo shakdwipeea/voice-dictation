@@ -131,6 +131,7 @@ gtk4-layer-shell must load before libwayland-client. The daemon auto re-execs it
 
 ### Paste doesn't reach the focused window
 - Terminal vs other apps use different paste shortcuts. The daemon detects the active window class via `hyprctl activewindow -j` and picks `Ctrl+Shift+V` for matching terminals (Ghostty, Alacritty, Kitty, Foot, WezTerm) or `Ctrl+V` for everything else.
+- Zed's integrated terminal still reports the Zed app class, not a terminal class. The daemon treats Zed as a `Ctrl+Shift+V` target and leaves the dictated text on the clipboard so `SUPER+V` manual paste does not select the previous dictation.
 - Hyprland's `sendshortcut` can return `ok` even when the focused app does not receive the paste event. If `wtype` is installed, the daemon can fall back to direct Wayland typing. Install with `sudo pacman -S wtype`.
 - If the active class isn't recognized as a terminal but should be, add it to `TERMINAL_CLASS_REGEX` in `src/voice_dictation/inject.py`.
 
