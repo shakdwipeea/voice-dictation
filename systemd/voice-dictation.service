@@ -1,0 +1,18 @@
+[Unit]
+Description=Voice dictation daemon (faster-whisper streaming + GTK overlay)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Path is rewritten by install.sh to the user's actual venv.
+ExecStart=__VENV_BIN__/vd-daemon --device cuda --model large-v3-turbo --log-level INFO
+Restart=on-failure
+RestartSec=3
+# Hot CUDA model in RAM; allow up to ~6 GB before OOM-kill
+MemoryHigh=4G
+MemoryMax=6G
+# Crash-tolerant: if it dies, persist state across restart via XDG_STATE_HOME
+
+[Install]
+WantedBy=graphical-session.target

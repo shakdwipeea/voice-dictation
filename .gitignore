@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# Project-local cache (Whisper models)
+.cache/
+models/
+
+# Test artifacts
+tests/fixtures/*.wav
+!tests/fixtures/.gitkeep
+
+# Editor
+.idea/
+.vscode/
+*.swp
