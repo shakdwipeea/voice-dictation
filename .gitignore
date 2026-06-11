@@ -1,0 +1,8 @@
+.venv-nemotron/
+build/
+__pycache__/
+*.pyc
+
+# Downloaded Phase 0 evaluation inputs.
+tests/corpus/hf-sample1.flac
+tests/corpus/hf-sample1.wav
