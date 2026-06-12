@@ -1,4 +1,7 @@
-.PHONY: phase0-check phase0-test phase0-x11 phase0-nemotron-script phase0-nemotron
+.PHONY: phase0-check phase0-test phase0-x11 phase0-nemotron-script phase0-nemotron \
+	phase1-test phase1-check phase1-selftest phase1-run phase1-run-nemotron \
+	phase1-bench-mock phase1-bench-nemotron phase2-test phase2-eval \
+	phase2-record phase2-transcribe phase2-eval-recorded test
 
 PYTHON ?= python3
 BUILD_DIR ?= build/phase0/nemotron
@@ -39,3 +42,48 @@ phase0-nemotron: phase0-nemotron-script
 		--audio $(NEMOTRON_AUDIO) \
 		--profiles 80 160 560 \
 		--output-dir $(BUILD_DIR)
+
+phase1-test:
+	cargo test --workspace --offline
+	cargo clippy --workspace --offline --all-targets -- -D warnings
+	$(PYTHON) -m unittest discover -s tests/phase1 -v
+
+phase1-check:
+	cargo run --offline -p sunoto-daemon -- check
+
+phase1-selftest:
+	cargo run --offline -p sunoto-daemon -- selftest
+
+phase1-run:
+	cargo run --offline -p sunoto-daemon -- run --backend mock
+
+phase1-run-nemotron:
+	cargo run --offline -p sunoto-daemon -- run --backend nemotron
+
+phase1-bench-mock:
+	cargo run --offline -p sunoto-daemon -- bench --backend mock --sessions 5 --unpaced \
+		--output build/phase1/bench-mock.json
+
+phase1-bench-nemotron:
+	cargo run --offline -p sunoto-daemon -- bench --backend nemotron --sessions 5 \
+		--output build/phase1/bench-nemotron-160-paced.json
+
+phase2-test:
+	cargo test -p sunoto-polish --offline
+	$(PYTHON) -m unittest discover -s tests/phase2 -v
+
+phase2-eval:
+	cargo run --offline -p sunoto-daemon -- eval --output build/phase2/eval-scripted.json
+
+phase2-record:
+	$(PYTHON) tools/phase2/record_corpus.py
+
+phase2-transcribe:
+	$(PYTHON) tools/phase2/transcribe_corpus.py
+
+phase2-eval-recorded:
+	cargo run --offline -p sunoto-daemon -- eval \
+		--corpus tests/corpus/phase2-recorded/corpus-recorded.json \
+		--output build/phase2/eval-recorded.json
+
+test: phase0-test phase1-test phase2-test

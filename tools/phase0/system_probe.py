@@ -31,7 +31,10 @@ def run(command: Sequence[str], timeout: int = 10) -> dict[str, object]:
             "stderr": result.stderr.strip(),
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         }
-    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+    except (OSError, subprocess.TimeoutExpired) as error:
+        # OSError also covers a probe binary that exists but is not yet built
+        # executable (PermissionError), which must degrade to a JSON error
+        # entry instead of crashing the whole probe.
         return {
             "command": list(command),
             "returncode": None,

@@ -110,6 +110,13 @@ static int wait_for_hotkey(Display *display, const char *text, int timeout_secon
                 XUngrabKey(display, hotkey, ControlMask, root);
                 XSync(display, False);
                 usleep(50000);
+                /* The user is still physically holding Ctrl; release it
+                 * logically first or every typed key becomes a Ctrl chord. */
+                XTestFakeKeyEvent(display, XKeysymToKeycode(display, XK_Control_L),
+                                  False, CurrentTime);
+                XTestFakeKeyEvent(display, XKeysymToKeycode(display, XK_Control_R),
+                                  False, CurrentTime);
+                XFlush(display);
                 return type_text(display, text);
             }
         }

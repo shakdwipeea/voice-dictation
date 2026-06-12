@@ -55,9 +55,18 @@ def capture(output: Path, duration_seconds: float, device: str) -> dict[str, obj
         str(output),
     ]
     process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    time.sleep(duration_seconds)
-    process.send_signal(signal.SIGINT)
-    _, stderr = process.communicate(timeout=5)
+    try:
+        # parec needs a moment to connect before frames flow; sleeping only
+        # for the requested duration measured from Popen returns less audio
+        # than asked for, so add a startup grace period.
+        time.sleep(duration_seconds + 0.25)
+        process.send_signal(signal.SIGINT)
+        _, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        # Never leak a recorder that keeps the microphone open.
+        process.kill()
+        process.wait()
+        raise
     if process.returncode not in (0, -signal.SIGINT):
         raise RuntimeError(
             f"parec failed with exit code {process.returncode}: "
@@ -103,7 +112,13 @@ def main() -> int:
 
     try:
         result = capture(args.output, args.duration, args.device)
-    except (FileNotFoundError, RuntimeError, subprocess.TimeoutExpired, wave.Error) as error:
+    except (
+        OSError,
+        RuntimeError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        wave.Error,
+    ) as error:
         print(json.dumps({"ready": False, "error": str(error)}, indent=2))
         return 1
 
