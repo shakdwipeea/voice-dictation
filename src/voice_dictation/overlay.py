@@ -72,9 +72,24 @@ class _X11Anchor:
             ],
         )
         self._xwin.set_wm_hints(flags=Xutil.InputHint, input=0)
+        self._take_focus = atom("WM_TAKE_FOCUS")
+        self._strip_take_focus()
         self._dpy.flush()
 
+    def _strip_take_focus(self) -> None:
+        """Remove WM_TAKE_FOCUS so the window never enters the "globally
+        active" focus model — with it present, the WM offers focus on map
+        and dictated keystrokes land in this pill instead of the user's
+        window. The input hint alone does not prevent that."""
+        protocols = self._xwin.get_wm_protocols()
+        if protocols and self._take_focus in protocols:
+            self._xwin.set_wm_protocols(
+                [p for p in protocols if p != self._take_focus]
+            )
+
     def place(self) -> bool:
+        # GTK may rewrite WM_PROTOCOLS up to map time; re-strip on each show.
+        self._strip_take_focus()
         geom = self._xwin.get_geometry()
         screen_w = self._dpy.screen().width_in_pixels
         self._xwin.configure(
@@ -222,7 +237,10 @@ class Overlay:
     # ---- GTK-thread implementations ----
     def _do_show(self) -> bool:
         if self.window is not None and not self._visible:
-            self.window.present()
+            # set_visible, NOT present(): present() requests activation,
+            # which steals keyboard focus from the window the user is
+            # dictating into — the dictated text would land in this pill.
+            self.window.set_visible(True)
             self._visible = True
             if self._x11 is not None:
                 # Re-pin after the map request reaches the WM; layer-shell

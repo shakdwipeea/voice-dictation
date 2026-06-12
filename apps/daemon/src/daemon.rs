@@ -644,6 +644,16 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 }
             }
             Ok(DaemonEvent::FocusClass(class)) => {
+                // Logged per session: when text "disappears", the first
+                // question is always which window actually received it.
+                match class.as_ref() {
+                    Some((instance, class_name)) => logging::info(&format!(
+                        "insertion target at release: {instance:?} / {class_name:?}"
+                    )),
+                    None => logging::warn(
+                        "insertion target at release has no WM_CLASS (text may land in a non-text window)",
+                    ),
+                }
                 focused_class = class;
             }
             Ok(DaemonEvent::Ui(report)) => {

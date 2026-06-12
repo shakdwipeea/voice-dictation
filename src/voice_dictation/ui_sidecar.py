@@ -83,6 +83,12 @@ def main() -> int:
         level=logging.INFO,
         format="ui-sidecar %(levelname)s %(message)s",
     )
+    from gi.repository import GLib
+
+    # WM_CLASS comes from the program name; without this the pill shows up
+    # as "python3" in window lists and insertion-target logs.
+    GLib.set_prgname("voice-dictation-overlay")
+
     from voice_dictation.overlay import Overlay
 
     overlay = Overlay()

@@ -468,7 +468,11 @@ was unfalsifiable.)*
   acceptable **[measured: the sidecar blocks on stdin between sessions]**
 - No network access after models are installed **[provisional]**
 - Dictation bubble must never steal keyboard focus **[measured:
-  override-redirect window, never given input focus]**
+  override-redirect window, never given input focus; the GTK overlay maps
+  without activation — set_visible instead of present(), WM_TAKE_FOCUS
+  stripped, input hint off — after a June 12, 2026 field bug where
+  present() activated the pill and dictated text landed inside it;
+  regression-tested by polling input focus through a live session]**
 
 ## 10. Test Strategy
 
