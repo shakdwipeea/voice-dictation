@@ -74,7 +74,24 @@ class _X11Anchor:
         self._xwin.set_wm_hints(flags=Xutil.InputHint, input=0)
         self._take_focus = atom("WM_TAKE_FOCUS")
         self._strip_take_focus()
+        self._make_click_through()
         self._dpy.flush()
+
+    def _make_click_through(self) -> None:
+        """Empty X input shape: clicks fall through to whatever is below.
+
+        The pill stays mapped permanently (visibility is opacity-based, see
+        Overlay._do_show) so it must never swallow pointer input meant for
+        the window underneath it.
+        """
+        try:
+            from Xlib.ext import shape
+
+            self._xwin.shape_rectangles(
+                shape.SO.Set, shape.SK.Input, 0, 0, 0, []
+            )
+        except Exception:  # noqa: BLE001 - cosmetic; never fatal
+            log.warning("XShape unavailable; overlay will not be click-through")
 
     def _strip_take_focus(self) -> None:
         """Remove WM_TAKE_FOCUS so the window never enters the "globally
@@ -87,13 +104,31 @@ class _X11Anchor:
                 [p for p in protocols if p != self._take_focus]
             )
 
+    def _primary_monitor(self) -> tuple:
+        """(x, y, width) of the primary monitor; whole X screen on failure.
+
+        Centering on the combined X screen puts the pill on the seam
+        between monitors in multi-head setups.
+        """
+        try:
+            from Xlib.ext import randr
+
+            monitors = randr.get_monitors(
+                self._dpy.screen().root, True
+            ).monitors
+            primary = next((m for m in monitors if m.primary), monitors[0])
+            return primary.x, primary.y, primary.width_in_pixels
+        except Exception:  # noqa: BLE001 - no RandR 1.5, single screen, ...
+            return 0, 0, self._dpy.screen().width_in_pixels
+
     def place(self) -> bool:
         # GTK may rewrite WM_PROTOCOLS up to map time; re-strip on each show.
         self._strip_take_focus()
         geom = self._xwin.get_geometry()
-        screen_w = self._dpy.screen().width_in_pixels
+        mon_x, mon_y, mon_w = self._primary_monitor()
         self._xwin.configure(
-            x=max(0, (screen_w - geom.width) // 2), y=MARGIN_TOP
+            x=mon_x + max(0, (mon_w - geom.width) // 2),
+            y=mon_y + MARGIN_TOP,
         )
         self._dpy.flush()
         return False
@@ -150,9 +185,16 @@ class Overlay:
     # ---- lifecycle ----
     def build_and_run(self) -> int:
         """Run the GTK main loop. Blocks. Call from the main thread."""
+        from gi.repository import Gio
+
+        # NON_UNIQUE: GTK application IDs are D-Bus singletons by default,
+        # so a second sidecar (respawn racing a dying predecessor, manual
+        # ui-demo while the daemon runs) would silently forward its
+        # activation to the existing process and exit 0 without ever
+        # emitting ready.
         self.app = Gtk.Application(
             application_id="dev.voice-dictation.Overlay",
-            flags=0,
+            flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
         self.app.connect("activate", self._on_activate)
         return self.app.run(None)
@@ -209,6 +251,15 @@ class Overlay:
                 self._x11 = _X11Anchor(self.window)
             except Exception:  # noqa: BLE001
                 log.exception("X11 anchoring unavailable; overlay unmanaged")
+        if self._x11 is not None:
+            # Map once, invisibly, and never unmap: every map is a fresh
+            # WM focus decision, and one of them WILL eventually hand the
+            # pill keyboard focus mid-dictation (seen in the field).
+            # Visibility is opacity-based from here on; the empty input
+            # shape keeps the invisible window click-through.
+            self.window.set_opacity(0.0)
+            self.window.set_visible(True)
+            GLib.idle_add(self._x11.place)
         self._hold_id = app.hold()
         self._ready_evt.set()
 
@@ -237,20 +288,25 @@ class Overlay:
     # ---- GTK-thread implementations ----
     def _do_show(self) -> bool:
         if self.window is not None and not self._visible:
-            # set_visible, NOT present(): present() requests activation,
-            # which steals keyboard focus from the window the user is
-            # dictating into — the dictated text would land in this pill.
-            self.window.set_visible(True)
-            self._visible = True
             if self._x11 is not None:
-                # Re-pin after the map request reaches the WM; layer-shell
-                # handles this declaratively, X11 needs an explicit move.
+                # Already mapped; just become visible. No map request means
+                # no WM focus decision, so focus can never leave the window
+                # the user is dictating into.
+                self.window.set_opacity(1.0)
                 GLib.idle_add(self._x11.place)
+            else:
+                # set_visible, NOT present(): present() requests activation,
+                # which would steal keyboard focus.
+                self.window.set_visible(True)
+            self._visible = True
         return False
 
     def _do_hide(self) -> bool:
         if self.window is not None and self._visible:
-            self.window.set_visible(False)
+            if self._x11 is not None:
+                self.window.set_opacity(0.0)
+            else:
+                self.window.set_visible(False)
             self._visible = False
         return False
 
