@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
 import platform
@@ -228,10 +229,17 @@ def parse_streaming_metrics(stdout: str) -> dict[str, object]:
     for line in stdout.splitlines():
         if transcription_marker in line:
             payload = line.split(transcription_marker, 1)[1].strip()
+            # NeMo logs the Python repr of a list, which uses single quotes
+            # unless the text happens to contain an apostrophe; JSON parsing
+            # alone would silently drop most transcriptions.
+            transcriptions: object
             try:
-                transcriptions = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
+                transcriptions = ast.literal_eval(payload)
+            except (ValueError, SyntaxError):
+                try:
+                    transcriptions = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
             if isinstance(transcriptions, list):
                 metrics["transcriptions"] = transcriptions
         elif timing_marker in line:
