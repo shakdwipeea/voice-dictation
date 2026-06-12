@@ -69,18 +69,22 @@ ms, kill-respawn works, clean shutdown leaves no orphans.)*
 
 ## Workstream B: Packaging and Docs Adaptation
 
-`install.sh`, `systemd/voice-dictation.service`, and `README.md` still
-describe the removed Python daemon.
+*(Status June 12, 2026: DONE and installed live. `install.sh` builds the
+release daemon, preserves an existing config, renders the unit with
+SUNOTO_ROOT, and enables + starts the user service — verified end to end on
+the X11 dev machine, including a real dictation session under systemd with
+the Nemotron backend and the overlay pill. The hypr binding is parked as a
+Phase 4 placeholder since the daemon is X11-only today.)*
 
 1. systemd unit: `ExecStart` → the `sunoto-daemon` binary; keep the GPU
    ordering/env bits that still apply.
 2. `install.sh`: build/install the Rust daemon (`cargo build --release`),
-   install the Python pieces (ASR sidecar env, overlay package), keep the
-   hypr config install for Wayland users.
-3. README: rewrite around the merged architecture (Rust daemon + Nemotron
-   sidecar + overlay UI); fold in the relevant parts of the upstream one.
-4. `AGENTS.md` / `.claude/`: reconcile upstream agent docs with the sunoto
-   layout so assistant tooling isn't following stale instructions.
+   write the config if absent, check GTK4/python-xlib/parec/venv, enable +
+   start the service.
+3. README: rewritten around the merged architecture (Rust daemon + Nemotron
+   sidecar + overlay UI), with measured performance and troubleshooting.
+4. `AGENTS.md`: reconciled with the merged layout (cargo/make workflow,
+   injection-safety rules for agents, sidecar facts).
 
 ## Workstream C: Upstream Collaboration
 

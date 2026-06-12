@@ -1,18 +1,20 @@
 [Unit]
-Description=Voice dictation daemon (faster-whisper streaming + GTK overlay)
+Description=Voice dictation daemon (sunoto Rust pipeline + GTK overlay)
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-# Path is rewritten by install.sh to the user's actual venv.
-ExecStart=__VENV_BIN__/vd-daemon --device cuda --model large-v3 --log-level INFO
+# Paths are rewritten by install.sh to the actual checkout.
+Environment=SUNOTO_ROOT=__SUNOTO_ROOT__
+ExecStart=__SUNOTO_ROOT__/target/release/sunoto-daemon run
 Restart=on-failure
 RestartSec=3
-# Hot CUDA model in RAM; full large-v3 is slower/heavier than turbo but more accurate.
+# The NeMo/Nemotron ASR sidecar dominates memory (~3.6 GiB VRAM, several GiB
+# RAM at model load); the daemon itself is small. Sidecars are child
+# processes, so one budget covers the whole tree.
 MemoryHigh=10G
 MemoryMax=14G
-# Crash-tolerant: if it dies, persist state across restart via XDG_STATE_HOME
 
 [Install]
 WantedBy=graphical-session.target
