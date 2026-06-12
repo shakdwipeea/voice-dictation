@@ -1,24 +1,11 @@
 [project]
 name = "voice-dictation"
 version = "0.1.0"
-description = "System-wide voice dictation for Linux/Hyprland with local Whisper"
+description = "GTK4 layer-shell overlay UI for the sunoto voice-dictation daemon"
 requires-python = ">=3.13"
-dependencies = [
-    "faster-whisper>=1.2.1",
-    "numpy>=2.4.6",
-    "nvidia-cublas-cu12>=12.9.2.10",
-    "nvidia-cudnn-cu12>=9.22.0.52",
-    "rich>=15.0.0",
-    "silero-vad>=6.2.1",
-    "sounddevice>=0.5.5",
-    "soundfile>=0.13.1",
-]
-
-[project.scripts]
-vd = "voice_dictation.client:main"
-vd-daemon = "voice_dictation.daemon:main"
-vd-smoke = "voice_dictation.smoke:main"
-vd-samples = "voice_dictation.sample_manager:main"
+# The overlay uses GTK4 + gtk4-layer-shell via PyGObject, which come from
+# system packages (python-gobject, gtk4-layer-shell), not PyPI.
+dependencies = []
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
