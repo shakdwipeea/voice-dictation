@@ -127,9 +127,9 @@ Linux integration daemon
       v
 Audio pipeline
   - continuously open microphone stream
-  - short pre-roll buffer
+  - short pre-roll buffer (a plain ring buffer; no idle DSP)
   - resample to model format
-  - low-cost VAD
+  - low-cost VAD (active sessions and hands-free mode only)
       |
       v
 ASR backend interface
@@ -158,14 +158,28 @@ Optional slow path after insertion
 
 - **Core daemon and Linux integration:** Rust
 - **Desktop UI:** GTK4 with a small settings window, tray indicator, and
-  always-on-top dictation bubble
+  always-on-top dictation bubble (Phase 1 ships an X11 override-redirect
+  status bubble; GTK4 arrives with the Phase 3 settings UI)
 - **ASR service:** Python sidecar using NVIDIA NeMo cache-aware streaming
   inference
 - **Local text model:** llama.cpp-compatible local model behind a provider
   interface
-- **IPC:** Unix domain socket with typed JSON messages for the first release
+- **IPC:** typed newline-delimited JSON over the managed sidecar's
+  stdin/stdout. *(Amended June 12, 2026: originally "Unix domain socket";
+  child-process pipes give the same typed protocol with the connection tied
+  to the process lifetime and no socket-file management. The contract must
+  support unsolicited sidecar-initiated events — streamed partials — not
+  one-reply-per-request pairing.)*
 - **Storage:** SQLite for settings, dictionary, snippets, and optional history
-- **Audio capture:** PipeWire/PulseAudio-compatible Rust audio library
+  (Phase 1 uses a JSON settings file; SQLite arrives with history)
+- **Audio capture:** PulseAudio-protocol capture, which also works under
+  PipeWire's pulse compatibility layer as shipped by Mint 22.2. *(Amended
+  June 12, 2026 from Phase 0 findings: source auto-selection must reject
+  monitor sources — the OS default on the target machine is the speaker
+  monitor — and capture must request ~20 ms latency buffer attributes,
+  because default PulseAudio buffering adds roughly two seconds, which alone
+  destroys the latency gate. Device hot-plug is handled by respawning
+  capture with backoff and re-resolving the source.)*
 - **Packaging:** `.deb` and AppImage first; Flatpak later because sandboxing
   complicates global input and text insertion
 
@@ -211,6 +225,37 @@ The first release should target the current Linux Mint Cinnamon X11 system.
 - Provide an undo-friendly insertion operation
 
 This is the fastest path to a complete end-to-end product.
+
+### Injection Safety (added June 12, 2026)
+
+Sunoto synthesizes keystrokes into whatever window is focused, which makes
+text injection a security surface, not just a convenience:
+
+- **Control characters never pass through by default.** Enter or Tab landing
+  in a focused terminal or form executes commands or submits data; dictated
+  text, snippet expansions, and any future "press enter" command must strip
+  or neutralize control characters unless the user explicitly enables them.
+- **Focus is captured at shortcut release and revalidated immediately before
+  insertion.** If focus changed in between, the result goes to the clipboard
+  with a visible notice instead of being typed into the wrong window.
+- **Modifier hygiene.** Physically held modifiers (the push-to-talk Ctrl
+  itself) are logically released around injection so dictated characters
+  cannot become Ctrl/Alt chords, and are restored afterwards.
+- **Clipboard exposure.** The clipboard fallback necessarily places dictated
+  text — potentially secrets — where clipboard managers may persist it. The
+  previous clipboard content is restored after pasting, but third-party
+  clipboard history is outside Sunoto's control; documentation must say so,
+  and password-field detection (where available) must disable insertion.
+
+### Keyboard-Layout Dependence (added June 12, 2026)
+
+XTEST injection resolves characters through the active keymap. The Phase 1
+implementation maps US-layout keysyms; on other layouts unmappable characters
+automatically fall back to clipboard-paste insertion, which is
+layout-independent. Full keymap-aware resolution (spare-keycode remapping as
+xdotool does, MappingNotify handling, per-app paste chords) is required
+before non-US layouts are supported; the desktop compatibility matrix gains a
+non-US-layout column for that work.
 
 ### Wayland: Explicit Second Target
 
@@ -299,12 +344,25 @@ within 250 ms and inserts usable final text within 600 ms of releasing the
 shortcut at p95 on the target machine. The default should remain 160 ms unless
 the recorded corpus proves that the 80 ms profile has acceptable accuracy.
 
+*(Status note, June 12, 2026: Phase 0 closed with compatibility proven but
+the interactive latency gate unmeasured — the offline wrapper could not
+measure it — and the corpus unrecorded. The gate measurement was carried
+into the Phase 1 latency harness and has since been met: release-to-
+insertion p95 was measured at 151 ms (160 ms profile) and 104 ms (80 ms
+profile), see `phase-1-results.md`. The 250 ms first-partial clause was
+written without a reference point and is superseded by the anchored metric
+in section 9. Corpus recording moved to Phase 2 scope.)*
+
 ### Phase 1: X11 Vertical Slice
 
 - Rust background daemon
 - Global push-to-talk shortcut
-- Persistent microphone capture, pre-roll buffer, and VAD
-- ASR sidecar lifecycle and IPC
+- Persistent microphone capture, pre-roll buffer, and VAD (VAD runs only in
+  active sessions; push-to-talk release, not silence, ends an utterance)
+- ASR sidecar lifecycle and IPC. The IPC contract must support asynchronous
+  partial-transcript events pushed by the sidecar while audio chunks are in
+  flight, demonstrated against the mock sidecar emitting timed partials —
+  a request/response design cannot pass this gate
 - Simple status bubble
 - Generic focused-target insertion with clipboard-preserving fallback
 - Basic settings file
@@ -314,7 +372,8 @@ focused X11 text field without restarting Sunoto or manually pasting text,
 while maintaining the release-to-insertion p95 target. The desktop
 compatibility matrix must include at least five applications from different UI
 toolkits and application categories; those applications are test coverage, not
-an allowlist or product limitation.
+an allowlist or product limitation. The latency harness must also record
+warm-start time and VRAM, the two Phase 0 measurements that were deferred.
 
 ### Phase 2: Polished Dictation
 
@@ -324,6 +383,9 @@ an allowlist or product limitation.
 - Active-application style profiles
 - Optional local text LLM
 - Raw-versus-polished diff logging for local evaluation
+- Record the evaluation corpus (accents, fillers, corrections, names, code
+  terms, background noise) — moved here from Phase 0, where it was never
+  produced
 
 **Exit gate:** the polished result improves the zero-edit rate on the recorded
 test corpus without changing names, numbers, or meaning.
@@ -356,21 +418,42 @@ test corpus without changing names, numbers, or meaning.
 
 ## 9. Performance Targets
 
-- Shortcut-to-recording feedback: under 50 ms
-- Time to first partial text: under 250 ms p95
-- Release-to-final-text insertion: under 300 ms p50
-- Release-to-final-ASR-result: under 450 ms p95
-- Deterministic cleanup: under 20 ms p95
-- Text insertion: under 50 ms p95
-- Release-to-final-text insertion: under 600 ms p95 and under 1 second p99
-- Warm-model availability after login: under 10 seconds
-- No dropped first or last word in normal push-to-talk use
-- Idle CPU while listening for activation: under 1% on the target machine
-- No inference compute while idle; keeping model weights in VRAM is acceptable
-- No network access after models are installed
-- Dictation bubble must never steal keyboard focus
+*(Amended June 12, 2026: each target is now annotated **[measured]** — backed
+by the Phase 1 latency harness on the target RTX 3060, see
+`phase-1-results.md` — or **[provisional]** — still a goal, not yet
+validated. The first-partial metric now has a defined anchor; without one it
+was unfalsifiable.)*
 
-Model memory targets must be set after Phase 0 measurements rather than guessed.
+- Shortcut-to-recording feedback: under 50 ms **[provisional]**
+- Time to first partial text, measured from speech onset in the audio stream
+  (pre-roll included) to the partial reaching the status bubble: the
+  cache-aware encoder's first chunk dominates this — measured ~830 ms p95 on
+  the 160 ms profile and ~715 ms p95 on the 80 ms profile. Target: under
+  1 second p95 **[measured]**; the original 250 ms figure predates the
+  first-chunk reality and applied no anchor.
+- Release-to-final-text insertion: under 300 ms p50 **[measured: 110 ms on
+  the 160 ms profile]**
+- Release-to-final-ASR-result: under 450 ms p95 **[measured: 125 ms]**
+- Deterministic cleanup: under 20 ms p95 **[measured: microseconds]**
+- Text insertion: under 50 ms p95 **[measured: 26 ms including echo
+  confirmation]**
+- Release-to-final-text insertion: under 600 ms p95 and under 1 second p99
+  **[measured: 151 ms p95 / 151 ms p99, five paced sessions]**
+- Warm-model availability after login: under 10 seconds **[provisional —
+  measured 16.6–32.3 s spawn-to-ready today; needs load-time optimization
+  (Riva/exported engine or lazy decoder init) or a revised target]**
+- Sidecar VRAM while streaming: ~3.6 GiB measured on the 12 GiB card; set
+  the product minimum after testing a lower-end card **[measured]**
+- No dropped first or last word in normal push-to-talk use (pre-roll covers
+  the first word; release-flush covers the last) **[provisional — needs the
+  live-microphone corpus pass]**
+- Idle CPU while listening for activation: under 1% on the target machine
+  **[provisional]**
+- No inference compute while idle; keeping model weights in VRAM is
+  acceptable **[measured: the sidecar blocks on stdin between sessions]**
+- No network access after models are installed **[provisional]**
+- Dictation bubble must never steal keyboard focus **[measured:
+  override-redirect window, never given input focus]**
 
 ## 10. Test Strategy
 
@@ -391,6 +474,8 @@ Model memory targets must be set after Phase 0 measurements rather than guessed.
 - Common terminals
 - LibreOffice
 - Password fields, where insertion must be disabled
+- At least one non-US keyboard layout, plus a layout switch during an active
+  dictation (added June 12, 2026; see "Keyboard-Layout Dependence")
 
 ### Reliability and Privacy
 
@@ -413,29 +498,49 @@ Model memory targets must be set after Phase 0 measurements rather than guessed.
 | Context capture leaks sensitive text | Make it opt-in, local-only, app-blocklist aware, and never read password fields |
 | Model downloads make setup difficult | Build resumable downloads, checksums, disk-space checks, and model presets |
 
-## 12. Proposed Repository Layout
+## 12. Repository Layout (as built)
 
 ```text
 apps/
-  desktop/             GTK settings window and dictation bubble
+  daemon/              dictation daemon, settings, latency bench, self-tests
+  desktop/             GTK settings window (Phase 3, not yet created)
 crates/
   sunoto-core/         session state machine and shared types
-  sunoto-audio/        capture, resampling, VAD
-  sunoto-linux/        X11, Wayland, portal, and AT-SPI adapters
-  sunoto-polish/       cleanup, dictionary, snippets, validation
+  sunoto-audio/        persistent PulseAudio (parec) capture
+  sunoto-ipc/          sidecar process management and NDJSON event pump
+  sunoto-linux/        X11 adapters (hotkey, insertion, clipboard, bubble)
+  sunoto-polish/       cleanup, dictionary, snippets, styles
 services/
-  asr/                 Python NVIDIA NeMo streaming sidecar
+  asr/                 Nemotron streaming sidecar, mock sidecar, Phase 0 bench
 tests/
-  corpus/              local recorded/evaluation fixtures
-  desktop-matrix/      integration harnesses
+  corpus/              local recorded/evaluation fixtures and the scripted
+                       phase2 zero-edit corpus
+  phase0/, phase1/, phase2/  Python test suites
+tools/
+  phase0/              system, audio, and X11 feasibility probes
+  phase2/              corpus recorder and sidecar transcriber
 docs/
-  product-plan.md
+  product-plan.md, phase-0-results.md, phase-1-results.md,
+  phase-2-results.md, code-review-2026-06-12.md
 ```
 
 ## 13. Immediate Next Step
 
-Start with Phase 0 only. Do not build the settings UI or broad Wayland support
-until an always-warm streaming backend and X11 text insertion together meet the
-600 ms release-to-insertion p95 gate. Nemotron's streaming profile should be
-selected from measured latency and accuracy rather than assumed from model
-benchmarks.
+*(Amended June 12, 2026 — the original instruction, "start with Phase 0
+only," is complete: the always-warm streaming backend plus X11 insertion
+measure 151 ms release-to-insertion p95 against the 600 ms gate.)*
+
+Next steps, in order:
+
+1. Run the manual five-application desktop compatibility pass and a
+   live-microphone accuracy spot check to formally close Phase 1.
+2. Record the Phase 2 evaluation corpus — the harness is built and the
+   workflow is `make phase2-record` (human speaks), `make phase2-transcribe`,
+   `make phase2-eval-recorded`. The scripted text corpus already measures
+   96% polished vs 28% raw zero-edit rate with zero regressions; tune the
+   correction gates from the recorded data (the `known-gap` case documents
+   the first candidate).
+3. Phase 3 product UX: install GTK4 development packages (`libgtk-4-dev` is
+   not currently installed), then build the settings window, tray indicator,
+   and setup flow; investigate warm-start reduction (currently 16–32 s
+   against the 10 s goal).
