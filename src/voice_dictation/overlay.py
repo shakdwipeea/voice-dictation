@@ -35,11 +35,15 @@ MARGIN_TOP = 16
 
 
 class _X11Anchor:
-    """EWMH fallback anchoring for X11 sessions.
+    """X11 anchoring: an override-redirect toplevel, positioned by hand.
 
-    Marks the window as an always-above, sticky, unfocusable notification
-    (so it never steals keyboard focus or appears in the taskbar) and pins
-    it top-center after each map.
+    Override-redirect takes the window manager out of the loop entirely:
+    no map-time focus decisions, and — critically — no constraint pass
+    that "rescues" off-screen windows. While the pill was WM-managed,
+    the park() move below reached Muffin as a ConfigureRequest and its
+    keep-windows-on-screen policy clamped the pill to (0,0), so it sat
+    in the corner forever after every dictation. The EWMH properties are
+    kept for the compositor (effect/shadow policy), not for the WM.
     """
 
     def __init__(self, window: Gtk.Window) -> None:
@@ -57,6 +61,10 @@ class _X11Anchor:
         self._xwin = self._dpy.create_resource_object(
             "window", surface.get_xid()
         )
+        # Must be latched before GTK maps the window, and GTK maps over
+        # its own X connection — hence sync(), not flush().
+        self._xwin.change_attributes(override_redirect=1)
+        self._dpy.sync()
         atom = self._dpy.intern_atom
         self._xwin.change_property(
             atom("_NET_WM_WINDOW_TYPE"), Xatom.ATOM, 32,
@@ -75,13 +83,16 @@ class _X11Anchor:
         self._take_focus = atom("WM_TAKE_FOCUS")
         self._strip_take_focus()
         self._make_click_through()
+        # Park before the first map: override-redirect maps happen at the
+        # last configured position, so the pill never flashes at (0,0).
+        self.park()
         self._dpy.flush()
 
     def _make_click_through(self) -> None:
         """Empty X input shape: clicks fall through to whatever is below.
 
-        The pill stays mapped permanently (visibility is opacity-based, see
-        Overlay._do_show) so it must never swallow pointer input meant for
+        The pill stays mapped permanently (visibility is position-based,
+        see place/park) so it must never swallow pointer input meant for
         the window underneath it.
         """
         try:
@@ -122,22 +133,30 @@ class _X11Anchor:
             return 0, 0, self._dpy.screen().width_in_pixels
 
     def place(self) -> bool:
+        from Xlib import X
+
         # GTK may rewrite WM_PROTOCOLS up to map time; re-strip on each show.
         self._strip_take_focus()
         geom = self._xwin.get_geometry()
         mon_x, mon_y, mon_w = self._primary_monitor()
+        # stack_mode=Above on every placement: nothing keeps an
+        # override-redirect window on top (_NET_WM_STATE_ABOVE is a WM
+        # contract), and windows mapped later would bury the pill.
+        # Status updates re-place, so mid-dictation occlusion self-heals.
         self._xwin.configure(
             x=mon_x + max(0, (mon_w - geom.width) // 2),
             y=mon_y + MARGIN_TOP,
+            stack_mode=X.Above,
         )
         self._dpy.flush()
         return False
 
     def park(self) -> bool:
-        """Hide by moving far off-screen. The window stays mapped (no WM
-        focus decisions) and this raw X move works unconditionally —
-        unlike GTK toplevel opacity, which silently failed to repaint this
-        anchored window in the field."""
+        """Hide by moving far off-screen. The window stays mapped (no
+        map/unmap churn) and, on an override-redirect window, the server
+        applies this move verbatim. While the WM still managed the pill
+        it intercepted this exact move and clamped it back on-screen at
+        (0,0) — a pill that never went away."""
         self._xwin.configure(x=-16384, y=-16384)
         self._dpy.flush()
         return False
@@ -261,11 +280,12 @@ class Overlay:
             except Exception:  # noqa: BLE001
                 log.exception("X11 anchoring unavailable; overlay unmanaged")
         if self._x11 is not None:
-            # Map once, parked off-screen, and never unmap: every map is a
-            # fresh WM focus decision, and one of them WILL eventually hand
-            # the pill keyboard focus mid-dictation (seen in the field).
-            # Visibility is position-based from here on (place/park); the
-            # empty input shape keeps the parked window click-through.
+            # Map once, parked off-screen, and never unmap. The window is
+            # override-redirect, so no WM is involved in the map — and
+            # staying mapped also keeps GTK's surface lifecycle out of
+            # play. Visibility is position-based from here on (place/
+            # park); the empty input shape keeps it click-through. The
+            # idle park is belt-and-braces should GDK reposition at map.
             self.window.set_visible(True)
             GLib.idle_add(self._x11.park)
         self._hold_id = app.hold()
@@ -336,8 +356,17 @@ class Overlay:
             self._status_label.set_label(status)
             self._status_label.set_visible(bool(status))
             if self._x11 is not None and self._visible:
-                # Label growth changes the pill width; keep it centered.
-                GLib.idle_add(self._x11.place)
+                # Label growth changes the pill width; re-center one idle
+                # later, once GTK has applied the new size. The callback
+                # re-checks _visible: a hide can be dispatched in between,
+                # and an unconditional place() would drag the freshly
+                # parked pill back on-screen.
+                GLib.idle_add(self._recenter_if_visible)
+        return False
+
+    def _recenter_if_visible(self) -> bool:
+        if self._x11 is not None and self._visible:
+            self._x11.place()
         return False
 
     def _do_shutdown(self) -> bool:
