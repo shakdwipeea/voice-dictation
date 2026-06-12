@@ -1,8 +1,10 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-nemotron/
 dist/
 build/
+target/
 *.egg-info/
 .pytest_cache/
 
@@ -13,6 +15,11 @@ models/
 # Test artifacts
 tests/fixtures/*.wav
 !tests/fixtures/.gitkeep
+
+# Audio inputs and recorded corpora stay local; only text cases are tracked.
+tests/corpus/*.wav
+tests/corpus/*.flac
+tests/corpus/phase2-recorded/
 
 # Editor
 .idea/

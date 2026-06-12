@@ -1,165 +1,149 @@
-# voice-dictation
+# voice-dictation (sunoto)
 
-System-wide voice dictation for Linux / Hyprland. Press a hotkey, speak, press again — your words get pasted into whatever input is focused (terminal TUI, browser, editor, Slack).
+System-wide, local-first voice dictation for Linux. Hold a hotkey, speak,
+release — clean text lands at the cursor of whatever application is focused.
+No cloud, no API keys.
 
-Local Whisper (faster-whisper + CTranslate2 on CUDA), silero-VAD streaming, GTK4 layer-shell overlay, Hyprland-native paste injection. No cloud, no API keys.
+Rust daemon + always-warm streaming ASR (NVIDIA Nemotron Speech Streaming
+0.6B via NeMo) + deterministic text polish + GTK4 overlay. Built for speed:
+**release-to-insertion is 151 ms p95** measured on an RTX 3060 (target was
+600 ms).
 
-The overlay is intentionally visual-only while recording: a glowing signal orb, a wide level rail, and an animated waveform show whether the selected microphone is actually receiving sound. It does not show transcripts, status words, or "done" messages.
+X11 is the supported session type today; Wayland adapters are planned
+(Phase 4 in `docs/product-plan.md`).
 
 ## Quickstart
 
 ```bash
-cd /home/shakdwipeea/workspace/pg/voice-dictation
-uv sync                  # install all Python deps (already done)
-bash install.sh          # wire up systemd + Hyprland binding
+bash install.sh        # build, write config, install + start the user service
 ```
 
-Then press **SUPER + I** anywhere — overlay appears, speak, press again, text pastes.
+Then **hold Ctrl+F8 anywhere**, speak, release — the text is typed at your
+cursor. The default backend is `mock` (fixed text, useful to verify the
+plumbing); switch to real ASR by setting `"backend": "nemotron"` in
+`~/.config/sunoto/config.json` and restarting the service.
 
-## What it does
+For development, skip the service and run directly:
 
-```
-SUPER+I press         mic → silero-VAD → faster-whisper                paste
-   │             ┌──────────────────────────────────────┐                │
-   ▼             │  (segments emit at silence; whisper  │                ▼
-recording        │   transcribes each on GPU; segments  │     wl-copy + hyprctl
-overlay          │   appear in overlay live)            │     dispatch sendshortcut
-appears          └──────────────────────────────────────┘     (Ctrl+Shift+V for
-                                  │                            terminals like
-SUPER+I press ────────────────────┘                            Ghostty/Claude Code,
-                                                               Ctrl+V for the rest)
+```bash
+make phase1-run             # daemon with the mock ASR backend
+make phase1-run-nemotron    # daemon with real Nemotron ASR
+make test                   # all Rust + Python suites
+make ui-demo                # drive the overlay pill by hand
 ```
 
-- **Model**: `large-v3` (Whisper) running float16 on CUDA. Prioritizes transcription quality over turbo latency.
-- **Latency**: optimized for quality rather than minimum delay; use `large-v3-turbo` if you prefer lower latency.
-- **Visual feedback**: the overlay meter is driven directly by live peak/RMS audio levels. Quiet slate means little/no input; green glow means live input; amber/red means hot/loud input.
-- **Daemon model is loaded once** and reused across every toggle. Full `large-v3` needs more RAM/VRAM than turbo, so the user service allows a larger memory budget.
+## How it works
+
+```
+hold Ctrl+F8          release
+     │                   │
+     ▼                   ▼
+persistent mic ──► streaming ASR sidecar ──► deterministic polish ──► XTEST
+capture + preroll    (Nemotron cache-aware     (fillers, corrections,   typing, with
+(PulseAudio)          RNNT; partials stream     dictionary, snippets,   clipboard
+                      while you speak)          app-aware styles)       fallback
+```
+
+- **Always warm:** the ASR model loads once at startup and stays on the GPU;
+  the hotkey never waits for a model load.
+- **Push-to-talk is the end-of-utterance signal** — no VAD silence wait. On
+  release, residual audio is flushed immediately.
+- **Deterministic polish, not an LLM,** is on the latency path (measured in
+  microseconds): filler removal, "Tuesday, actually Wednesday" corrections,
+  personal dictionary, snippets, and per-app style (e.g. terminals get
+  lowercase/no-punctuation treatment via WM_CLASS detection).
+- **Injection safety:** Enter/Tab are neutralized by default, focus is
+  revalidated before typing (if you switched windows, the text parks on the
+  clipboard with a notice instead), and held modifiers are released around
+  injection.
+- **Status UI:** a GTK4 pill overlay (recording dot + live level meter +
+  status text) anchored top-center — layer-shell on Wayland compositors,
+  EWMH hints on X11. If GTK4 isn't installed, a native X11 bubble takes
+  over automatically. Either way the UI is fed off the latency path and the
+  daemon keeps dictating if it dies.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `vd` / `vd toggle` | Start or stop recording — what the hotkey runs. |
-| `vd status` | Daemon state, model, selected mode, last text. |
-| `vd last` | Print the most recent transcription. |
-| `vd simulate <wav>` | Test: transcribe a 16-kHz mono wav instead of mic. |
-| `vd shutdown` | Stop the daemon. |
-| `vd-samples` | Interactive TUI for recording + transcribing test samples (compare models, measure WER on your voice). |
-| `vd-smoke --device cuda --model M --wav F.wav` | One-shot pipeline check. |
-| `bash bin/gpu-status.sh` | RTX 4090 health summary — current state, Xid events past + present, daemon action log. |
-
-## Visual overlay
-
-The recording overlay is a compact visual instrument, not a transcript panel:
-
-- **Orb**: recording heartbeat / signal state.
-- **Level rail**: live amplitude, scaled from the current peak and RMS values.
-- **Wave bars**: animated waveform-style activity. A tiny moving pulse means the daemon is recording but receiving little signal; larger green/yellow bars mean audio is reaching the selected input.
-
-If the overlay barely moves while you speak, the issue is almost certainly the OS audio source, input gain, mute state, or the physical mic connection — not Whisper.
+| `sunoto-daemon run` | Run the dictation daemon (what the service runs). |
+| `sunoto-daemon check` | Verify X11, XTEST, shortcut grab, and the sidecar protocol. |
+| `sunoto-daemon selftest` | X11 insertion, push-to-talk, clipboard self-tests. |
+| `sunoto-daemon insert TEXT` | Type TEXT at the focused cursor (plumbing test). |
+| `sunoto-daemon bench` | Release-to-insertion latency percentiles. |
+| `sunoto-daemon eval` | Zero-edit rate of the polish pipeline on a corpus. |
+| `sunoto-daemon config show\|init` | Inspect or create the settings file. |
+| `bash bin/gpu-status.sh` | GPU health summary (Xid events, daemon action log). |
 
 ## Configuration
 
-Daemon flags (edit `~/.config/systemd/user/voice-dictation.service` then `systemctl --user daemon-reload && systemctl --user restart voice-dictation`):
+`~/.config/sunoto/config.json` (create with `sunoto-daemon config init`):
 
-```
---device cuda|cpu          # default: cuda
---model large-v3           # any faster-whisper model name; large-v3-turbo / distil-large-v3 for lower VRAM/latency
---no-paste                 # transcribe but don't inject
---no-overlay               # headless (testing / SSH)
---input-device hw:2,0      # override sounddevice probe
---vocabulary-file FILE     # bias Whisper with extra terms, one term per line
---technical-vocabulary-bias # bias Whisper with the built-in programming glossary
---no-technical-corrections # disable conservative programming-term cleanup
---lazy-load                # delay model load until first toggle
-```
-
-Technical dictation gets narrow cleanup by default for common ASR mistakes such
-as `origin slash monsters` → `origin/master`, `cube cuddle` → `kubectl`, and
-`type script` → `TypeScript`. Whisper vocabulary biasing is opt-in because large
-prompts can hurt general dictation: use `--technical-vocabulary-bias` for the
-built-in glossary or `--vocabulary-file FILE` for custom/product terms. Vocabulary
-files use one term per line; blank lines and `# comments` are ignored.
-
-Hotkey lives in `~/.config/hypr/voice-dictation.conf`. To rebind, edit the `bindd = SUPER, I, …` line and run `hyprctl reload`.
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `shortcut` | `"Ctrl+F8"` | Push-to-talk hold shortcut. |
+| `backend` | `"mock"` | `"nemotron"` for real ASR (needs `.venv-nemotron`). |
+| `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). |
+| `microphone` | `"auto"` | PulseAudio source name; auto rejects monitor sources. |
+| `overlay_enabled` | `true` | GTK4 pill overlay; falls back to the X11 bubble if unavailable. |
+| `allow_enter_and_tab` | `false` | Keep control characters out of terminals unless you opt in. |
+| `polish_enabled` | `true` | Deterministic cleanup pipeline on/off. |
+| `polish.app_styles` | terminal rules | Per-WM_CLASS writing styles. |
 
 ## Repo layout
 
 ```
-voice-dictation/
-├── src/voice_dictation/
-│   ├── daemon.py        # long-running process; IPC + overlay main loop
-│   ├── pipeline.py      # mic → VAD → whisper → overlay accumulator
-│   ├── segmenter.py     # silero-VAD streaming segmentation
-│   ├── overlay.py       # GTK4 layer-shell pill
-│   ├── audio.py         # input device probe + 48k→16k resample
-│   ├── stt.py           # faster-whisper wrapper
-│   ├── inject.py        # wl-copy + hyprctl dispatch sendshortcut
-│   ├── client.py        # the `vd` CLI
-│   ├── smoke.py         # `vd-smoke` one-shot test
-│   ├── sample_manager.py# `vd-samples` TUI
-│   └── _cuda_preload.py # bundle cu12 libs from venv into dlopen path
-├── bin/
-│   ├── gpu-watch.sh     # background Xid watcher (persistent log)
-│   ├── gpu-snapshot.sh  # nvidia-smi rolling log
-│   ├── gpu-status.sh    # one-shot health summary (also the gpu-status skill)
-│   └── action-log.sh    # last-action.txt + actions.log for crash post-mortem
-├── tests/samples/       # vd-samples writes here (ground-truth + wav per sample)
-├── systemd/voice-dictation.service
-├── hypr/voice-dictation.conf
-├── install.sh
-└── pyproject.toml
+apps/daemon/           Rust dictation daemon (run/check/bench/eval CLIs)
+crates/
+  sunoto-core/         session state machine
+  sunoto-audio/        persistent PulseAudio capture + preroll
+  sunoto-ipc/          sidecar process management, NDJSON event pump
+  sunoto-linux/        X11 adapters: hotkey, XTEST insertion, clipboard, bubble
+  sunoto-polish/       cleanup, dictionary, snippets, app-aware styles
+services/asr/          Nemotron streaming sidecar + mock sidecar (Python)
+src/voice_dictation/   GTK4 overlay pill + its stdin-NDJSON UI sidecar driver
+bin/                   GPU health/watchdog helper scripts
+tests/, tools/         Rust + Python suites, corpus record/transcribe tools
+docs/                  product plan, phase results, integration plan
 ```
+
+## Performance (measured, RTX 3060, X11)
+
+- Release-to-insertion: **151 ms p95** (160 ms profile), 104 ms (80 ms profile)
+- Release-to-final ASR result: 125 ms p95
+- Text insertion: 26 ms p95 including echo confirmation
+- Deterministic polish: microseconds
+- Zero-edit rate on the scripted corpus: **96% polished vs 28% raw**
+- Sidecar VRAM while streaming: ~3.6 GiB; warm start 16–32 s (optimization pending)
 
 ## Troubleshooting
 
-### "GPU has fallen off the bus" (Xid 79)
-This project has a survive-reboot Xid monitor. Run `bash bin/gpu-status.sh` to see the current GPU state, any Xid events on the current or previous boot, and what action the daemon was attempting right before any crash. On a 4090, Xid 79 most often means the 12VHPWR connector isn't fully seated — reseat it firmly (the latch should click) before running heavy GPU work again.
+- **Transcript generated but no text appears:** read the
+  `insertion target at release: "instance" / "Class"` journal line for that
+  session — it names the window that actually received the keystrokes. If
+  it isn't the app you expected, the focus was elsewhere when you released
+  the hotkey; if it is, that app may discard synthetic XTEST input.
+- **Short phrases like "Thank you." from silence:** near-silence audio can
+  make the ASR model hallucinate a short phrase. Check the session's logged
+  rms value — if it's near zero, the mic heard nothing; fix the input
+  source rather than the model.
+- **Service won't start:** `journalctl --user -u voice-dictation.service -n 50`.
+  The daemon needs an X11 session (`echo $XDG_SESSION_TYPE`).
+- **No overlay pill:** install `gir1.2-gtk-4.0` and `python3-xlib`; the
+  daemon logs `overlay UI exited before becoming ready` and uses the native
+  bubble until then.
+- **Hotkey does nothing:** the ASR sidecar may still be loading (the daemon
+  logs `ASR sidecar ready` when warm; Nemotron takes 16–32 s today). The
+  bubble shows "ASR still loading..." if you press too early.
+- **Wrong microphone:** set `"microphone"` in the config to a `pactl list
+  short sources` name. Auto-selection rejects monitor (speaker loopback)
+  sources on purpose.
+- **GPU issues:** `bash bin/gpu-status.sh` summarizes Xid events and the
+  daemon action log.
 
-### `PortAudioError: ALSA error -2 'No such file or directory'`
-PortAudio's PipeWire shim is fragile on some Arch setups. The daemon auto-probes input devices (`hw:2,0 @ 48 kHz` typically works) and resamples to 16 kHz via torchaudio. Override with `--input-device hw:X,Y` if probing picks the wrong mic.
+## History
 
-### Overlay moves but transcription says the same generic phrase
-Whisper can hallucinate short phrases from near-silence. The daemon suppresses the full-recording fallback for low-RMS audio so low-signal captures do not paste generic phrases such as "Thank you." If this happens, verify the mic source first:
-
-```
-uv run python - <<'PY'
-import sounddevice as sd
-print('default:', sd.default.device)
-for i, d in enumerate(sd.query_devices()):
-    if d.get('max_input_channels', 0) > 0:
-        print(i, d['name'], d['max_input_channels'], d['default_samplerate'])
-PY
-pactl list short sources
-wpctl status
-```
-
-On this machine, PipeWire exposes `USB Audio Microphone` as the named mic source. If the visualizer stays quiet while speaking, check that source is selected and unmuted in your audio settings.
-
-### `GtkWindow is not a layer surface`
-gtk4-layer-shell must load before libwayland-client. The daemon auto re-execs itself with `LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so` on startup — if you see this warning, either the lib is missing (`pacman -S gtk4-layer-shell`) or you launched the daemon with `--no-overlay` set (which is fine — headless mode skips the re-exec).
-
-### Paste doesn't reach the focused window
-- Terminal vs other apps use different paste shortcuts. The daemon detects the active window class via `hyprctl activewindow -j` and picks `Ctrl+Shift+V` for matching terminals (Ghostty, Alacritty, Kitty, Foot, WezTerm) or `Ctrl+V` for everything else.
-- Zed's integrated terminal still reports the Zed app class, not a terminal class. The daemon treats Zed as a `Ctrl+Shift+V` target and leaves the dictated text on the clipboard so `SUPER+V` manual paste does not select the previous dictation.
-- Hyprland's `sendshortcut` can return `ok` even when the focused app does not receive the paste event. If `wtype` is installed, the daemon can fall back to direct Wayland typing. Install with `sudo pacman -S wtype`.
-- If the active class isn't recognized as a terminal but should be, add it to `TERMINAL_CLASS_REGEX` in `src/voice_dictation/inject.py`.
-
-### Daemon stuck or unresponsive
-```
-systemctl --user restart voice-dictation
-journalctl --user -u voice-dictation -n 100 --no-pager
-```
-
-## Calibrating accent / tech vocab
-
-Use `vd-samples`:
-
-```
-$ uv run vd-samples
-> n                                # record a sample, type the ground truth
-> t all                            # transcribe every sample, see WER per sample
-> t 1 --model small.en --device cpu # compare another model on sample 1
-```
-
-The TUI saves wav + ground-truth JSON to `tests/samples/`. Re-run `t all` after any pipeline change to see if you've made things better or worse on YOUR voice.
+This repository merges two lineages: a Python faster-whisper dictation
+daemon (whose GTK4 overlay survives as the UI) and the sunoto Rust pipeline
+(which replaced the Python backend). `git log` preserves both histories;
+`docs/product-plan.md` and `docs/integration-plan.md` carry the full plan.

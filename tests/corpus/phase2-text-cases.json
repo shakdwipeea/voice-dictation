@@ -1,0 +1,206 @@
+{
+  "description": "Scripted text-level cases for the deterministic pipeline: raw ASR transcripts paired with the gold final text. This measures pipeline behavior only; the Phase 2 exit gate additionally needs the recorded audio corpus (see tools/phase2/record_corpus.py), whose sidecar transcripts feed this same manifest format with kind=recorded.",
+  "kind": "scripted",
+  "dictionary": [
+    { "spoken": "git hub", "written": "GitHub" },
+    { "spoken": "pie torch", "written": "PyTorch" },
+    { "spoken": "antash", "written": "Antash" }
+  ],
+  "snippets": [
+    { "trigger": "sign off", "expansion": "Best regards,\nAntash" }
+  ],
+  "cases": [
+    {
+      "id": "filler-sentence-start",
+      "raw": "Um, send the email.",
+      "expected": "Send the email.",
+      "tags": ["fillers"]
+    },
+    {
+      "id": "filler-parenthetical",
+      "raw": "I, uh, think so.",
+      "expected": "I think so.",
+      "tags": ["fillers"]
+    },
+    {
+      "id": "filler-consecutive",
+      "raw": "It was, um, er, fine.",
+      "expected": "It was fine.",
+      "tags": ["fillers"]
+    },
+    {
+      "id": "filler-double",
+      "raw": "So, um, I was thinking we could, uh, maybe try the new approach.",
+      "expected": "So I was thinking we could maybe try the new approach.",
+      "tags": ["fillers"]
+    },
+    {
+      "id": "swap-canonical",
+      "raw": "Tuesday, actually Wednesday.",
+      "expected": "Wednesday.",
+      "tags": ["corrections"]
+    },
+    {
+      "id": "swap-phrase",
+      "raw": "next Tuesday, actually next Wednesday.",
+      "expected": "Next Wednesday.",
+      "tags": ["corrections"]
+    },
+    {
+      "id": "swap-i-mean",
+      "raw": "Send it to Bob, I mean Alice.",
+      "expected": "Send it to Alice.",
+      "tags": ["corrections"]
+    },
+    {
+      "id": "swap-no-wait",
+      "raw": "at five, no wait six.",
+      "expected": "At six.",
+      "tags": ["corrections"]
+    },
+    {
+      "id": "swap-numbers",
+      "raw": "page 12, actually 14.",
+      "expected": "Page 14.",
+      "tags": ["corrections", "numbers"]
+    },
+    {
+      "id": "restart-sentence",
+      "raw": "Send it to Bob. Scratch that, send it to Alice.",
+      "expected": "Send it to Alice.",
+      "tags": ["corrections"]
+    },
+    {
+      "id": "restart-inline",
+      "raw": "I want pizza scratch that salad.",
+      "expected": "Salad.",
+      "tags": ["corrections"]
+    },
+    {
+      "id": "restart-with-filler",
+      "raw": "We need, um, scratch that. Start over with the budget.",
+      "expected": "Start over with the budget.",
+      "tags": ["corrections", "fillers"]
+    },
+    {
+      "id": "negative-swap-prose",
+      "raw": "meet on Tuesday, actually Wednesday works better for me too.",
+      "expected": "Meet on Tuesday, actually Wednesday works better for me too.",
+      "tags": ["corrections", "negatives"]
+    },
+    {
+      "id": "negative-sentence-initial-actually",
+      "raw": "Actually, send it now.",
+      "expected": "Actually, send it now.",
+      "tags": ["corrections", "negatives"]
+    },
+    {
+      "id": "names-untouched",
+      "raw": "Email Priya and Marcus about the launch on Thursday.",
+      "expected": "Email Priya and Marcus about the launch on Thursday.",
+      "tags": ["names", "negatives"]
+    },
+    {
+      "id": "numbers-untouched",
+      "raw": "The total is 1,250 dollars and 3.14 percent.",
+      "expected": "The total is 1,250 dollars and 3.14 percent.",
+      "tags": ["numbers", "negatives"]
+    },
+    {
+      "id": "phone-number-untouched",
+      "raw": "Call me at 555-0199 before noon.",
+      "expected": "Call me at 555-0199 before noon.",
+      "tags": ["numbers", "negatives"]
+    },
+    {
+      "id": "code-terms-untouched",
+      "raw": "Run pip install numpy in the virtual environment.",
+      "expected": "Run pip install numpy in the virtual environment.",
+      "tags": ["code", "negatives"]
+    },
+    {
+      "id": "spoken-filename-untouched",
+      "raw": "Check the readme dot md file first.",
+      "expected": "Check the readme dot md file first.",
+      "tags": ["code", "negatives"]
+    },
+    {
+      "id": "dictionary-github",
+      "raw": "I pushed the fix to git hub last night.",
+      "expected": "I pushed the fix to GitHub last night.",
+      "tags": ["dictionary"]
+    },
+    {
+      "id": "dictionary-pytorch",
+      "raw": "We train the model with pie torch.",
+      "expected": "We train the model with PyTorch.",
+      "tags": ["dictionary"]
+    },
+    {
+      "id": "combo-filler-then-swap",
+      "raw": "Um, page 12, actually 14.",
+      "expected": "Page 14.",
+      "tags": ["corrections", "fillers", "numbers"]
+    },
+    {
+      "id": "hard-filler-inside-swap",
+      "raw": "Ship it on Friday, uh, actually Monday.",
+      "expected": "Ship it on Monday.",
+      "tags": ["corrections", "fillers", "known-gap"]
+    },
+    {
+      "id": "normalize-spacing",
+      "raw": "hello   world , again .",
+      "expected": "Hello world, again.",
+      "tags": ["normalize"]
+    },
+    {
+      "id": "prose-missing-period",
+      "raw": "send the updated report",
+      "expected": "Send the updated report.",
+      "tags": ["punctuation", "prose"]
+    },
+    {
+      "id": "prose-ambiguous-question",
+      "raw": "how can you help me",
+      "expected": "How can you help me.",
+      "tags": ["punctuation", "prose"]
+    },
+    {
+      "id": "prose-preserve-model-question-mark",
+      "raw": "is this ready?",
+      "expected": "Is this ready?",
+      "tags": ["punctuation", "prose", "preservation"]
+    },
+    {
+      "id": "prose-preserve-model-exclamation",
+      "raw": "this is ready!",
+      "expected": "This is ready!",
+      "tags": ["punctuation", "prose", "preservation"]
+    },
+    {
+      "id": "prose-preserve-model-ellipsis",
+      "raw": "maybe later...",
+      "expected": "Maybe later...",
+      "tags": ["punctuation", "prose", "preservation"]
+    },
+    {
+      "id": "prose-capitalize-next-sentence",
+      "raw": "first sentence. second sentence",
+      "expected": "First sentence. Second sentence.",
+      "tags": ["punctuation", "prose"]
+    },
+    {
+      "id": "prose-decimal-is-not-sentence",
+      "raw": "version 3.14 is ready",
+      "expected": "Version 3.14 is ready.",
+      "tags": ["punctuation", "prose", "numbers"]
+    },
+    {
+      "id": "snippet-sign-off",
+      "raw": "Sign off.",
+      "expected": "Best regards,\nAntash",
+      "tags": ["snippets"]
+    }
+  ]
+}
