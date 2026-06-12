@@ -559,7 +559,33 @@ def create_parser() -> argparse.ArgumentParser:
         choices=sorted(PROFILE_CONTEXTS),
         help="initial warm latency profile",
     )
+    parser.add_argument(
+        "--min-free-vram-mib",
+        type=int,
+        default=4500,
+        help="refuse to load the model when less GPU memory is free; "
+        "0 disables the check",
+    )
     return parser
+
+
+def free_vram_mib() -> int | None:
+    """Free VRAM in MiB via nvidia-smi, or None when it cannot be queried."""
+    import subprocess
+
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+        )
+        return int(out.strip().splitlines()[0])
+    except Exception:  # noqa: BLE001 - any failure means "cannot tell"
+        return None
 
 
 def main(argv=None) -> int:
@@ -572,6 +598,28 @@ def main(argv=None) -> int:
     protocol_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.stdout = sys.stderr
+
+    # VRAM preflight: loading NeMo into an almost-full GPU can take the
+    # whole desktop down. Refuse and exit instead — the daemon logs the
+    # error and retries with backoff, succeeding once memory frees up.
+    if args.min_free_vram_mib > 0 and args.device.startswith("cuda"):
+        free = free_vram_mib()
+        if free is not None and free < args.min_free_vram_mib:
+            message = (
+                f"refusing to load: {free} MiB VRAM free, "
+                f"need {args.min_free_vram_mib} MiB (--min-free-vram-mib)"
+            )
+            log(message)
+            protocol_out.write(
+                json.dumps(
+                    {"type": "error", "session_id": None, "message": message},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            protocol_out.flush()
+            return 1
+        log(f"VRAM preflight: {free} MiB free")
 
     engine = NemotronEngine(
         model_name=args.model, device=args.device, profile_ms=args.profile_ms

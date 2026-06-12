@@ -24,6 +24,12 @@ verified against the real daemon flow where possible.
 - Be careful with GPU-heavy verification. Use `bash bin/gpu-status.sh` before
   GPU-loading work if there is any concern about prior Xid events. The
   Nemotron sidecar takes 16–32 s to warm and holds ~3.6 GiB VRAM.
+- NEVER start a second Nemotron instance (probe script, benchmark, manual
+  sidecar) while voice-dictation.service is running — two instances plus the
+  desktop can exhaust the 12 GiB card and crash the session. Stop the
+  service first, or use the mock backend. The sidecar's VRAM preflight
+  (`--min-free-vram-mib`, default 4500) refuses to load into a nearly-full
+  GPU; do not disable it to "make a test work".
 - Do not run stress tests such as gpu-burn or FurMark from this repo.
 - The daemon types into whatever window is focused. Never trigger a dictation
   session (real or synthetic Ctrl+F8) without first focusing a disposable
