@@ -1,6 +1,10 @@
-"""GTK4 layer-shell overlay for the voice-dictation daemon.
+"""GTK4 overlay for the voice-dictation daemon.
 
 Minimal UI: a small recording dot and a thin level meter. Anchored top-center.
+
+Anchoring backend is chosen at runtime: gtk4-layer-shell on Wayland
+compositors that support it, EWMH window hints on X11 (layer-shell is a
+Wayland-only protocol).
 
 All public methods are thread-safe — they schedule UI work on the GTK main
 loop via GLib.idle_add.
@@ -14,10 +18,70 @@ from typing import Optional
 import gi
 
 gi.require_version("Gtk", "4.0")
-gi.require_version("Gtk4LayerShell", "1.0")
-from gi.repository import GLib, Gtk, Gtk4LayerShell  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
+
+try:
+    gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gtk4LayerShell  # noqa: E402
+
+    _LAYER_SHELL = Gtk4LayerShell.is_supported()
+except (ImportError, ValueError):
+    Gtk4LayerShell = None  # type: ignore[assignment]
+    _LAYER_SHELL = False
 
 log = logging.getLogger(__name__)
+
+MARGIN_TOP = 16
+
+
+class _X11Anchor:
+    """EWMH fallback anchoring for X11 sessions.
+
+    Marks the window as an always-above, sticky, unfocusable notification
+    (so it never steals keyboard focus or appears in the taskbar) and pins
+    it top-center after each map.
+    """
+
+    def __init__(self, window: Gtk.Window) -> None:
+        from Xlib import Xatom, Xutil
+        from Xlib import display as x_display
+
+        gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+
+        window.realize()
+        surface = window.get_surface()
+        if not isinstance(surface, GdkX11.X11Surface):
+            raise RuntimeError("X11 anchor requires an X11 surface")
+        self._dpy = x_display.Display()
+        self._xwin = self._dpy.create_resource_object(
+            "window", surface.get_xid()
+        )
+        atom = self._dpy.intern_atom
+        self._xwin.change_property(
+            atom("_NET_WM_WINDOW_TYPE"), Xatom.ATOM, 32,
+            [atom("_NET_WM_WINDOW_TYPE_NOTIFICATION")],
+        )
+        self._xwin.change_property(
+            atom("_NET_WM_STATE"), Xatom.ATOM, 32,
+            [
+                atom("_NET_WM_STATE_ABOVE"),
+                atom("_NET_WM_STATE_STICKY"),
+                atom("_NET_WM_STATE_SKIP_TASKBAR"),
+                atom("_NET_WM_STATE_SKIP_PAGER"),
+            ],
+        )
+        self._xwin.set_wm_hints(flags=Xutil.InputHint, input=0)
+        self._dpy.flush()
+
+    def place(self) -> bool:
+        geom = self._xwin.get_geometry()
+        screen_w = self._dpy.screen().width_in_pixels
+        self._xwin.configure(
+            x=max(0, (screen_w - geom.width) // 2), y=MARGIN_TOP
+        )
+        self._dpy.flush()
+        return False
 
 CSS = b"""
 .vd-root {
@@ -54,8 +118,13 @@ class Overlay:
         self._root: Optional[Gtk.Box] = None
         self._dot_label: Optional[Gtk.Label] = None
         self._meter: Optional[Gtk.LevelBar] = None
+        self._x11: Optional[_X11Anchor] = None
         self._visible = False
         self._ready_evt = threading.Event()
+
+    def wait_ready(self, timeout: Optional[float] = None) -> bool:
+        """Block until the GTK window exists (for sidecar ready handshakes)."""
+        return self._ready_evt.wait(timeout)
 
     # ---- lifecycle ----
     def build_and_run(self) -> int:
@@ -78,14 +147,15 @@ class Overlay:
         )
 
         self.window = Gtk.ApplicationWindow(application=app)
-        Gtk4LayerShell.init_for_window(self.window)
-        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
-        Gtk4LayerShell.set_anchor(self.window, Gtk4LayerShell.Edge.TOP, True)
-        Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.TOP, 16)
-        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
-        Gtk4LayerShell.set_namespace(self.window, "voice-dictation")
         self.window.set_decorated(False)
         self.window.set_resizable(False)
+        if _LAYER_SHELL:
+            Gtk4LayerShell.init_for_window(self.window)
+            Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
+            Gtk4LayerShell.set_anchor(self.window, Gtk4LayerShell.Edge.TOP, True)
+            Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.TOP, MARGIN_TOP)
+            Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
+            Gtk4LayerShell.set_namespace(self.window, "voice-dictation")
 
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         root.add_css_class("vd-root")
@@ -104,6 +174,11 @@ class Overlay:
         root.append(self._meter)
 
         self.window.set_child(root)
+        if not _LAYER_SHELL:
+            try:
+                self._x11 = _X11Anchor(self.window)
+            except Exception:  # noqa: BLE001
+                log.exception("X11 anchoring unavailable; overlay unmanaged")
         self._hold_id = app.hold()
         self._ready_evt.set()
 
@@ -134,6 +209,10 @@ class Overlay:
         if self.window is not None and not self._visible:
             self.window.present()
             self._visible = True
+            if self._x11 is not None:
+                # Re-pin after the map request reaches the WM; layer-shell
+                # handles this declaratively, X11 needs an explicit move.
+                GLib.idle_add(self._x11.place)
         return False
 
     def _do_hide(self) -> bool:

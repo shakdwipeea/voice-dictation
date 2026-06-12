@@ -28,6 +28,13 @@ The overlay is currently orphaned — its upstream Python daemon was removed.
 Wire it to `sunoto-daemon` using the same managed-sidecar pattern as the ASR
 service (`sunoto-ipc`: spawn, NDJSON over stdin/stdout, restart with backoff).
 
+*(Status June 12, 2026: A1 and the X11 anchoring are DONE — the overlay
+selects layer-shell or an EWMH X11 backend at runtime (python-xlib:
+notification window type, ABOVE/STICKY/SKIP states, input-hint off, pinned
+top-center), so it runs on the X11 dev machine too once `gir1.2-gtk-4.0` is
+installed. `make ui-test` covers the protocol; `make ui-demo` drives the
+pill by hand. A2/A3 daemon wiring remains.)*
+
 1. **Driver entry point** (`src/voice_dictation/ui_sidecar.py`): runs the GTK
    main loop on the main thread (`build_and_run()` blocks, as required), and
    a reader thread that maps stdin NDJSON onto the overlay's thread-safe
@@ -50,10 +57,10 @@ service (`sunoto-ipc`: spawn, NDJSON over stdin/stdout, restart with backoff).
    pipeline's existing level data; finalization → `status`/`hide`.
 3. **Failure rules:** the UI sidecar is never on the latency path — daemon
    functions fully if it dies; restart with backoff, never block insertion.
-4. **Testing:** protocol unit test against a fake stdin (mirror
-   `tests/phase1/test_nemotron_sidecar_protocol.py`); visual pass deferred to
-   a Wayland/Hyprland machine — gtk4-layer-shell is a Wayland protocol and
-   cannot run on the current X11 dev box.
+4. **Testing:** protocol unit tests in `tests/ui/` (no GTK needed, run in
+   `make test`); visual pass on the X11 dev box via `make ui-demo` after
+   `sudo apt install gir1.2-gtk-4.0`; the layer-shell visual pass still
+   needs a Wayland/Hyprland machine.
 
 ## Workstream B: Packaging and Docs Adaptation
 

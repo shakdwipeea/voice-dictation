@@ -1,7 +1,7 @@
 .PHONY: phase0-check phase0-test phase0-x11 phase0-nemotron-script phase0-nemotron \
 	phase1-test phase1-check phase1-selftest phase1-run phase1-run-nemotron \
 	phase1-bench-mock phase1-bench-nemotron phase2-test phase2-eval \
-	phase2-record phase2-transcribe phase2-eval-recorded test
+	phase2-record phase2-transcribe phase2-eval-recorded ui-test ui-demo test
 
 PYTHON ?= python3
 BUILD_DIR ?= build/phase0/nemotron
@@ -86,4 +86,19 @@ phase2-eval-recorded:
 		--corpus tests/corpus/phase2-recorded/corpus-recorded.json \
 		--output build/phase2/eval-recorded.json
 
-test: phase0-test phase1-test phase2-test
+ui-test:
+	$(PYTHON) -m unittest discover -s tests/ui -v
+
+# Drive the overlay by hand: shows the pill, animates the meter, hides.
+ui-demo:
+	printf '%s\n' \
+		'{"op":"show"}' \
+		'{"op":"recording","elapsed":0.5,"peak":0.3,"rms":0.04,"segments":1}' \
+		'{"op":"recording","elapsed":1.0,"peak":0.6,"rms":0.08,"segments":1}' \
+		'{"op":"status","text":"transcribing"}' \
+		'{"op":"hide"}' \
+		'{"op":"shutdown"}' \
+		| { while read -r line; do echo "$$line"; sleep 1; done; } \
+		| PYTHONPATH=src $(PYTHON) -m voice_dictation.ui_sidecar
+
+test: phase0-test phase1-test phase2-test ui-test

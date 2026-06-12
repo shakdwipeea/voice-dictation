@@ -164,11 +164,14 @@ Optional slow path after insertion
   repository and adopts its GTK4 layer-shell pill overlay —
   `src/voice_dictation/overlay.py`, Python/PyGObject, a recording dot plus
   thin level meter with a thread-safe interface — as the dictation bubble.
-  Layer-shell is a Wayland protocol, so the adopted overlay is the
-  Wayland-side status UI (Hyprland is its proven home); the X11
-  override-redirect bubble remains the X11 path. The Rust daemon drives the
-  overlay as a UI sidecar over stdin-JSON, the same managed-process pattern
-  as the ASR service.)*
+  Layer-shell is a Wayland-only protocol, so the overlay selects its
+  anchoring backend at runtime: gtk4-layer-shell where supported (Hyprland
+  is its proven home), EWMH window hints on X11 — always-above, sticky,
+  unfocusable notification window pinned top-center — so the same GTK pill
+  runs on both session types. The native X11 override-redirect bubble
+  remains as a no-GTK fallback. The Rust daemon drives the overlay as a UI
+  sidecar over stdin-JSON, the same managed-process pattern as the ASR
+  service.)*
 - **ASR service:** Python sidecar using NVIDIA NeMo cache-aware streaming
   inference
 - **Local text model:** llama.cpp-compatible local model behind a provider
@@ -565,14 +568,16 @@ Next steps, in order:
    96% polished vs 28% raw zero-edit rate with zero regressions; tune the
    correction gates from the recorded data (the `known-gap` case documents
    the first candidate).
-3. Integrate the adopted overlay (added June 12, 2026): write a thin entry
-   script that reads stdin-JSON and calls the overlay's thread-safe methods,
-   so `sunoto-daemon` can manage it through `sunoto-ipc` exactly like the
-   ASR sidecar — show/hide on session start/stop, stream the mic level.
-   Adapt `install.sh`, the systemd unit, and the README from the removed
-   Python daemon to `sunoto-daemon`. Note the overlay needs GTK4 +
-   gtk4-layer-shell under Wayland; it cannot be exercised on the current
-   X11 dev machine, where the override-redirect bubble remains the UI.
+3. Integrate the adopted overlay (added June 12, 2026): the stdin-JSON
+   driver (`src/voice_dictation/ui_sidecar.py`, `vd-overlay` entry point)
+   and the X11 EWMH anchoring backend are built and protocol-tested
+   (`make ui-test`; `make ui-demo` drives the pill by hand). Remaining:
+   wire `sunoto-daemon` to manage it through `sunoto-ipc` exactly like the
+   ASR sidecar — show/hide on session start/stop, stream the mic level —
+   and adapt `install.sh`, the systemd unit, and the README from the
+   removed Python daemon to `sunoto-daemon`. The X11 dev machine needs the
+   `gir1.2-gtk-4.0` system package installed for the GTK pill; until then
+   the override-redirect bubble remains the working UI there.
 4. Phase 3 product UX: install GTK4 development packages (`libgtk-4-dev` is
    not currently installed), then build the settings window, tray indicator,
    and setup flow; investigate warm-start reduction (currently 16–32 s
