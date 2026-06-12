@@ -1,8 +1,10 @@
 .venv-nemotron/
 build/
+target/
 __pycache__/
 *.pyc
 
-# Downloaded Phase 0 evaluation inputs.
-tests/corpus/hf-sample1.flac
-tests/corpus/hf-sample1.wav
+# Audio inputs and recorded corpora stay local; only text cases are tracked.
+tests/corpus/*.wav
+tests/corpus/*.flac
+tests/corpus/phase2-recorded/
