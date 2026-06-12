@@ -1,17 +1,18 @@
 """stdin-driven UI sidecar entry point.
 
 The Rust daemon spawns this process (managed by sunoto-ipc like the ASR
-sidecar) and streams newline-delimited JSON ops on stdin:
+sidecar) and streams newline-delimited JSON ops on stdin, using the same
+"type"-tagged protocol shape as the ASR sidecar:
 
-    {"op": "show"} / {"op": "hide"}
-    {"op": "recording", "elapsed": 1.2, "peak": 0.4, "rms": 0.05, "segments": 2}
-    {"op": "status", "text": "transcribing"}
-    {"op": "segment", "text": "..."} / {"op": "clear"}
-    {"op": "shutdown"}
+    {"type": "show"} / {"type": "hide"}
+    {"type": "recording", "elapsed_s": 1.2, "peak": 0.4, "rms": 0.05, "segments": 2}
+    {"type": "status", "text": "transcribing"}
+    {"type": "segment", "text": "..."} / {"type": "clear"}
+    {"type": "shutdown"}
 
-The sidecar emits {"event": "ready"} on stdout once the GTK window exists.
-stdin EOF is equivalent to shutdown, so an exiting daemon always takes the
-overlay down with it.
+The sidecar emits {"type": "ready", "backend": "overlay"} on stdout once the
+GTK window exists. stdin EOF is equivalent to shutdown, so an exiting daemon
+always takes the overlay down with it.
 
 GTK is imported only in main() — dispatch() stays importable (and testable)
 on machines without GTK4.
@@ -33,7 +34,7 @@ def dispatch(overlay, msg: dict) -> bool:
     Unknown ops and missing fields are logged and skipped, never fatal —
     a malformed UI frame must not kill the overlay mid-dictation.
     """
-    op = msg.get("op")
+    op = msg.get("type")
     try:
         if op == "show":
             overlay.show()
@@ -41,7 +42,7 @@ def dispatch(overlay, msg: dict) -> bool:
             overlay.hide()
         elif op == "recording":
             overlay.set_recording(
-                float(msg.get("elapsed", 0.0)),
+                float(msg.get("elapsed_s", 0.0)),
                 float(msg.get("peak", 0.0)),
                 float(msg.get("rms", 0.0)),
                 int(msg.get("segments", 0)),
@@ -91,7 +92,7 @@ def main() -> int:
 
     def announce_ready() -> None:
         overlay.wait_ready()
-        sys.stdout.write(json.dumps({"event": "ready"}) + "\n")
+        sys.stdout.write(json.dumps({"type": "ready", "backend": "overlay"}) + "\n")
         sys.stdout.flush()
 
     threading.Thread(target=announce_ready, daemon=True, name="ready").start()

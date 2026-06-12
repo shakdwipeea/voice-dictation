@@ -92,12 +92,12 @@ ui-test:
 # Drive the overlay by hand: shows the pill, animates the meter, hides.
 ui-demo:
 	printf '%s\n' \
-		'{"op":"show"}' \
-		'{"op":"recording","elapsed":0.5,"peak":0.3,"rms":0.04,"segments":1}' \
-		'{"op":"recording","elapsed":1.0,"peak":0.6,"rms":0.08,"segments":1}' \
-		'{"op":"status","text":"transcribing"}' \
-		'{"op":"hide"}' \
-		'{"op":"shutdown"}' \
+		'{"type":"show"}' \
+		'{"type":"recording","elapsed_s":0.5,"peak":0.3,"rms":0.04,"segments":1}' \
+		'{"type":"recording","elapsed_s":1.0,"peak":0.6,"rms":0.08,"segments":1}' \
+		'{"type":"status","text":"transcribing"}' \
+		'{"type":"hide"}' \
+		'{"type":"shutdown"}' \
 		| { while read -r line; do echo "$$line"; sleep 1; done; } \
 		| PYTHONPATH=src $(PYTHON) -m voice_dictation.ui_sidecar
 

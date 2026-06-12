@@ -25,6 +25,9 @@ pub struct Settings {
     /// Injecting Enter/Tab into a focused terminal can execute commands, so
     /// both are replaced with spaces unless explicitly allowed.
     pub allow_enter_and_tab: bool,
+    /// GTK4 pill overlay (UI sidecar). When it cannot start (e.g. GTK4 is
+    /// not installed) the daemon falls back to the native X11 bubble.
+    pub overlay_enabled: bool,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
     pub polish: PolishConfig,
@@ -42,6 +45,7 @@ impl Default for Settings {
             sidecar_python: None,
             sidecar_script: None,
             allow_enter_and_tab: false,
+            overlay_enabled: true,
             polish_enabled: true,
             polish: PolishConfig::default(),
         }
@@ -96,6 +100,20 @@ impl Settings {
         let mut args = vec![script];
         args.extend(extra_args);
         Ok((python, args))
+    }
+
+    /// Command and environment for the GTK overlay UI sidecar, which runs as
+    /// a Python module so its package-relative imports resolve.
+    pub fn overlay_command(&self) -> (String, Vec<String>, Vec<(String, String)>) {
+        let src = repo_root().join("src");
+        (
+            "python3".to_string(),
+            vec!["-m".to_string(), "voice_dictation.ui_sidecar".to_string()],
+            vec![(
+                "PYTHONPATH".to_string(),
+                src.to_string_lossy().into_owned(),
+            )],
+        )
     }
 }
 
@@ -203,6 +221,18 @@ mod tests {
         assert_eq!(args[1..], ["--profile-ms".to_string(), "80".to_string()]);
         settings.backend = "imaginary".to_string();
         assert!(settings.sidecar_command().is_err());
+    }
+
+    #[test]
+    fn overlay_command_runs_the_ui_module_with_pythonpath() {
+        let settings = Settings::default();
+        assert!(settings.overlay_enabled);
+        let (python, args, envs) = settings.overlay_command();
+        assert_eq!(python, "python3");
+        assert_eq!(args, ["-m", "voice_dictation.ui_sidecar"]);
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "PYTHONPATH");
+        assert!(envs[0].1.ends_with("/src"));
     }
 
     #[test]

@@ -14,6 +14,29 @@ pub enum SidecarRequest {
     CancelSession { session_id: u64 },
 }
 
+/// Commands for the GTK overlay UI sidecar (ui_sidecar.py). Same NDJSON
+/// transport as the ASR protocol; the overlay answers only with `Ready`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OverlayRequest {
+    Show,
+    Hide,
+    Recording {
+        elapsed_s: f64,
+        peak: f64,
+        rms: f64,
+        segments: u32,
+    },
+    Status {
+        text: String,
+    },
+    Segment {
+        text: String,
+    },
+    Clear,
+    Shutdown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SidecarEvent {
@@ -96,8 +119,20 @@ impl SidecarClient {
         args: &[&str],
         sink: impl FnMut(SidecarMessage) -> bool + Send + 'static,
     ) -> Result<Self, SidecarError> {
+        Self::spawn_with_env(program, args, &[], sink)
+    }
+
+    /// Like `spawn`, with extra environment variables (e.g. PYTHONPATH for
+    /// sidecars that run as Python modules).
+    pub fn spawn_with_env(
+        program: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+        sink: impl FnMut(SidecarMessage) -> bool + Send + 'static,
+    ) -> Result<Self, SidecarError> {
         let mut child = Command::new(program)
             .args(args)
+            .envs(envs.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
@@ -117,7 +152,7 @@ impl SidecarClient {
         })
     }
 
-    pub fn send(&mut self, request: &SidecarRequest) -> Result<(), SidecarError> {
+    pub fn send<Request: Serialize>(&mut self, request: &Request) -> Result<(), SidecarError> {
         serde_json::to_writer(&mut self.stdin, request)?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
@@ -213,6 +248,32 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<SidecarRequest>(&encoded).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn overlay_protocol_round_trip_is_typed_json() {
+        let request = OverlayRequest::Recording {
+            elapsed_s: 1.5,
+            peak: 0.4,
+            rms: 0.05,
+            segments: 1,
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"recording","elapsed_s":1.5,"peak":0.4,"rms":0.05,"segments":1}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::Status {
+                text: "transcribing".into()
+            })
+            .unwrap(),
+            r#"{"type":"status","text":"transcribing"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::Show).unwrap(),
+            r#"{"type":"show"}"#
         );
     }
 

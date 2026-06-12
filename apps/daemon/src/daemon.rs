@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionState};
-use sunoto_ipc::{SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
+use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_linux::x11::{BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error};
 use sunoto_polish::{polish, resolve_style};
 
@@ -45,6 +45,8 @@ pub enum DaemonEvent {
     Hotkey(HotkeyEvent),
     Audio(AudioEvent),
     Sidecar(SidecarMessage),
+    /// Messages from the GTK overlay UI sidecar (ready handshake, exit).
+    Overlay(SidecarMessage),
     Ui(UiReport),
     /// WM_CLASS (instance, class) of the window focused at shortcut release;
     /// reported by the UI thread right after CaptureFocus.
@@ -139,6 +141,97 @@ fn insert_with_fallback(
     }
 }
 
+/// Live overlay sidecar: requests go through a bounded channel serviced by a
+/// writer thread, so a wedged overlay drops UI frames instead of ever
+/// stalling the daemon loop. Dropping the handle ends the writer thread,
+/// which drops the client and kills the process.
+struct OverlayHandle {
+    tx: mpsc::SyncSender<OverlayRequest>,
+}
+
+fn spawn_overlay(
+    settings: &Settings,
+    events: Sender<DaemonEvent>,
+) -> Result<OverlayHandle, String> {
+    let (python, args, envs) = settings.overlay_command();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let env_refs: Vec<(&str, &str)> = envs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let mut client = SidecarClient::spawn_with_env(&python, &arg_refs, &env_refs, move |message| {
+        events.send(DaemonEvent::Overlay(message)).is_ok()
+    })
+    .map_err(|error| format!("cannot start overlay UI sidecar: {error}"))?;
+    let (tx, rx) = mpsc::sync_channel::<OverlayRequest>(64);
+    std::thread::spawn(move || {
+        while let Ok(request) = rx.recv() {
+            let stop = request == OverlayRequest::Shutdown;
+            if client.send(&request).is_err() || stop {
+                return;
+            }
+        }
+    });
+    Ok(OverlayHandle { tx })
+}
+
+/// Status-UI front-end: prefers the GTK overlay sidecar when it is running
+/// and ready, otherwise the native X11 bubble. Insertion/clipboard/focus
+/// commands keep going to the UI thread directly; only the visuals route
+/// through here.
+struct UiFront {
+    bubble: Sender<UiCommand>,
+    overlay: Option<OverlayHandle>,
+    overlay_ready: bool,
+}
+
+impl UiFront {
+    fn overlay_active(&self) -> bool {
+        self.overlay.is_some() && self.overlay_ready
+    }
+
+    fn overlay_send(&self, request: OverlayRequest) {
+        if let Some(handle) = self.overlay.as_ref() {
+            // try_send: dropping a UI frame beats blocking the event loop.
+            let _ = handle.tx.try_send(request);
+        }
+    }
+
+    fn show(&self, kind: BubbleKind, text: &str) {
+        if self.overlay_active() {
+            self.overlay_send(OverlayRequest::Show);
+            // While recording, the pill's dot and meter say it all; text
+            // only appears for transcribing/partial/error states.
+            let status = if matches!(kind, BubbleKind::Recording) && text == "recording..." {
+                String::new()
+            } else {
+                text.to_string()
+            };
+            self.overlay_send(OverlayRequest::Status { text: status });
+        } else {
+            let _ = self
+                .bubble
+                .send(UiCommand::ShowBubble(kind, text.to_string()));
+        }
+    }
+
+    fn hide(&self) {
+        self.overlay_send(OverlayRequest::Hide);
+        let _ = self.bubble.send(UiCommand::HideBubble);
+    }
+
+    fn level(&self, elapsed_s: f64, peak: f64, rms: f64) {
+        if self.overlay_active() {
+            self.overlay_send(OverlayRequest::Recording {
+                elapsed_s,
+                peak,
+                rms,
+                segments: 0,
+            });
+        }
+    }
+}
+
 fn spawn_sidecar(
     settings: &Settings,
     events: Sender<DaemonEvent>,
@@ -210,6 +303,23 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let capture_stop = Arc::new(AtomicBool::new(false));
     let capture_handle = spawn_capture_thread(&settings, events_tx.clone(), Arc::clone(&capture_stop))?;
 
+    // Status UI: GTK overlay sidecar when enabled and startable, X11 bubble
+    // otherwise. The overlay is cosmetic — any failure degrades, never aborts.
+    let mut ui = UiFront {
+        bubble: ui_tx.clone(),
+        overlay: None,
+        overlay_ready: false,
+    };
+    let mut overlay_ever_ready = false;
+    let mut overlay_respawn_at: Option<Instant> = None;
+    let mut overlay_backoff = SIDECAR_BACKOFF_START;
+    if settings.overlay_enabled {
+        match spawn_overlay(&settings, events_tx.clone()) {
+            Ok(handle) => ui.overlay = Some(handle),
+            Err(error) => logging::warn(&format!("{error}; using the native X11 bubble")),
+        }
+    }
+
     let mut sidecar = Some(spawn_sidecar(&settings, events_tx.clone())?);
     logging::info(&format!(
         "Sunoto daemon starting: backend={}, profile={}ms, shortcut={}. Wait for the ASR sidecar ready message; Ctrl+C exits.",
@@ -233,15 +343,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             Ok(DaemonEvent::Hotkey(HotkeyEvent::Pressed)) => {
                 if !sidecar_ready {
                     logging::warn("push-to-talk ignored while ASR sidecar is loading");
-                    show_error(&ui_tx, "ASR still loading...", &mut bubble_hide_at);
+                    show_error(&ui, "ASR still loading...", &mut bubble_hide_at);
                     continue;
                 }
                 if let SessionAction::Started { session_id } = machine.press() {
                     logging::info(&format!("session {session_id}: recording"));
-                    let _ = ui_tx.send(UiCommand::ShowBubble(
-                        BubbleKind::Recording,
-                        "recording...".into(),
-                    ));
+                    ui.show(BubbleKind::Recording, "recording...");
                     bubble_hide_at = None;
                     let preroll_samples = preroll.snapshot();
                     preroll.clear();
@@ -266,7 +373,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 &mut sidecar,
                                 &mut respawn_at,
                                 &mut respawn_backoff,
-                                &ui_tx,
+                                &ui,
                                 &mut bubble_hide_at,
                                 &mut timing,
                                 &mut transcribe_deadline,
@@ -275,7 +382,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         }
                     } else {
                         machine.fail("ASR sidecar is not running");
-                        show_error(&ui_tx, "ASR backend restarting...", &mut bubble_hide_at);
+                        show_error(&ui, "ASR backend restarting...", &mut bubble_hide_at);
                     }
                 }
             }
@@ -300,10 +407,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     // Focus is captured at release: that window is where the
                     // user expects the dictated text to land.
                     let _ = ui_tx.send(UiCommand::CaptureFocus);
-                    let _ = ui_tx.send(UiCommand::ShowBubble(
-                        BubbleKind::Transcribing,
-                        "transcribing...".into(),
-                    ));
+                    ui.show(BubbleKind::Transcribing, "transcribing...");
                     if let Some(client) = sidecar.as_mut() {
                         if let Err(error) = client.send(&SidecarRequest::FinishSession { session_id }) {
                             handle_sidecar_loss(
@@ -312,7 +416,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 &mut sidecar,
                                 &mut respawn_at,
                                 &mut respawn_backoff,
-                                &ui_tx,
+                                &ui,
                                 &mut bubble_hide_at,
                                 &mut timing,
                                 &mut transcribe_deadline,
@@ -328,6 +432,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     if let Some(stats) = audio_stats.as_mut() {
                         stats.observe(&samples);
                     }
+                    if ui.overlay_active() {
+                        let (peak, rms) = frame_levels(&samples);
+                        let elapsed_s = audio_stats
+                            .as_ref()
+                            .map(|stats| stats.samples as f64 / (SAMPLES_PER_MS as f64 * 1000.0))
+                            .unwrap_or(0.0);
+                        ui.level(elapsed_s, peak, rms);
+                    }
                     if let Some(client) = sidecar.as_mut() {
                         if let Err(error) = client.send(&SidecarRequest::AudioChunk {
                             session_id,
@@ -339,7 +451,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 &mut sidecar,
                                 &mut respawn_at,
                                 &mut respawn_backoff,
-                                &ui_tx,
+                                &ui,
                                 &mut bubble_hide_at,
                                 &mut timing,
                                 &mut transcribe_deadline,
@@ -393,7 +505,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             .into_iter()
                             .rev()
                             .collect();
-                        let _ = ui_tx.send(UiCommand::ShowBubble(kind, tail));
+                        ui.show(kind, &tail);
                     }
                 }
                 SidecarEvent::Final { session_id, text } => {
@@ -456,7 +568,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             sanitize_for_insertion(&output, settings.allow_enter_and_tab);
                         if sanitized.is_empty() {
                             logging::info(&format!("session {session_id}: empty result"));
-                            let _ = ui_tx.send(UiCommand::HideBubble);
+                            ui.hide();
                         } else {
                             let _ = ui_tx.send(UiCommand::Insert {
                                 session_id,
@@ -471,7 +583,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     } else if session_id.is_none() || session_id == machine.current_session() {
                         if let SessionAction::Failed { message } = machine.fail(message) {
                             logging::error(&format!("sidecar error: {message}"));
-                            show_error(&ui_tx, &message, &mut bubble_hide_at);
+                            show_error(&ui, &message, &mut bubble_hide_at);
                         }
                         timing = None;
                         transcribe_deadline = None;
@@ -493,12 +605,43 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     &mut sidecar,
                     &mut respawn_at,
                     &mut respawn_backoff,
-                    &ui_tx,
+                    &ui,
                     &mut bubble_hide_at,
                     &mut timing,
                     &mut transcribe_deadline,
                     &mut sidecar_ready,
                 );
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::Ready { backend }))) => {
+                ui.overlay_ready = true;
+                overlay_ever_ready = true;
+                overlay_backoff = SIDECAR_BACKOFF_START;
+                logging::info(&format!("overlay UI ready ({backend})"));
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(event))) => {
+                logging::warn(&format!("unexpected overlay event: {event:?}"));
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Garbage { line })) => {
+                logging::warn(&format!("ignored non-protocol overlay output: {line}"));
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Closed)) => {
+                if ui.overlay.is_none() {
+                    // Already torn down (shutdown path); nothing to do.
+                } else if overlay_ever_ready {
+                    logging::warn("overlay UI exited; respawning");
+                    ui.overlay = None;
+                    ui.overlay_ready = false;
+                    overlay_respawn_at = Some(Instant::now() + overlay_backoff);
+                    overlay_backoff = (overlay_backoff * 2).min(SIDECAR_BACKOFF_CAP);
+                } else {
+                    // Never came up — most likely GTK4 is not installed.
+                    // Permanent fallback beats a respawn loop of noise.
+                    logging::warn(
+                        "overlay UI exited before becoming ready (GTK4 missing?); using the native X11 bubble",
+                    );
+                    ui.overlay = None;
+                    ui.overlay_ready = false;
+                }
             }
             Ok(DaemonEvent::FocusClass(class)) => {
                 focused_class = class;
@@ -521,12 +664,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         ));
                         if outcome == InsertionOutcome::ClipboardOnly {
                             show_error(
-                                &ui_tx,
+                                &ui,
                                 "focus changed; result is in the clipboard",
                                 &mut bubble_hide_at,
                             );
                         } else {
-                            let _ = ui_tx.send(UiCommand::HideBubble);
+                            ui.hide();
                         }
                     }
                     Err(message) => {
@@ -534,7 +677,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             "session {}: insertion failed: {message}",
                             report.session_id
                         ));
-                        show_error(&ui_tx, "insertion failed", &mut bubble_hide_at);
+                        show_error(&ui, "insertion failed", &mut bubble_hide_at);
                     }
                 }
                 timing = None;
@@ -560,7 +703,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                     machine.fail("ASR timed out");
                     logging::error(&format!("session {session_id}: ASR timed out"));
-                    show_error(&ui_tx, "ASR timed out", &mut bubble_hide_at);
+                    show_error(&ui, "ASR timed out", &mut bubble_hide_at);
                     timing = None;
                     audio_stats = None;
                 }
@@ -569,7 +712,25 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         if let Some(hide_at) = bubble_hide_at {
             if Instant::now() >= hide_at {
                 bubble_hide_at = None;
-                let _ = ui_tx.send(UiCommand::HideBubble);
+                ui.hide();
+            }
+        }
+        if ui.overlay.is_none() {
+            if let Some(at) = overlay_respawn_at {
+                if Instant::now() >= at {
+                    overlay_respawn_at = None;
+                    match spawn_overlay(&settings, events_tx.clone()) {
+                        Ok(handle) => {
+                            logging::info("overlay UI respawned");
+                            ui.overlay = Some(handle);
+                        }
+                        Err(error) => {
+                            logging::warn(&format!("overlay respawn failed: {error}"));
+                            overlay_backoff = (overlay_backoff * 2).min(SIDECAR_BACKOFF_CAP);
+                            overlay_respawn_at = Some(Instant::now() + overlay_backoff);
+                        }
+                    }
+                }
             }
         }
         if sidecar.is_none() {
@@ -600,6 +761,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             let _ = client.send(&SidecarRequest::CancelSession { session_id });
         }
     }
+    ui.overlay_send(OverlayRequest::Shutdown);
+    ui.overlay = None;
     let _ = ui_tx.send(UiCommand::Shutdown);
     hotkey_stop.store(true, Ordering::SeqCst);
     capture_stop.store(true, Ordering::SeqCst);
@@ -613,12 +776,25 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn show_error(ui_tx: &Sender<UiCommand>, message: &str, bubble_hide_at: &mut Option<Instant>) {
-    let _ = ui_tx.send(UiCommand::ShowBubble(
-        BubbleKind::Error,
-        message.to_string(),
-    ));
+fn show_error(ui: &UiFront, message: &str, bubble_hide_at: &mut Option<Instant>) {
+    ui.show(BubbleKind::Error, message);
     *bubble_hide_at = Some(Instant::now() + ERROR_BUBBLE_VISIBLE);
+}
+
+/// Per-frame meter levels, normalized to 0..1 for the overlay.
+fn frame_levels(samples: &[i16]) -> (f64, f64) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut peak = 0u16;
+    let mut sum_squares = 0.0f64;
+    for &sample in samples {
+        peak = peak.max(sample.unsigned_abs());
+        let sample_f64 = f64::from(sample);
+        sum_squares += sample_f64 * sample_f64;
+    }
+    let rms = (sum_squares / samples.len() as f64).sqrt();
+    (f64::from(peak) / 32768.0, rms / 32768.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -628,7 +804,7 @@ fn handle_sidecar_loss(
     sidecar: &mut Option<SidecarClient>,
     respawn_at: &mut Option<Instant>,
     respawn_backoff: &mut Duration,
-    ui_tx: &Sender<UiCommand>,
+    ui: &UiFront,
     bubble_hide_at: &mut Option<Instant>,
     timing: &mut Option<SessionTiming>,
     transcribe_deadline: &mut Option<Instant>,
@@ -641,7 +817,7 @@ fn handle_sidecar_loss(
     *sidecar = None;
     *sidecar_ready = false;
     if let SessionAction::Failed { .. } = machine.fail(reason) {
-        show_error(ui_tx, "ASR backend lost; restarting", bubble_hide_at);
+        show_error(ui, "ASR backend lost; restarting", bubble_hide_at);
     }
     *timing = None;
     *transcribe_deadline = None;

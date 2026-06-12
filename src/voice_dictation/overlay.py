@@ -102,9 +102,14 @@ CSS = b"""
   border-radius: 99px;
   border: none;
 }
-.vd-meter highlight {
-  background: #e5e5e5;
+.vd-meter block.filled {
+  background-color: #e5e5e5;
   border-radius: 99px;
+  border: none;
+}
+.vd-status {
+  color: #d4d4d4;
+  font-size: 12px;
 }
 """
 
@@ -118,6 +123,7 @@ class Overlay:
         self._root: Optional[Gtk.Box] = None
         self._dot_label: Optional[Gtk.Label] = None
         self._meter: Optional[Gtk.LevelBar] = None
+        self._status_label: Optional[Gtk.Label] = None
         self._x11: Optional[_X11Anchor] = None
         self._visible = False
         self._ready_evt = threading.Event()
@@ -173,6 +179,15 @@ class Overlay:
         self._meter.set_valign(Gtk.Align.CENTER)
         root.append(self._meter)
 
+        from gi.repository import Pango
+
+        self._status_label = Gtk.Label(label="")
+        self._status_label.add_css_class("vd-status")
+        self._status_label.set_ellipsize(Pango.EllipsizeMode.START)
+        self._status_label.set_max_width_chars(36)
+        self._status_label.set_visible(False)
+        root.append(self._status_label)
+
         self.window.set_child(root)
         if not _LAYER_SHELL:
             try:
@@ -193,7 +208,7 @@ class Overlay:
         GLib.idle_add(self._do_set_recording, elapsed_s, peak, rms, segment_count)
 
     def set_status(self, status: str) -> None:
-        pass
+        GLib.idle_add(self._do_set_status, status)
 
     def add_segment(self, text: str) -> None:
         pass
@@ -231,6 +246,15 @@ class Overlay:
                 self._dot_label.add_css_class("vd-live")
             else:
                 self._dot_label.remove_css_class("vd-live")
+        return False
+
+    def _do_set_status(self, status: str) -> bool:
+        if self._status_label is not None:
+            self._status_label.set_label(status)
+            self._status_label.set_visible(bool(status))
+            if self._x11 is not None and self._visible:
+                # Label growth changes the pill width; keep it centered.
+                GLib.idle_add(self._x11.place)
         return False
 
     def _do_shutdown(self) -> bool:

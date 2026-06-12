@@ -28,12 +28,17 @@ The overlay is currently orphaned — its upstream Python daemon was removed.
 Wire it to `sunoto-daemon` using the same managed-sidecar pattern as the ASR
 service (`sunoto-ipc`: spawn, NDJSON over stdin/stdout, restart with backoff).
 
-*(Status June 12, 2026: A1 and the X11 anchoring are DONE — the overlay
-selects layer-shell or an EWMH X11 backend at runtime (python-xlib:
-notification window type, ABOVE/STICKY/SKIP states, input-hint off, pinned
-top-center), so it runs on the X11 dev machine too once `gir1.2-gtk-4.0` is
-installed. `make ui-test` covers the protocol; `make ui-demo` drives the
-pill by hand. A2/A3 daemon wiring remains.)*
+*(Status June 12, 2026: Workstream A is DONE and live-tested end to end on
+the X11 dev machine. The overlay selects layer-shell or an EWMH X11 backend
+at runtime; the daemon spawns `python3 -m voice_dictation.ui_sidecar` when
+`overlay_enabled` (default true), routes all status visuals through a
+`UiFront` that falls back to the native X11 bubble when the overlay is
+absent, streams per-frame meter levels through a bounded channel (a wedged
+overlay drops frames, never stalls the loop), respawns it with backoff if
+it dies after becoming ready, and permanently falls back if it never comes
+up (e.g. GTK4 missing). Verified live: pill shows with live mic meter
+during dictation, hides on insertion, release-to-insertion stayed at 2–3
+ms, kill-respawn works, clean shutdown leaves no orphans.)*
 
 1. **Driver entry point** (`src/voice_dictation/ui_sidecar.py`): runs the GTK
    main loop on the main thread (`build_and_run()` blocks, as required), and
