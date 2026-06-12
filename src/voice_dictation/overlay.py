@@ -133,6 +133,15 @@ class _X11Anchor:
         self._dpy.flush()
         return False
 
+    def park(self) -> bool:
+        """Hide by moving far off-screen. The window stays mapped (no WM
+        focus decisions) and this raw X move works unconditionally —
+        unlike GTK toplevel opacity, which silently failed to repaint this
+        anchored window in the field."""
+        self._xwin.configure(x=-16384, y=-16384)
+        self._dpy.flush()
+        return False
+
 CSS = b"""
 .vd-root {
   background: rgba(10, 10, 12, 0.82);
@@ -252,14 +261,13 @@ class Overlay:
             except Exception:  # noqa: BLE001
                 log.exception("X11 anchoring unavailable; overlay unmanaged")
         if self._x11 is not None:
-            # Map once, invisibly, and never unmap: every map is a fresh
-            # WM focus decision, and one of them WILL eventually hand the
-            # pill keyboard focus mid-dictation (seen in the field).
-            # Visibility is opacity-based from here on; the empty input
-            # shape keeps the invisible window click-through.
-            self.window.set_opacity(0.0)
+            # Map once, parked off-screen, and never unmap: every map is a
+            # fresh WM focus decision, and one of them WILL eventually hand
+            # the pill keyboard focus mid-dictation (seen in the field).
+            # Visibility is position-based from here on (place/park); the
+            # empty input shape keeps the parked window click-through.
             self.window.set_visible(True)
-            GLib.idle_add(self._x11.place)
+            GLib.idle_add(self._x11.park)
         self._hold_id = app.hold()
         self._ready_evt.set()
 
@@ -287,13 +295,13 @@ class Overlay:
 
     # ---- GTK-thread implementations ----
     def _do_show(self) -> bool:
+        log.info("show: window=%s visible=%s", self.window is not None, self._visible)
         if self.window is not None and not self._visible:
             if self._x11 is not None:
-                # Already mapped; just become visible. No map request means
-                # no WM focus decision, so focus can never leave the window
-                # the user is dictating into.
-                self.window.set_opacity(1.0)
-                GLib.idle_add(self._x11.place)
+                # Already mapped, parked off-screen; move it into view. No
+                # map request means no WM focus decision, so focus cannot
+                # leave the window the user is dictating into.
+                self._x11.place()
             else:
                 # set_visible, NOT present(): present() requests activation,
                 # which would steal keyboard focus.
@@ -302,9 +310,10 @@ class Overlay:
         return False
 
     def _do_hide(self) -> bool:
+        log.info("hide: window=%s visible=%s", self.window is not None, self._visible)
         if self.window is not None and self._visible:
             if self._x11 is not None:
-                self.window.set_opacity(0.0)
+                self._x11.park()
             else:
                 self.window.set_visible(False)
             self._visible = False
