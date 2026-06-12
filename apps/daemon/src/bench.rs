@@ -168,8 +168,7 @@ pub fn run(settings: Settings, args: BenchArgs) -> Result<(), Box<dyn Error>> {
         .iter()
         .filter_map(|run| run.time_to_first_partial_ms)
         .collect();
-    let mut release_to_final: Vec<u128> =
-        runs.iter().map(|run| run.release_to_final_ms).collect();
+    let mut release_to_final: Vec<u128> = runs.iter().map(|run| run.release_to_final_ms).collect();
     let mut insertion: Vec<u128> = runs.iter().map(|run| run.insertion_ms).collect();
     let mut total: Vec<u128> = runs.iter().map(|run| run.release_to_insertion_ms).collect();
 
@@ -239,10 +238,10 @@ fn drain_partials(
             session_id: event_session,
             ..
         }) = message
+            && event_session == session_id
+            && first_partial.is_none()
         {
-            if event_session == session_id && first_partial.is_none() {
-                *first_partial = Some(Instant::now());
-            }
+            *first_partial = Some(Instant::now());
         }
     }
 }
@@ -282,8 +281,8 @@ fn wait_for_final(
 /// Minimal RIFF/WAVE reader for the only format the pipeline uses:
 /// 16 kHz mono 16-bit PCM.
 fn read_wav_mono_16k(path: &Path) -> Result<Vec<i16>, Box<dyn Error>> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     parse_wav_mono_16k(&bytes).map_err(|error| format!("{}: {error}", path.display()).into())
 }
 

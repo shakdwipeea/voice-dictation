@@ -5,6 +5,8 @@ mod logging;
 mod settings;
 
 use std::error::Error;
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -20,6 +22,7 @@ Commands:
   check                     verify X11, XTEST, shortcut, and the mock sidecar
   selftest                  run X11 insertion, push-to-talk, clipboard self-tests
   insert TEXT               type TEXT at the focused cursor
+  trigger press|release     send a push-to-talk edge to the running daemon
   run                       run the dictation daemon
   bench [OPTIONS]           measure release-to-insertion latency percentiles
   eval [OPTIONS]            measure the pipeline's zero-edit rate on a corpus
@@ -29,6 +32,8 @@ Commands:
 Common options:
   --config PATH             settings file (default ~/.config/sunoto/config.json)
   --backend mock|nemotron   override the configured ASR backend
+  --overlay-backend auto|x11|wayland
+                            override the GTK overlay backend
   --profile-ms N            override the streaming profile (80|160|560|1120)
 
 Bench options:
@@ -76,6 +81,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
                 Err(error) => Err(error.into()),
             }
         }
+        "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
         "eval" => eval::run(parse_eval_args(rest)),
@@ -85,6 +91,20 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             Err(format!("unknown command: {command}").into())
         }
     }
+}
+
+fn trigger(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let command = match args.first().map(String::as_str) {
+        Some("press" | "start") => "press",
+        Some("release" | "stop") => "release",
+        _ => return Err("usage: sunoto-daemon trigger press|release".into()),
+    };
+    let path = settings::control_socket_path();
+    let mut stream = UnixStream::connect(&path)
+        .map_err(|error| format!("cannot connect to {}: {error}", path.display()))?;
+    stream.write_all(command.as_bytes())?;
+    stream.write_all(b"\n")?;
+    Ok(())
 }
 
 fn option_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -102,13 +122,14 @@ fn load_settings(args: &[String]) -> Result<Settings, Box<dyn Error>> {
     if let Some(backend) = option_value(args, "--backend") {
         loaded.backend = backend.to_string();
     }
+    if let Some(overlay_backend) = option_value(args, "--overlay-backend") {
+        loaded.overlay_backend = overlay_backend.to_string();
+    }
     if let Some(profile) = option_value(args, "--profile-ms") {
         loaded.profile_ms = profile.parse()?;
     }
-    match loaded.profile_ms {
-        80 | 160 | 560 | 1120 => Ok(loaded),
-        other => Err(format!("unsupported profile_ms {other}; use 80, 160, 560, or 1120").into()),
-    }
+    loaded.validate()?;
+    Ok(loaded)
 }
 
 fn parse_bench_args(args: &[String]) -> Result<bench::BenchArgs, Box<dyn Error>> {

@@ -59,7 +59,14 @@ impl Default for PolishConfig {
 
 fn default_app_styles() -> Vec<StyleRule> {
     [
-        "terminal", "xterm", "urxvt", "konsole", "alacritty", "kitty", "tilix", "terminator",
+        "terminal",
+        "xterm",
+        "urxvt",
+        "konsole",
+        "alacritty",
+        "kitty",
+        "tilix",
+        "terminator",
     ]
     .map(|class| StyleRule {
         class_contains: class.to_string(),
@@ -137,12 +144,7 @@ pub fn polish(raw: &str, config: &PolishConfig) -> PolishOutcome {
     PolishOutcome { text, trace }
 }
 
-fn apply_stage(
-    trace: &mut Vec<StageTrace>,
-    stage: &'static str,
-    text: &mut String,
-    next: String,
-) {
+fn apply_stage(trace: &mut Vec<StageTrace>, stage: &'static str, text: &mut String, next: String) {
     if *text != next {
         trace.push(StageTrace {
             stage,
@@ -310,7 +312,12 @@ fn shape_compatible(left: &str, right: &str) -> bool {
 
 /// L and R must look alike word-for-word ("next Tuesday" vs "next Wednesday");
 /// a single shared shape would let "it Tuesday" match "wednesday morning".
-fn clauses_shape_compatible(tokens: &[Token], left_start: usize, right_start: usize, len: usize) -> bool {
+fn clauses_shape_compatible(
+    tokens: &[Token],
+    left_start: usize,
+    right_start: usize,
+    len: usize,
+) -> bool {
     (0..len).all(|offset| {
         match (
             tokens[left_start + offset].word(),
@@ -326,7 +333,12 @@ fn equals_ignore_case(word: &str, expected: &str) -> bool {
     word.eq_ignore_ascii_case(expected)
 }
 
-const SWAP_MARKERS: [&[&str]; 4] = [&["actually"], &["i", "mean"], &["no", "wait"], &["wait", "no"]];
+const SWAP_MARKERS: [&[&str]; 4] = [
+    &["actually"],
+    &["i", "mean"],
+    &["no", "wait"],
+    &["wait", "no"],
+];
 const RESTART_MARKERS: [&[&str]; 2] = [&["scratch", "that"], &["strike", "that"]];
 const SWAP_CLAUSE_CAP: usize = 4;
 
@@ -391,10 +403,10 @@ fn apply_restart_marker(tokens: &[Token]) -> Option<Vec<Token>> {
         next.extend_from_slice(&tokens[..delete_from]);
         next.extend_from_slice(&tokens[delete_to..]);
         // The surviving clause now starts a sentence; restore capitalization.
-        if delete_from == 0 || next.get(delete_from - 1).is_some_and(Token::is_terminator) {
-            if let Some(Token::Word(word)) = next.get_mut(delete_from) {
-                *word = capitalize_first(word);
-            }
+        if (delete_from == 0 || next.get(delete_from - 1).is_some_and(Token::is_terminator))
+            && let Some(Token::Word(word)) = next.get_mut(delete_from)
+        {
+            *word = capitalize_first(word);
         }
         return Some(next);
     }
@@ -489,13 +501,11 @@ fn remove_fillers(text: &str, fillers: &[String]) -> String {
         });
         let Some(phrase) = matched else {
             let mut token = tokens[index].clone();
-            if capitalize_next {
-                if let Token::Word(word) = &mut token {
-                    let capitalized = capitalize_first(word);
-                    changed |= capitalized != *word;
-                    *word = capitalized;
-                    capitalize_next = false;
-                }
+            if capitalize_next && let Token::Word(word) = &mut token {
+                let capitalized = capitalize_first(word);
+                changed |= capitalized != *word;
+                *word = capitalized;
+                capitalize_next = false;
             }
             output.push(token);
             index += 1;
@@ -548,8 +558,7 @@ fn apply_dictionary(text: &str, entries: &[DictionaryEntry]) -> String {
                     .is_some_and(|word| word.eq_ignore_ascii_case(expected))
             });
             if matches {
-                changed |= tokens[index].word() != Some(entry.written.as_str())
-                    || spoken.len() > 1;
+                changed |= tokens[index].word() != Some(entry.written.as_str()) || spoken.len() > 1;
                 output.push(Token::Word(entry.written.clone()));
                 index += spoken.len();
             } else {
@@ -730,17 +739,17 @@ mod tests {
 
     #[test]
     fn fillers_do_not_match_inside_words() {
-        assert_eq!(run("my umbrella, Erica's hammer."), "My umbrella, Erica's hammer.");
+        assert_eq!(
+            run("my umbrella, Erica's hammer."),
+            "My umbrella, Erica's hammer."
+        );
     }
 
     #[test]
     fn multi_word_fillers_are_supported() {
         let mut config = defaults();
         config.fillers.push("you know".into());
-        assert_eq!(
-            polish("It's, you know, fine.", &config).text,
-            "It's fine."
-        );
+        assert_eq!(polish("It's, you know, fine.", &config).text, "It's fine.");
     }
 
     #[test]
@@ -758,10 +767,7 @@ mod tests {
             polish("I pushed to git hub for antash.", &config).text,
             "I pushed to GitHub for Antash."
         );
-        assert_eq!(
-            polish("Git Hub, git hub!", &config).text,
-            "GitHub, GitHub!"
-        );
+        assert_eq!(polish("Git Hub, git hub!", &config).text, "GitHub, GitHub!");
     }
 
     #[test]
@@ -771,7 +777,10 @@ mod tests {
             spoken: "cat".into(),
             written: "CAT".into(),
         });
-        assert_eq!(polish("concatenate cats.", &config).text, "Concatenate cats.");
+        assert_eq!(
+            polish("concatenate cats.", &config).text,
+            "Concatenate cats."
+        );
     }
 
     #[test]
@@ -799,15 +808,27 @@ mod tests {
         config.style = StyleProfile::Prose;
         assert_eq!(polish("hello there.", &config).text, "Hello there.");
         assert_eq!(polish("hello there", &config).text, "Hello there.");
-        assert_eq!(polish("how can you help me", &config).text, "How can you help me.");
+        assert_eq!(
+            polish("how can you help me", &config).text,
+            "How can you help me."
+        );
         assert_eq!(polish("can you send it", &config).text, "Can you send it.");
         assert_eq!(polish("send it now", &config).text, "Send it now.");
-        assert_eq!(polish("\"quoted words.\"", &config).text, "\"Quoted words.\"");
-        assert_eq!(polish("\"quoted words\"", &config).text, "\"Quoted words.\"");
+        assert_eq!(
+            polish("\"quoted words.\"", &config).text,
+            "\"Quoted words.\""
+        );
+        assert_eq!(
+            polish("\"quoted words\"", &config).text,
+            "\"Quoted words.\""
+        );
         assert_eq!(polish("already excited!", &config).text, "Already excited!");
         assert_eq!(polish("is this ready?", &config).text, "Is this ready?");
         assert_eq!(polish("keep this comma,", &config).text, "Keep this comma,");
-        assert_eq!(polish("unfinished thought...", &config).text, "Unfinished thought...");
+        assert_eq!(
+            polish("unfinished thought...", &config).text,
+            "Unfinished thought..."
+        );
         assert_eq!(polish("version 3.14", &config).text, "Version 3.14.");
         assert_eq!(
             polish("first sentence. second sentence", &config).text,
@@ -892,7 +913,9 @@ mod tests {
             "scratch that",
             "Scratch that.",
             "a, I mean",
-            "'''", "---", "\u{0000}\u{0007}",
+            "'''",
+            "---",
+            "\u{0000}\u{0007}",
         ];
         let config = defaults();
         for input in inputs {

@@ -68,7 +68,9 @@ pub enum SidecarMessage {
     Event(SidecarEvent),
     /// A stdout line that was not valid protocol JSON. Reported, not fatal:
     /// one stray library print must never take the daemon down.
-    Garbage { line: String },
+    Garbage {
+        line: String,
+    },
     /// The sidecar closed stdout (crash or clean exit); a restart is needed.
     Closed,
 }
@@ -317,12 +319,8 @@ mod tests {
 
     #[test]
     fn mock_sidecar_streams_partials_between_requests() {
-        let (mut client, rx) = spawn_mock(&[
-            "--final-text",
-            "hello world",
-            "--partial-every-chunks",
-            "1",
-        ]);
+        let (mut client, rx) =
+            spawn_mock(&["--final-text", "hello world", "--partial-every-chunks", "1"]);
         client.send(&SidecarRequest::Health).unwrap();
         assert_eq!(
             expect_event(&rx),
@@ -385,7 +383,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_closed, "reader thread must report Closed on sidecar exit");
+        assert!(
+            saw_closed,
+            "reader thread must report Closed on sidecar exit"
+        );
     }
 
     #[test]
@@ -412,7 +413,10 @@ mod tests {
                 backend: "mock".into()
             })
         );
-        assert_eq!(rx.recv_timeout(RECV_TIMEOUT).unwrap(), SidecarMessage::Closed);
+        assert_eq!(
+            rx.recv_timeout(RECV_TIMEOUT).unwrap(),
+            SidecarMessage::Closed
+        );
         let _ = client.send(&SidecarRequest::Health);
     }
 }

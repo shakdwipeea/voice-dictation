@@ -1,10 +1,15 @@
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum SessionState {
+    #[default]
     Idle,
-    Recording { session_id: u64 },
-    Transcribing { session_id: u64 },
+    Recording {
+        session_id: u64,
+    },
+    Transcribing {
+        session_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,12 +26,6 @@ pub enum SessionAction {
 pub struct SessionMachine {
     state: SessionState,
     next_session_id: u64,
-}
-
-impl Default for SessionState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 impl SessionMachine {

@@ -1,5 +1,9 @@
 use std::error::Error;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::raw::c_int;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -9,11 +13,13 @@ use std::time::{Duration, Instant};
 use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionState};
 use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
-use sunoto_linux::x11::{BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error};
+use sunoto_linux::x11::{
+    BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error,
+};
 use sunoto_polish::{polish, resolve_style};
 
 use crate::logging;
-use crate::settings::{Settings, sanitize_for_insertion};
+use crate::settings::{self, Settings, sanitize_for_insertion};
 
 const SAMPLES_PER_MS: usize = 16;
 const TICK: Duration = Duration::from_millis(50);
@@ -68,37 +74,277 @@ pub enum UiCommand {
     Shutdown,
 }
 
-/// UI thread: owns the X11 UI connection (insertion, clipboard, bubble) and
-/// continuously serves clipboard requests between commands.
-fn ui_thread(
-    commands: Receiver<UiCommand>,
-    events: Sender<DaemonEvent>,
-) {
-    let mut adapter = match UiAdapter::open() {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopBackend {
+    X11,
+    Wayland,
+}
+
+fn desktop_backend(settings: &Settings) -> DesktopBackend {
+    if settings.overlay_backend == "wayland"
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value == "wayland")
+        || std::env::var("WAYLAND_DISPLAY").is_ok()
+    {
+        DesktopBackend::Wayland
+    } else {
+        DesktopBackend::X11
+    }
+}
+
+struct FocusSnapshot {
+    token: Option<String>,
+    class: Option<(String, String)>,
+}
+
+enum UiBackend {
+    X11(UiAdapter),
+    Wayland(WaylandUiAdapter),
+}
+
+impl UiBackend {
+    fn open(backend: DesktopBackend) -> Result<Self, String> {
+        match backend {
+            DesktopBackend::X11 => UiAdapter::open()
+                .map(Self::X11)
+                .map_err(|error| format!("X11 UI unavailable: {error}")),
+            DesktopBackend::Wayland => WaylandUiAdapter::open().map(Self::Wayland),
+        }
+    }
+
+    fn capture_focus(&mut self) -> FocusSnapshot {
+        match self {
+            Self::X11(adapter) => {
+                let focus = adapter.focused_window();
+                FocusSnapshot {
+                    token: Some(focus.to_string()),
+                    class: adapter.window_class(focus),
+                }
+            }
+            Self::Wayland(adapter) => adapter.capture_focus(),
+        }
+    }
+
+    fn show_bubble(&mut self, kind: BubbleKind, text: &str) {
+        match self {
+            Self::X11(adapter) => adapter.bubble_show(kind, text),
+            Self::Wayland(_) => {
+                let _ = (kind, text);
+            }
+        }
+    }
+
+    fn hide_bubble(&mut self) {
+        match self {
+            Self::X11(adapter) => adapter.bubble_hide(),
+            Self::Wayland(_) => {}
+        }
+    }
+
+    fn insert(
+        &mut self,
+        focus_at_release: Option<String>,
+        text: &str,
+    ) -> Result<InsertionOutcome, String> {
+        match self {
+            Self::X11(adapter) => insert_x11(adapter, focus_at_release, text),
+            Self::Wayland(adapter) => adapter.insert(focus_at_release, text),
+        }
+    }
+
+    fn pump(&mut self) {
+        if let Self::X11(adapter) = self {
+            adapter.pump();
+        }
+    }
+}
+
+struct WaylandUiAdapter;
+
+impl WaylandUiAdapter {
+    fn open() -> Result<Self, String> {
+        require_program("hyprctl")?;
+        require_program("wtype")?;
+        require_program("wl-copy")?;
+        Ok(Self)
+    }
+
+    fn capture_focus(&self) -> FocusSnapshot {
+        match active_hyprland_window() {
+            Some(window) => FocusSnapshot {
+                token: Some(window.address),
+                class: window.class.map(|class| (class.clone(), class)),
+            },
+            None => FocusSnapshot {
+                token: None,
+                class: None,
+            },
+        }
+    }
+
+    fn insert(
+        &self,
+        focus_at_release: Option<String>,
+        text: &str,
+    ) -> Result<InsertionOutcome, String> {
+        let focus_now = active_hyprland_window();
+        if let Some(expected) = focus_at_release
+            && focus_now.as_ref().map(|window| window.address.as_str()) != Some(expected.as_str())
+        {
+            return self
+                .set_clipboard(text)
+                .map(|_| InsertionOutcome::ClipboardOnly);
+        }
+
+        self.set_clipboard(text)?;
+        let terminal = focus_now
+            .as_ref()
+            .and_then(|window| window.class.as_deref())
+            .is_some_and(is_terminal_class);
+        match self.paste_clipboard(terminal) {
+            Ok(()) => Ok(InsertionOutcome::Pasted),
+            Err(paste_error) => match self.type_direct(text) {
+                Ok(()) => Ok(InsertionOutcome::Typed),
+                Err(type_error) => {
+                    logging::warn(&format!(
+                        "Wayland paste failed ({paste_error}); direct typing failed ({type_error}); result left on clipboard"
+                    ));
+                    Ok(InsertionOutcome::ClipboardOnly)
+                }
+            },
+        }
+    }
+
+    fn paste_clipboard(&self, terminal: bool) -> Result<(), String> {
+        let mut command = Command::new("wtype");
+        if terminal {
+            command.args([
+                "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl",
+            ]);
+        } else {
+            command.args(["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
+        }
+        run_command(command, "wtype paste")
+    }
+
+    fn type_direct(&self, text: &str) -> Result<(), String> {
+        let mut command = Command::new("wtype");
+        command.arg("--").arg(text);
+        run_command(command, "wtype direct")
+    }
+
+    fn set_clipboard(&self, text: &str) -> Result<(), String> {
+        let mut child = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("cannot run wl-copy: {error}"))?;
+        let Some(mut stdin) = child.stdin.take() else {
+            return Err("wl-copy stdin unavailable".to_string());
+        };
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|error| format!("cannot write wl-copy input: {error}"))?;
+        drop(stdin);
+        let status = child
+            .wait()
+            .map_err(|error| format!("cannot wait for wl-copy: {error}"))?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("wl-copy exited with {status}"))
+    }
+}
+
+fn is_terminal_class(class: &str) -> bool {
+    let class = class.to_ascii_lowercase();
+    [
+        "terminal",
+        "ghostty",
+        "kitty",
+        "alacritty",
+        "foot",
+        "wezterm",
+        "xterm",
+        "urxvt",
+        "konsole",
+        "tilix",
+        "terminator",
+    ]
+    .iter()
+    .any(|needle| class.contains(needle))
+}
+
+fn run_command(mut command: Command, label: &str) -> Result<(), String> {
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot run {label}: {error}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("{label} exited with {status}"))
+}
+
+struct HyprlandWindow {
+    address: String,
+    class: Option<String>,
+}
+
+fn active_hyprland_window() -> Option<HyprlandWindow> {
+    let output = Command::new("hyprctl")
+        .args(["activewindow", "-j"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let address = payload.get("address")?.as_str()?.to_string();
+    if address.is_empty() || address == "0x0" {
+        return None;
+    }
+    let class = payload
+        .get("class")
+        .and_then(serde_json::Value::as_str)
+        .filter(|class| !class.is_empty())
+        .map(str::to_string);
+    Some(HyprlandWindow { address, class })
+}
+
+fn require_program(program: &str) -> Result<(), String> {
+    match Command::new(program)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(_) => Ok(()),
+        Err(error) => Err(format!("{program} unavailable: {error}")),
+    }
+}
+
+/// UI thread: owns insertion, clipboard, and fallback status-bubble operations.
+fn ui_thread(commands: Receiver<UiCommand>, events: Sender<DaemonEvent>, backend: DesktopBackend) {
+    let mut adapter = match UiBackend::open(backend) {
         Ok(adapter) => adapter,
         Err(error) => {
-            let _ = events.send(DaemonEvent::Fatal(format!("X11 UI unavailable: {error}")));
+            let _ = events.send(DaemonEvent::Fatal(error));
             return;
         }
     };
-    let mut focus_at_release: Option<u64> = None;
+    let mut focus_at_release: Option<String> = None;
     loop {
         match commands.recv_timeout(Duration::from_millis(25)) {
             Ok(UiCommand::CaptureFocus) => {
-                let focus = adapter.focused_window();
-                focus_at_release = Some(focus);
-                if events
-                    .send(DaemonEvent::FocusClass(adapter.window_class(focus)))
-                    .is_err()
-                {
+                let focus = adapter.capture_focus();
+                focus_at_release = focus.token;
+                if events.send(DaemonEvent::FocusClass(focus.class)).is_err() {
                     return;
                 }
             }
-            Ok(UiCommand::ShowBubble(kind, text)) => adapter.bubble_show(kind, &text),
-            Ok(UiCommand::HideBubble) => adapter.bubble_hide(),
+            Ok(UiCommand::ShowBubble(kind, text)) => adapter.show_bubble(kind, &text),
+            Ok(UiCommand::HideBubble) => adapter.hide_bubble(),
             Ok(UiCommand::Insert { session_id, text }) => {
                 let started = Instant::now();
-                let result = insert_with_fallback(&mut adapter, focus_at_release.take(), &text);
+                let result = adapter.insert(focus_at_release.take(), &text);
                 let report = UiReport {
                     session_id,
                     result,
@@ -115,21 +361,21 @@ fn ui_thread(
     }
 }
 
-fn insert_with_fallback(
+fn insert_x11(
     adapter: &mut UiAdapter,
-    focus_at_release: Option<u64>,
+    focus_at_release: Option<String>,
     text: &str,
 ) -> Result<InsertionOutcome, String> {
     let focus_now = adapter.focused_window();
-    if let Some(expected) = focus_at_release {
-        if expected != focus_now {
-            // The user moved on; typing into the new window would put text
-            // somewhere they did not dictate it. Park it on the clipboard.
-            return adapter
-                .set_clipboard(text)
-                .map(|_| InsertionOutcome::ClipboardOnly)
-                .map_err(|error| error.to_string());
-        }
+    if let Some(expected) = focus_at_release
+        && expected != focus_now.to_string()
+    {
+        // The user moved on; typing into the new window would put text
+        // somewhere they did not dictate it. Park it on the clipboard.
+        return adapter
+            .set_clipboard(text)
+            .map(|_| InsertionOutcome::ClipboardOnly)
+            .map_err(|error| error.to_string());
     }
     match adapter.insert_direct(text) {
         Ok(()) => Ok(InsertionOutcome::Typed),
@@ -287,21 +533,37 @@ impl SessionAudioStats {
 
 pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     install_signal_handlers();
-    let shortcut = Shortcut::parse(&settings.shortcut)?;
+    let backend = desktop_backend(&settings);
+    let shortcut = if backend == DesktopBackend::X11 {
+        Some(Shortcut::parse(&settings.shortcut)?)
+    } else {
+        None
+    };
     let (events_tx, events) = mpsc::channel::<DaemonEvent>();
 
-    // UI thread (X11 insertion/clipboard/bubble on its own connection).
+    // UI thread (insertion/clipboard/bubble on its own backend connection).
     let (ui_tx, ui_rx) = mpsc::channel::<UiCommand>();
     let ui_events = events_tx.clone();
-    let ui_handle = std::thread::spawn(move || ui_thread(ui_rx, ui_events));
+    let ui_handle = std::thread::spawn(move || ui_thread(ui_rx, ui_events, backend));
+
+    // Control socket for compositor/user-triggered push-to-talk edges.
+    let control_stop = Arc::new(AtomicBool::new(false));
+    let control_handle = spawn_control_thread(events_tx.clone(), Arc::clone(&control_stop))?;
 
     // Hotkey thread (second X11 connection, blocking with poll timeouts).
     let hotkey_stop = Arc::new(AtomicBool::new(false));
-    let hotkey_handle = spawn_hotkey_thread(shortcut, events_tx.clone(), Arc::clone(&hotkey_stop));
+    let hotkey_handle = shortcut
+        .map(|shortcut| spawn_hotkey_thread(shortcut, events_tx.clone(), Arc::clone(&hotkey_stop)));
+    if backend == DesktopBackend::Wayland {
+        logging::info(
+            "Wayland session detected; use compositor bindings to call `sunoto-daemon trigger press|release`",
+        );
+    }
 
     // Persistent microphone capture bridged into the event channel.
     let capture_stop = Arc::new(AtomicBool::new(false));
-    let capture_handle = spawn_capture_thread(&settings, events_tx.clone(), Arc::clone(&capture_stop))?;
+    let capture_handle =
+        spawn_capture_thread(&settings, events_tx.clone(), Arc::clone(&capture_stop))?;
 
     // Status UI: GTK overlay sidecar when enabled and startable, X11 bubble
     // otherwise. The overlay is cosmetic — any failure degrades, never aborts.
@@ -322,7 +584,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     let mut sidecar = Some(spawn_sidecar(&settings, events_tx.clone())?);
     logging::info(&format!(
-        "Sunoto daemon starting: backend={}, profile={}ms, shortcut={}. Wait for the ASR sidecar ready message; Ctrl+C exits.",
+        "Sunoto daemon starting: backend={}, desktop={backend:?}, profile={}ms, shortcut={}. Wait for the ASR sidecar ready message; Ctrl+C exits.",
         settings.backend, settings.profile_ms, settings.shortcut
     ));
 
@@ -408,21 +670,23 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     // user expects the dictated text to land.
                     let _ = ui_tx.send(UiCommand::CaptureFocus);
                     ui.show(BubbleKind::Transcribing, "transcribing...");
-                    if let Some(client) = sidecar.as_mut() {
-                        if let Err(error) = client.send(&SidecarRequest::FinishSession { session_id }) {
-                            handle_sidecar_loss(
-                                &format!("sidecar write failed: {error}"),
-                                &mut machine,
-                                &mut sidecar,
-                                &mut respawn_at,
-                                &mut respawn_backoff,
-                                &ui,
-                                &mut bubble_hide_at,
-                                &mut timing,
-                                &mut transcribe_deadline,
-                                &mut sidecar_ready,
-                            );
-                        }
+                    let request = SidecarRequest::FinishSession { session_id };
+                    let send_error = sidecar
+                        .as_mut()
+                        .and_then(|client| client.send(&request).err());
+                    if let Some(error) = send_error {
+                        handle_sidecar_loss(
+                            &format!("sidecar write failed: {error}"),
+                            &mut machine,
+                            &mut sidecar,
+                            &mut respawn_at,
+                            &mut respawn_backoff,
+                            &ui,
+                            &mut bubble_hide_at,
+                            &mut timing,
+                            &mut transcribe_deadline,
+                            &mut sidecar_ready,
+                        );
                     }
                 }
             }
@@ -440,24 +704,26 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             .unwrap_or(0.0);
                         ui.level(elapsed_s, peak, rms);
                     }
-                    if let Some(client) = sidecar.as_mut() {
-                        if let Err(error) = client.send(&SidecarRequest::AudioChunk {
-                            session_id,
-                            samples,
-                        }) {
-                            handle_sidecar_loss(
-                                &format!("sidecar write failed: {error}"),
-                                &mut machine,
-                                &mut sidecar,
-                                &mut respawn_at,
-                                &mut respawn_backoff,
-                                &ui,
-                                &mut bubble_hide_at,
-                                &mut timing,
-                                &mut transcribe_deadline,
-                                &mut sidecar_ready,
-                            );
-                        }
+                    let request = SidecarRequest::AudioChunk {
+                        session_id,
+                        samples,
+                    };
+                    let send_error = sidecar
+                        .as_mut()
+                        .and_then(|client| client.send(&request).err());
+                    if let Some(error) = send_error {
+                        handle_sidecar_loss(
+                            &format!("sidecar write failed: {error}"),
+                            &mut machine,
+                            &mut sidecar,
+                            &mut respawn_at,
+                            &mut respawn_backoff,
+                            &ui,
+                            &mut bubble_hide_at,
+                            &mut timing,
+                            &mut transcribe_deadline,
+                            &mut sidecar_ready,
+                        );
                     }
                 }
                 _ => preroll.push(&samples),
@@ -577,7 +843,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
-                SidecarEvent::Error { session_id, message } => {
+                SidecarEvent::Error {
+                    session_id,
+                    message,
+                } => {
                     if message == "superseded" {
                         logging::warn(&format!("sidecar superseded session {session_id:?}"));
                     } else if session_id.is_none() || session_id == machine.current_session() {
@@ -704,60 +973,58 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
 
         // Watchdogs and deferred work, evaluated on every loop pass.
-        if let Some(deadline) = transcribe_deadline {
-            if Instant::now() >= deadline {
-                transcribe_deadline = None;
-                if let SessionState::Transcribing { session_id } = *machine.state() {
-                    if let Some(client) = sidecar.as_mut() {
-                        let _ = client.send(&SidecarRequest::CancelSession { session_id });
-                    }
-                    machine.fail("ASR timed out");
-                    logging::error(&format!("session {session_id}: ASR timed out"));
-                    show_error(&ui, "ASR timed out", &mut bubble_hide_at);
-                    timing = None;
-                    audio_stats = None;
+        if let Some(deadline) = transcribe_deadline
+            && Instant::now() >= deadline
+        {
+            transcribe_deadline = None;
+            if let SessionState::Transcribing { session_id } = *machine.state() {
+                if let Some(client) = sidecar.as_mut() {
+                    let _ = client.send(&SidecarRequest::CancelSession { session_id });
+                }
+                machine.fail("ASR timed out");
+                logging::error(&format!("session {session_id}: ASR timed out"));
+                show_error(&ui, "ASR timed out", &mut bubble_hide_at);
+                timing = None;
+                audio_stats = None;
+            }
+        }
+        if let Some(hide_at) = bubble_hide_at
+            && Instant::now() >= hide_at
+        {
+            bubble_hide_at = None;
+            ui.hide();
+        }
+        if ui.overlay.is_none()
+            && let Some(at) = overlay_respawn_at
+            && Instant::now() >= at
+        {
+            overlay_respawn_at = None;
+            match spawn_overlay(&settings, events_tx.clone()) {
+                Ok(handle) => {
+                    logging::info("overlay UI respawned");
+                    ui.overlay = Some(handle);
+                }
+                Err(error) => {
+                    logging::warn(&format!("overlay respawn failed: {error}"));
+                    overlay_backoff = (overlay_backoff * 2).min(SIDECAR_BACKOFF_CAP);
+                    overlay_respawn_at = Some(Instant::now() + overlay_backoff);
                 }
             }
         }
-        if let Some(hide_at) = bubble_hide_at {
-            if Instant::now() >= hide_at {
-                bubble_hide_at = None;
-                ui.hide();
-            }
-        }
-        if ui.overlay.is_none() {
-            if let Some(at) = overlay_respawn_at {
-                if Instant::now() >= at {
-                    overlay_respawn_at = None;
-                    match spawn_overlay(&settings, events_tx.clone()) {
-                        Ok(handle) => {
-                            logging::info("overlay UI respawned");
-                            ui.overlay = Some(handle);
-                        }
-                        Err(error) => {
-                            logging::warn(&format!("overlay respawn failed: {error}"));
-                            overlay_backoff = (overlay_backoff * 2).min(SIDECAR_BACKOFF_CAP);
-                            overlay_respawn_at = Some(Instant::now() + overlay_backoff);
-                        }
-                    }
+        if sidecar.is_none()
+            && let Some(at) = respawn_at
+            && Instant::now() >= at
+        {
+            respawn_at = None;
+            match spawn_sidecar(&settings, events_tx.clone()) {
+                Ok(client) => {
+                    logging::info("ASR sidecar respawned");
+                    sidecar = Some(client);
                 }
-            }
-        }
-        if sidecar.is_none() {
-            if let Some(at) = respawn_at {
-                if Instant::now() >= at {
-                    respawn_at = None;
-                    match spawn_sidecar(&settings, events_tx.clone()) {
-                        Ok(client) => {
-                            logging::info("ASR sidecar respawned");
-                            sidecar = Some(client);
-                        }
-                        Err(error) => {
-                            logging::error(&format!("sidecar respawn failed: {error}"));
-                            respawn_backoff = (respawn_backoff * 2).min(SIDECAR_BACKOFF_CAP);
-                            respawn_at = Some(Instant::now() + respawn_backoff);
-                        }
-                    }
+                Err(error) => {
+                    logging::error(&format!("sidecar respawn failed: {error}"));
+                    respawn_backoff = (respawn_backoff * 2).min(SIDECAR_BACKOFF_CAP);
+                    respawn_at = Some(Instant::now() + respawn_backoff);
                 }
             }
         }
@@ -766,19 +1033,22 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     logging::info("shutting down");
     if let SessionState::Recording { session_id } | SessionState::Transcribing { session_id } =
         *machine.state()
+        && let Some(client) = sidecar.as_mut()
     {
-        if let Some(client) = sidecar.as_mut() {
-            let _ = client.send(&SidecarRequest::CancelSession { session_id });
-        }
+        let _ = client.send(&SidecarRequest::CancelSession { session_id });
     }
     ui.overlay_send(OverlayRequest::Shutdown);
     ui.overlay = None;
     let _ = ui_tx.send(UiCommand::Shutdown);
+    control_stop.store(true, Ordering::SeqCst);
     hotkey_stop.store(true, Ordering::SeqCst);
     capture_stop.store(true, Ordering::SeqCst);
     drop(sidecar);
     let _ = ui_handle.join();
-    let _ = hotkey_handle.join();
+    let _ = control_handle.join();
+    if let Some(hotkey_handle) = hotkey_handle {
+        let _ = hotkey_handle.join();
+    }
     let _ = capture_handle.join();
     match exit_error {
         Some(message) => Err(message.into()),
@@ -835,6 +1105,65 @@ fn handle_sidecar_loss(
     *respawn_backoff = (*respawn_backoff * 2).min(SIDECAR_BACKOFF_CAP);
 }
 
+fn spawn_control_thread(
+    events: Sender<DaemonEvent>,
+    stop: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, Box<dyn Error>> {
+    let path = settings::control_socket_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("cannot remove stale {}: {error}", path.display()))?;
+    }
+    let listener = UnixListener::bind(&path)
+        .map_err(|error| format!("cannot bind {}: {error}", path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("cannot configure {}: {error}", path.display()))?;
+    logging::info(&format!("control socket listening: {}", path.display()));
+    Ok(std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    if !handle_control_stream(stream, &events) {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => {
+                    let _ = events.send(DaemonEvent::Fatal(format!(
+                        "control socket failed: {error}"
+                    )));
+                    break;
+                }
+            }
+        }
+        let _ = fs::remove_file(&path);
+    }))
+}
+
+fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEvent>) -> bool {
+    let mut line = String::new();
+    let mut reader = BufReader::new(stream);
+    if reader.read_line(&mut line).is_err() {
+        return true;
+    }
+    let event = match line.trim() {
+        "press" => HotkeyEvent::Pressed,
+        "release" => HotkeyEvent::Released,
+        other => {
+            logging::warn(&format!("ignored unknown control command: {other:?}"));
+            return true;
+        }
+    };
+    events.send(DaemonEvent::Hotkey(event)).is_ok()
+}
+
 fn spawn_hotkey_thread(
     shortcut: Shortcut,
     events: Sender<DaemonEvent>,
@@ -851,10 +1180,10 @@ fn spawn_hotkey_thread(
             }
         };
         while !stop.load(Ordering::SeqCst) {
-            if let Some(event) = listener.wait(Duration::from_millis(250)) {
-                if events.send(DaemonEvent::Hotkey(event)).is_err() {
-                    return;
-                }
+            if let Some(event) = listener.wait(Duration::from_millis(250))
+                && events.send(DaemonEvent::Hotkey(event)).is_err()
+            {
+                return;
             }
         }
     })

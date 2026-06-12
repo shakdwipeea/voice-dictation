@@ -9,8 +9,9 @@ Rust daemon + always-warm streaming ASR (NVIDIA Nemotron Speech Streaming
 **release-to-insertion is 151 ms p95** measured on an RTX 3060 (target was
 600 ms).
 
-X11 is the supported session type today; Wayland adapters are planned
-(Phase 4 in `docs/product-plan.md`).
+X11 is supported directly. Hyprland/Wayland is supported through compositor
+bindings that call the daemon control socket, with insertion via `wl-copy` plus
+a paste shortcut, and direct `wtype` as a fallback.
 
 ## Quickstart
 
@@ -18,7 +19,7 @@ X11 is the supported session type today; Wayland adapters are planned
 bash install.sh        # build, write config, install + start the user service
 ```
 
-Then **hold Ctrl+F8 anywhere**, speak, release — the text is typed at your
+Then **hold Ctrl+F1 anywhere**, speak, release — the text is typed at your
 cursor. The default backend is `mock` (fixed text, useful to verify the
 plumbing); switch to real ASR by setting `"backend": "nemotron"` in
 `~/.config/sunoto/config.json` and restarting the service.
@@ -35,13 +36,13 @@ make ui-demo                # drive the overlay pill by hand
 ## How it works
 
 ```
-hold Ctrl+F8          release
+hold Ctrl+F1          release
      │                   │
      ▼                   ▼
-persistent mic ──► streaming ASR sidecar ──► deterministic polish ──► XTEST
-capture + preroll    (Nemotron cache-aware     (fillers, corrections,   typing, with
-(PulseAudio)          RNNT; partials stream     dictionary, snippets,   clipboard
-                      while you speak)          app-aware styles)       fallback
+persistent mic ──► streaming ASR sidecar ──► deterministic polish ──► desktop
+capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertion
+(PulseAudio)          RNNT; partials stream     dictionary, snippets,   (XTEST on X11,
+                      while you speak)          app-aware styles)       paste on Wayland)
 ```
 
 - **Always warm:** the ASR model loads once at startup and stays on the GPU;
@@ -70,6 +71,7 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   typing, 
 | `sunoto-daemon check` | Verify X11, XTEST, shortcut grab, and the sidecar protocol. |
 | `sunoto-daemon selftest` | X11 insertion, push-to-talk, clipboard self-tests. |
 | `sunoto-daemon insert TEXT` | Type TEXT at the focused cursor (plumbing test). |
+| `sunoto-daemon trigger press\|release` | Push-to-talk edge used by Hyprland/Wayland bindings. |
 | `sunoto-daemon bench` | Release-to-insertion latency percentiles. |
 | `sunoto-daemon eval` | Zero-edit rate of the polish pipeline on a corpus. |
 | `sunoto-daemon config show\|init` | Inspect or create the settings file. |
@@ -81,14 +83,18 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   typing, 
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `shortcut` | `"Ctrl+F8"` | Push-to-talk hold shortcut. |
+| `shortcut` | `"Ctrl+F1"` | Push-to-talk hold shortcut. |
 | `backend` | `"mock"` | `"nemotron"` for real ASR (needs `.venv-nemotron`). |
 | `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). |
 | `microphone` | `"auto"` | PulseAudio source name; auto rejects monitor sources. |
 | `overlay_enabled` | `true` | GTK4 pill overlay; falls back to the X11 bubble if unavailable. |
 | `allow_enter_and_tab` | `false` | Keep control characters out of terminals unless you opt in. |
 | `polish_enabled` | `true` | Deterministic cleanup pipeline on/off. |
+| `overlay_backend` | `"auto"` | `"wayland"` for a Wayland GTK/layer-shell overlay, `"x11"` for X11 anchoring, `"auto"` to pick from the active GDK backend. |
 | `polish.app_styles` | terminal rules | Per-WM_CLASS writing styles. |
+
+See [desktop configuration](docs/desktop-configuration.md) for the complete
+Wayland/Hyprland and X11 setup, keybindings, profiles, and troubleshooting.
 
 ## Repo layout
 
@@ -118,20 +124,20 @@ docs/                  product plan, phase results, integration plan
 
 ## Troubleshooting
 
-- **Transcript generated but no text appears:** read the
-  `insertion target at release: "instance" / "Class"` journal line for that
-  session — it names the window that actually received the keystrokes. If
-  it isn't the app you expected, the focus was elsewhere when you released
-  the hotkey; if it is, that app may discard synthetic XTEST input.
+- **Transcript generated but no text appears:** read the `insertion target at
+  release: "instance" / "Class"` and `inserted via ...` journal lines for that
+  session. On Wayland, `Pasted` means clipboard paste was used, `Typed` means
+  direct `wtype` fallback was used, and `ClipboardOnly` means focus changed so
+  the result was left on the clipboard.
 - **Short phrases like "Thank you." from silence:** near-silence audio can
   make the ASR model hallucinate a short phrase. Check the session's logged
   rms value — if it's near zero, the mic heard nothing; fix the input
   source rather than the model.
 - **Service won't start:** `journalctl --user -u voice-dictation.service -n 50`.
-  The daemon needs an X11 session (`echo $XDG_SESSION_TYPE`).
-- **No overlay pill:** install `gir1.2-gtk-4.0` and `python3-xlib`; the
-  daemon logs `overlay UI exited before becoming ready` and uses the native
-  bubble until then.
+  On Wayland, verify `hyprctl`, `wtype`, and `wl-copy` are installed. On X11,
+  verify the X11 display and XTEST are available.
+- **No overlay pill:** install GTK4 bindings and, on Wayland, gtk4-layer-shell.
+  The daemon logs overlay startup failures and keeps dictation running.
 - **Hotkey does nothing:** the ASR sidecar may still be loading (the daemon
   logs `ASR sidecar ready` when warm; Nemotron takes 16–32 s today). The
   bubble shows "ASR still loading..." if you press too early.

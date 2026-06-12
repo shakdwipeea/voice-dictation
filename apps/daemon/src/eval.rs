@@ -288,7 +288,11 @@ mod tests {
         config.fillers.push("well".into());
         let corpus = corpus(vec![
             case("broken", "The well is deep.", "The well is deep."),
-            case("digits", "Pay 12 dollars, actually 14 dollars.", "Pay 12 dollars."),
+            case(
+                "digits",
+                "Pay 12 dollars, actually 14 dollars.",
+                "Pay 12 dollars.",
+            ),
         ]);
         let results = evaluate(&corpus, &config);
         let summary = summarize(&corpus.kind, &results);

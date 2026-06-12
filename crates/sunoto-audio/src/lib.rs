@@ -56,9 +56,7 @@ pub enum AudioEvent {
     /// Exactly `frame_ms` worth of samples: 16000 * frame_ms / 1000.
     Frame(Vec<i16>),
     /// The capture process ended; a restart follows unless stopping.
-    Stopped {
-        reason: String,
-    },
+    Stopped { reason: String },
 }
 
 #[derive(Debug)]
@@ -71,9 +69,7 @@ pub enum AudioError {
 impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AudioError::NoMicrophone => {
-                f.write_str("no physical microphone source is available")
-            }
+            AudioError::NoMicrophone => f.write_str("no physical microphone source is available"),
             AudioError::Spawn(error) => {
                 write!(f, "failed to spawn capture command: {error}")
             }
@@ -103,10 +99,11 @@ pub fn resolve_source(pactl_program: &[String]) -> Result<String, AudioError> {
     // Monitors mirror playback streams; only a non-monitor source is a mic.
     let listing = run_pactl(pactl_program, &["list", "short", "sources"])?;
     for line in listing.lines() {
-        if let Some(name) = line.split('\t').nth(1) {
-            if !name.is_empty() && !name.ends_with(".monitor") {
-                return Ok(name.to_string());
-            }
+        if let Some(name) = line.split('\t').nth(1)
+            && !name.is_empty()
+            && !name.ends_with(".monitor")
+        {
+            return Ok(name.to_string());
         }
     }
     Err(AudioError::NoMicrophone)
@@ -127,11 +124,9 @@ fn parse_source_description(listing: &str, device: &str) -> Option<String> {
         let line = line.trim();
         if let Some(name) = line.strip_prefix("Name:") {
             matching_source = name.trim() == device;
-        } else if matching_source {
-            if let Some(description) = line.strip_prefix("Description:") {
-                let description = description.trim();
-                return (!description.is_empty()).then(|| description.to_string());
-            }
+        } else if matching_source && let Some(description) = line.strip_prefix("Description:") {
+            let description = description.trim();
+            return (!description.is_empty()).then(|| description.to_string());
         }
     }
     None
@@ -227,7 +222,9 @@ impl Drop for CaptureHandle {
 
 pub fn start_capture(config: CaptureConfig) -> Result<CaptureHandle, AudioError> {
     if config.frame_ms == 0 {
-        return Err(AudioError::Resolve("frame_ms must be at least 1".to_string()));
+        return Err(AudioError::Resolve(
+            "frame_ms must be at least 1".to_string(),
+        ));
     }
     // Resolve and spawn synchronously so a missing mic or broken command
     // surfaces as an error here instead of a silent retry loop.
@@ -269,7 +266,10 @@ fn capture_loop(
         let Some((mut child, device)) = acquired else {
             // Failed respawn (mic still unplugged, pactl error, ...): the
             // stream already reported Stopped, so just retry after a backoff.
-            sleep_unless_stopped(stop, next_backoff(&config.restart_backoff_ms, &mut backoff_index));
+            sleep_unless_stopped(
+                stop,
+                next_backoff(&config.restart_backoff_ms, &mut backoff_index),
+            );
             continue;
         };
         let mut stdout = child.stdout.take();
@@ -308,7 +308,10 @@ fn capture_loop(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        sleep_unless_stopped(stop, next_backoff(&config.restart_backoff_ms, &mut backoff_index));
+        sleep_unless_stopped(
+            stop,
+            next_backoff(&config.restart_backoff_ms, &mut backoff_index),
+        );
     }
     // Never leak a child: reap whatever is still tracked.
     if let Some((child, _)) = pending.take() {

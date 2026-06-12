@@ -177,7 +177,11 @@ impl Connection {
                 events: POLLIN,
                 revents: 0,
             };
-            poll(&mut fds, 1, timeout.as_millis().min(i32::MAX as u128) as c_int);
+            poll(
+                &mut fds,
+                1,
+                timeout.as_millis().min(i32::MAX as u128) as c_int,
+            );
         }
     }
 
@@ -213,8 +217,7 @@ impl Connection {
             .into_iter()
             .map(|keysym| self.keycode(keysym))
             .filter(|&keycode| {
-                keycode != 0
-                    && keymap[keycode as usize / 8] as u8 & (1 << (keycode % 8)) != 0
+                keycode != 0 && keymap[keycode as usize / 8] as u8 & (1 << (keycode % 8)) != 0
             })
             .collect()
     }
@@ -252,7 +255,7 @@ pub struct Shortcut {
 }
 
 impl Shortcut {
-    /// Parse "Ctrl+F8" style descriptions. The final element is an X11 keysym
+    /// Parse "Ctrl+F1" style descriptions. The final element is an X11 keysym
     /// name; the rest are Ctrl/Shift/Alt/Super modifiers.
     pub fn parse(description: &str) -> Result<Self, X11Error> {
         let mut modifier_mask = 0;
@@ -286,7 +289,7 @@ impl Default for Shortcut {
     fn default() -> Self {
         Self {
             modifier_mask: CONTROL_MASK,
-            keysym_name: "F8".to_string(),
+            keysym_name: "F1".to_string(),
         }
     }
 }
@@ -819,10 +822,11 @@ impl UiAdapter {
             EXPOSE => {
                 // SAFETY: EXPOSE uses the XExposeEvent layout.
                 let expose = unsafe { event.expose };
-                if let Some(bubble) = &self.bubble {
-                    if bubble.visible && bubble.window == expose.window {
-                        self.draw_bubble();
-                    }
+                if let Some(bubble) = &self.bubble
+                    && bubble.visible
+                    && bubble.window == expose.window
+                {
+                    self.draw_bubble();
                 }
             }
             _ => {}
@@ -890,13 +894,7 @@ impl UiAdapter {
         };
         // SAFETY: the reply event is fully initialized for the requestor.
         unsafe {
-            XSendEvent(
-                self.connection.display,
-                request.requestor,
-                0,
-                0,
-                &mut reply,
-            );
+            XSendEvent(self.connection.display, request.requestor, 0, 0, &mut reply);
         }
         self.connection.flush();
     }
@@ -931,13 +929,13 @@ impl UiAdapter {
     }
 
     pub fn bubble_hide(&mut self) {
-        if let Some(bubble) = &mut self.bubble {
-            if bubble.visible {
-                // SAFETY: the bubble window is valid until destroyed in Drop.
-                unsafe { XUnmapWindow(self.connection.display, bubble.window) };
-                bubble.visible = false;
-                self.connection.flush();
-            }
+        if let Some(bubble) = &mut self.bubble
+            && bubble.visible
+        {
+            // SAFETY: the bubble window is valid until destroyed in Drop.
+            unsafe { XUnmapWindow(self.connection.display, bubble.window) };
+            bubble.visible = false;
+            self.connection.flush();
         }
     }
 
@@ -963,7 +961,12 @@ impl UiAdapter {
             color.pixel
         } else {
             // SAFETY: display is valid.
-            unsafe { XBlackPixel(self.connection.display, XDefaultScreen(self.connection.display)) }
+            unsafe {
+                XBlackPixel(
+                    self.connection.display,
+                    XDefaultScreen(self.connection.display),
+                )
+            }
         }
     }
 
@@ -1124,9 +1127,8 @@ impl UiAdapter {
                 let mut event = self.connection.next_event();
                 // SAFETY: event_type is the common first field; KEY_PRESS
                 // events use the XKeyEvent layout.
-                let is_probe_key = unsafe {
-                    event.event_type == KEY_PRESS && event.key.window == probe.window
-                };
+                let is_probe_key =
+                    unsafe { event.event_type == KEY_PRESS && event.key.window == probe.window };
                 if !is_probe_key {
                     self.dispatch(&event);
                     continue;
@@ -1367,10 +1369,10 @@ mod tests {
     #[test]
     fn shortcut_parsing_requires_modifier_plus_key() {
         assert_eq!(
-            Shortcut::parse("Ctrl+F8").unwrap(),
+            Shortcut::parse("Ctrl+F1").unwrap(),
             Shortcut {
                 modifier_mask: CONTROL_MASK,
-                keysym_name: "F8".into()
+                keysym_name: "F1".into()
             }
         );
         assert_eq!(
@@ -1381,7 +1383,7 @@ mod tests {
         assert!(Shortcut::parse("Ctrl+").is_err());
         assert!(Shortcut::parse("Ctrl+F8+F9").is_err());
         assert!(Shortcut::parse("").is_err());
-        assert_eq!(Shortcut::default(), Shortcut::parse("Ctrl+F8").unwrap());
+        assert_eq!(Shortcut::default(), Shortcut::parse("Ctrl+F1").unwrap());
     }
 
     #[test]

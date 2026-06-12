@@ -12,6 +12,7 @@ loop via GLib.idle_add.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -24,14 +25,49 @@ try:
     gi.require_version("Gtk4LayerShell", "1.0")
     from gi.repository import Gtk4LayerShell  # noqa: E402
 
-    _LAYER_SHELL = Gtk4LayerShell.is_supported()
+    _LAYER_SHELL_AVAILABLE = True
 except (ImportError, ValueError):
     Gtk4LayerShell = None  # type: ignore[assignment]
-    _LAYER_SHELL = False
+    _LAYER_SHELL_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
 MARGIN_TOP = 16
+OVERLAY_BACKENDS = {"auto", "x11", "wayland"}
+
+
+def _layer_shell_supported() -> bool:
+    if not _LAYER_SHELL_AVAILABLE:
+        return False
+    try:
+        return bool(Gtk4LayerShell.is_supported())
+    except Exception:  # noqa: BLE001 - display/backend dependent
+        return False
+
+
+def _display_backend() -> str:
+    from gi.repository import Gdk
+
+    display = Gdk.Display.get_default()
+    if display is None:
+        return "unknown"
+    try:
+        gi.require_version("GdkWayland", "4.0")
+        from gi.repository import GdkWayland
+
+        if isinstance(display, GdkWayland.WaylandDisplay):
+            return "wayland"
+    except (ImportError, ValueError, AttributeError):
+        pass
+    try:
+        gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+
+        if isinstance(display, GdkX11.X11Display):
+            return "x11"
+    except (ImportError, ValueError, AttributeError):
+        pass
+    return "unknown"
 
 
 class _X11Anchor:
@@ -195,7 +231,12 @@ CSS = b"""
 class Overlay:
     """One-window overlay; thread-safe interface."""
 
-    def __init__(self) -> None:
+    def __init__(self, backend: Optional[str] = None) -> None:
+        requested = (backend or os.environ.get("SUNOTO_OVERLAY_BACKEND") or "auto").lower()
+        if requested not in OVERLAY_BACKENDS:
+            log.warning("unknown overlay backend %r; using auto", requested)
+            requested = "auto"
+        self._backend = requested
         self.app: Optional[Gtk.Application] = None
         self.window: Optional[Gtk.ApplicationWindow] = None
         self._root: Optional[Gtk.Box] = None
@@ -203,6 +244,8 @@ class Overlay:
         self._meter: Optional[Gtk.LevelBar] = None
         self._status_label: Optional[Gtk.Label] = None
         self._x11: Optional[_X11Anchor] = None
+        self._using_layer_shell = False
+        self._wayland_overlay_unavailable = False
         self._visible = False
         self._ready_evt = threading.Event()
 
@@ -240,13 +283,36 @@ class Overlay:
         self.window = Gtk.ApplicationWindow(application=app)
         self.window.set_decorated(False)
         self.window.set_resizable(False)
-        if _LAYER_SHELL:
+        self.window.set_focusable(False)
+        self.window.set_focus_on_click(False)
+
+        display_backend = _display_backend()
+        layer_shell = _layer_shell_supported()
+        use_layer_shell = (
+            display_backend == "wayland"
+            and layer_shell
+            and self._backend in {"auto", "wayland"}
+        )
+        if use_layer_shell:
             Gtk4LayerShell.init_for_window(self.window)
             Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
             Gtk4LayerShell.set_anchor(self.window, Gtk4LayerShell.Edge.TOP, True)
             Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.TOP, MARGIN_TOP)
             Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
             Gtk4LayerShell.set_namespace(self.window, "voice-dictation")
+            self._using_layer_shell = True
+        elif self._backend == "wayland":
+            log.warning(
+                "Wayland overlay requested but gtk4-layer-shell is not supported; "
+                "overlay disabled to avoid stealing keyboard focus"
+            )
+            self._wayland_overlay_unavailable = True
+        elif display_backend == "wayland":
+            log.warning(
+                "Wayland display has no working gtk4-layer-shell support; "
+                "overlay disabled to avoid stealing keyboard focus"
+            )
+            self._wayland_overlay_unavailable = True
 
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         root.add_css_class("vd-root")
@@ -274,7 +340,9 @@ class Overlay:
         root.append(self._status_label)
 
         self.window.set_child(root)
-        if not _LAYER_SHELL:
+        if not self._using_layer_shell and (
+            self._backend == "x11" or (self._backend == "auto" and display_backend == "x11")
+        ):
             try:
                 self._x11 = _X11Anchor(self.window)
             except Exception:  # noqa: BLE001
@@ -316,6 +384,8 @@ class Overlay:
     # ---- GTK-thread implementations ----
     def _do_show(self) -> bool:
         log.info("show: window=%s visible=%s", self.window is not None, self._visible)
+        if self._wayland_overlay_unavailable:
+            return False
         if self.window is not None and not self._visible:
             if self._x11 is not None:
                 # Already mapped, parked off-screen; move it into view. No
@@ -331,6 +401,8 @@ class Overlay:
 
     def _do_hide(self) -> bool:
         log.info("hide: window=%s visible=%s", self.window is not None, self._visible)
+        if self._wayland_overlay_unavailable:
+            return False
         if self.window is not None and self._visible:
             if self._x11 is not None:
                 self._x11.park()

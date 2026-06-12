@@ -6,7 +6,7 @@ use sunoto_polish::PolishConfig;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Push-to-talk shortcut, e.g. "Ctrl+F8".
+    /// Push-to-talk shortcut, e.g. "Ctrl+F1".
     pub shortcut: String,
     /// PulseAudio source name, or "auto" for the first physical microphone.
     pub microphone: String,
@@ -28,6 +28,8 @@ pub struct Settings {
     /// GTK4 pill overlay (UI sidecar). When it cannot start (e.g. GTK4 is
     /// not installed) the daemon falls back to the native X11 bubble.
     pub overlay_enabled: bool,
+    /// "auto", "x11", or "wayland" for the GTK overlay sidecar.
+    pub overlay_backend: String,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
     pub polish: PolishConfig,
@@ -36,7 +38,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            shortcut: "Ctrl+F8".to_string(),
+            shortcut: "Ctrl+F1".to_string(),
             microphone: "auto".to_string(),
             backend: "mock".to_string(),
             profile_ms: 160,
@@ -46,6 +48,7 @@ impl Default for Settings {
             sidecar_script: None,
             allow_enter_and_tab: false,
             overlay_enabled: true,
+            overlay_backend: "auto".to_string(),
             polish_enabled: true,
             polish: PolishConfig::default(),
         }
@@ -102,18 +105,82 @@ impl Settings {
         Ok((python, args))
     }
 
+    pub fn validate(&self) -> Result<(), String> {
+        match self.backend.as_str() {
+            "mock" | "nemotron" => {}
+            other => return Err(format!("unknown ASR backend: {other}")),
+        }
+        match self.profile_ms {
+            80 | 160 | 560 | 1120 => {}
+            other => {
+                return Err(format!(
+                    "unsupported profile_ms {other}; use 80, 160, 560, or 1120"
+                ));
+            }
+        }
+        match self.overlay_backend.as_str() {
+            "auto" | "x11" | "wayland" => Ok(()),
+            other => Err(format!(
+                "unsupported overlay_backend {other:?}; use auto, x11, or wayland"
+            )),
+        }
+    }
+
     /// Command and environment for the GTK overlay UI sidecar, which runs as
     /// a Python module so its package-relative imports resolve.
     pub fn overlay_command(&self) -> (String, Vec<String>, Vec<(String, String)>) {
         let src = repo_root().join("src");
+        let mut envs = vec![
+            ("PYTHONPATH".to_string(), src.to_string_lossy().into_owned()),
+            (
+                "SUNOTO_OVERLAY_BACKEND".to_string(),
+                self.overlay_backend.clone(),
+            ),
+        ];
+        match self.overlay_backend.as_str() {
+            "x11" => envs.push(("GDK_BACKEND".to_string(), "x11".to_string())),
+            "wayland" => {
+                envs.push(("GDK_BACKEND".to_string(), "wayland".to_string()));
+                if let Some(preload) = gtk4_layer_shell_preload() {
+                    envs.push(("LD_PRELOAD".to_string(), preload));
+                }
+            }
+            _ => {}
+        }
         (
             "python3".to_string(),
             vec!["-m".to_string(), "voice_dictation.ui_sidecar".to_string()],
-            vec![(
-                "PYTHONPATH".to_string(),
-                src.to_string_lossy().into_owned(),
-            )],
+            envs,
         )
+    }
+}
+
+fn gtk4_layer_shell_preload() -> Option<String> {
+    if let Ok(path) = std::env::var("SUNOTO_GTK4_LAYER_SHELL_PRELOAD")
+        && !path.is_empty()
+    {
+        return Some(merge_ld_preload(&path));
+    }
+    let candidates = [
+        "/usr/lib/libgtk4-layer-shell.so",
+        "/usr/lib/libgtk4-layer-shell.so.0",
+        "/usr/lib/x86_64-linux-gnu/libgtk4-layer-shell.so",
+        "/usr/lib/x86_64-linux-gnu/libgtk4-layer-shell.so.0",
+        "/usr/local/lib/libgtk4-layer-shell.so",
+    ];
+    candidates
+        .iter()
+        .find(|path| Path::new(path).is_file())
+        .map(|path| merge_ld_preload(path))
+}
+
+fn merge_ld_preload(path: &str) -> String {
+    match std::env::var("LD_PRELOAD") {
+        Ok(existing) if !existing.is_empty() && !existing.split(':').any(|item| item == path) => {
+            format!("{path}:{existing}")
+        }
+        Ok(existing) if !existing.is_empty() => existing,
+        _ => path.to_string(),
     }
 }
 
@@ -127,6 +194,19 @@ pub fn config_path() -> PathBuf {
             PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
         });
     base.join("sunoto/config.json")
+}
+
+pub fn control_socket_path() -> PathBuf {
+    if let Ok(path) = std::env::var("SUNOTO_CONTROL_SOCKET") {
+        return PathBuf::from(path);
+    }
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(runtime_dir).join("sunoto/daemon.sock");
+    }
+    std::env::temp_dir().join(format!(
+        "sunoto-{}-daemon.sock",
+        std::env::var("USER").unwrap_or_else(|_| "user".to_string())
+    ))
 }
 
 /// Repository root for development runs; packaged builds set SUNOTO_ROOT or
@@ -230,9 +310,60 @@ mod tests {
         let (python, args, envs) = settings.overlay_command();
         assert_eq!(python, "python3");
         assert_eq!(args, ["-m", "voice_dictation.ui_sidecar"]);
-        assert_eq!(envs.len(), 1);
-        assert_eq!(envs[0].0, "PYTHONPATH");
-        assert!(envs[0].1.ends_with("/src"));
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "PYTHONPATH" && value.ends_with("/src"))
+        );
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "SUNOTO_OVERLAY_BACKEND" && value == "auto")
+        );
+    }
+
+    #[test]
+    fn overlay_backend_can_force_gdk_backend() {
+        let mut settings = Settings {
+            overlay_backend: "wayland".to_string(),
+            ..Settings::default()
+        };
+        let (_python, _args, envs) = settings.overlay_command();
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "GDK_BACKEND" && value == "wayland")
+        );
+
+        settings.overlay_backend = "x11".to_string();
+        let (_python, _args, envs) = settings.overlay_command();
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "GDK_BACKEND" && value == "x11")
+        );
+    }
+
+    #[test]
+    fn validation_rejects_unknown_overlay_backend() {
+        let settings = Settings {
+            overlay_backend: "mir".to_string(),
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn control_socket_path_prefers_explicit_env() {
+        // SAFETY: this test mutates process environment and does not rely on
+        // concurrent environment reads.
+        unsafe {
+            std::env::set_var("SUNOTO_CONTROL_SOCKET", "/tmp/sunoto-test.sock");
+        }
+        assert_eq!(
+            control_socket_path(),
+            PathBuf::from("/tmp/sunoto-test.sock")
+        );
+        // SAFETY: restores the process environment after the assertion.
+        unsafe {
+            std::env::remove_var("SUNOTO_CONTROL_SOCKET");
+        }
     }
 
     #[test]
