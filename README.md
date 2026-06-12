@@ -118,6 +118,15 @@ docs/                  product plan, phase results, integration plan
 
 ## Troubleshooting
 
+- **Transcript generated but no text appears:** read the
+  `insertion target at release: "instance" / "Class"` journal line for that
+  session — it names the window that actually received the keystrokes. If
+  it isn't the app you expected, the focus was elsewhere when you released
+  the hotkey; if it is, that app may discard synthetic XTEST input.
+- **Short phrases like "Thank you." from silence:** near-silence audio can
+  make the ASR model hallucinate a short phrase. Check the session's logged
+  rms value — if it's near zero, the mic heard nothing; fix the input
+  source rather than the model.
 - **Service won't start:** `journalctl --user -u voice-dictation.service -n 50`.
   The daemon needs an X11 session (`echo $XDG_SESSION_TYPE`).
 - **No overlay pill:** install `gir1.2-gtk-4.0` and `python3-xlib`; the
