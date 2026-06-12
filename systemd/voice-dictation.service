@@ -6,12 +6,12 @@ After=graphical-session.target
 [Service]
 Type=simple
 # Path is rewritten by install.sh to the user's actual venv.
-ExecStart=__VENV_BIN__/vd-daemon --device cuda --model large-v3-turbo --log-level INFO
+ExecStart=__VENV_BIN__/vd-daemon --device cuda --model large-v3 --log-level INFO
 Restart=on-failure
 RestartSec=3
-# Hot CUDA model in RAM; allow up to ~6 GB before OOM-kill
-MemoryHigh=4G
-MemoryMax=6G
+# Hot CUDA model in RAM; full large-v3 is slower/heavier than turbo but more accurate.
+MemoryHigh=10G
+MemoryMax=14G
 # Crash-tolerant: if it dies, persist state across restart via XDG_STATE_HOME
 
 [Install]

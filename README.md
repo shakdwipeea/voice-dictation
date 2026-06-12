@@ -30,10 +30,10 @@ SUPER+I press ────────────────────┘   
                                                                Ctrl+V for the rest)
 ```
 
-- **Model**: `large-v3-turbo` (Whisper) running float16 on CUDA. Strong on Indian English + technical terms.
-- **Latency**: ~0.2s inference per segment. On stop, the final paste happens within ~1s.
+- **Model**: `large-v3` (Whisper) running float16 on CUDA. Prioritizes transcription quality over turbo latency.
+- **Latency**: optimized for quality rather than minimum delay; use `large-v3-turbo` if you prefer lower latency.
 - **Visual feedback**: the overlay meter is driven directly by live peak/RMS audio levels. Quiet slate means little/no input; green glow means live input; amber/red means hot/loud input.
-- **Daemon model is loaded once** (~1.5 GB VRAM, ~75W peak under load) and reused across every toggle. Cold first start: ~20s. Subsequent toggles: <1s.
+- **Daemon model is loaded once** and reused across every toggle. Full `large-v3` needs more RAM/VRAM than turbo, so the user service allows a larger memory budget.
 
 ## Commands
 
@@ -64,7 +64,7 @@ Daemon flags (edit `~/.config/systemd/user/voice-dictation.service` then `system
 
 ```
 --device cuda|cpu          # default: cuda
---model large-v3-turbo     # any faster-whisper model name; distil-large-v3 / small.en for lower VRAM
+--model large-v3           # any faster-whisper model name; large-v3-turbo / distil-large-v3 for lower VRAM/latency
 --no-paste                 # transcribe but don't inject
 --no-overlay               # headless (testing / SSH)
 --input-device hw:2,0      # override sounddevice probe
