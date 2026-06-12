@@ -159,7 +159,16 @@ Optional slow path after insertion
 - **Core daemon and Linux integration:** Rust
 - **Desktop UI:** GTK4 with a small settings window, tray indicator, and
   always-on-top dictation bubble (Phase 1 ships an X11 override-redirect
-  status bubble; GTK4 arrives with the Phase 3 settings UI)
+  status bubble; GTK4 arrives with the Phase 3 settings UI). *(Amended
+  June 12, 2026: the project merged with the upstream `voice-dictation`
+  repository and adopts its GTK4 layer-shell pill overlay —
+  `src/voice_dictation/overlay.py`, Python/PyGObject, a recording dot plus
+  thin level meter with a thread-safe interface — as the dictation bubble.
+  Layer-shell is a Wayland protocol, so the adopted overlay is the
+  Wayland-side status UI (Hyprland is its proven home); the X11
+  override-redirect bubble remains the X11 path. The Rust daemon drives the
+  overlay as a UI sidecar over stdin-JSON, the same managed-process pattern
+  as the ASR service.)*
 - **ASR service:** Python sidecar using NVIDIA NeMo cache-aware streaming
   inference
 - **Local text model:** llama.cpp-compatible local model behind a provider
@@ -405,6 +414,9 @@ test corpus without changing names, numbers, or meaning.
 - AT-SPI focused-field detection and insertion
 - GNOME Wayland test pass
 - KDE Wayland test pass
+- Hyprland test pass using the adopted layer-shell overlay and the `hypr/`
+  window rules inherited from the upstream voice-dictation project (added
+  June 12, 2026)
 - Permissioned fallback path and clear capability diagnostics
 
 ### Phase 5: Packaging and Reliability
@@ -500,6 +512,11 @@ was unfalsifiable.)*
 
 ## 12. Repository Layout (as built)
 
+*(Amended June 12, 2026: the codebase moved to the `sunoto-backend` branch of
+`github.com/shakdwipeea/voice-dictation`, merging the sunoto backend with that
+project's overlay UI. Its whisper/silero Python backend was removed as
+superseded by the Rust pipeline; both commit histories are preserved.)*
+
 ```text
 apps/
   daemon/              dictation daemon, settings, latency bench, self-tests
@@ -512,6 +529,14 @@ crates/
   sunoto-polish/       cleanup, dictionary, snippets, styles
 services/
   asr/                 Nemotron streaming sidecar, mock sidecar, Phase 0 bench
+src/
+  voice_dictation/     GTK4 layer-shell pill overlay (Python), adopted from
+                       the upstream voice-dictation project; needs a stdin-
+                       JSON driver to be run as a UI sidecar by the daemon
+hypr/                  Hyprland window rules for the overlay (upstream)
+systemd/, install.sh   upstream packaging — still points at the removed
+                       Python daemon, pending adaptation to sunoto-daemon
+bin/                   upstream GPU status/snapshot helper scripts
 tests/
   corpus/              local recorded/evaluation fixtures and the scripted
                        phase2 zero-edit corpus
@@ -540,7 +565,15 @@ Next steps, in order:
    96% polished vs 28% raw zero-edit rate with zero regressions; tune the
    correction gates from the recorded data (the `known-gap` case documents
    the first candidate).
-3. Phase 3 product UX: install GTK4 development packages (`libgtk-4-dev` is
+3. Integrate the adopted overlay (added June 12, 2026): write a thin entry
+   script that reads stdin-JSON and calls the overlay's thread-safe methods,
+   so `sunoto-daemon` can manage it through `sunoto-ipc` exactly like the
+   ASR sidecar — show/hide on session start/stop, stream the mic level.
+   Adapt `install.sh`, the systemd unit, and the README from the removed
+   Python daemon to `sunoto-daemon`. Note the overlay needs GTK4 +
+   gtk4-layer-shell under Wayland; it cannot be exercised on the current
+   X11 dev machine, where the override-redirect bubble remains the UI.
+4. Phase 3 product UX: install GTK4 development packages (`libgtk-4-dev` is
    not currently installed), then build the settings window, tray indicator,
    and setup flow; investigate warm-start reduction (currently 16–32 s
    against the 10 s goal).
