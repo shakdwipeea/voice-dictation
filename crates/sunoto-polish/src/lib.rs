@@ -256,11 +256,16 @@ fn normalize(text: &str) -> String {
         if !next.is_alphanumeric() {
             continue;
         }
-        let previous_is_digit = index
-            .checked_sub(1)
-            .and_then(|p| chars.get(p))
-            .is_some_and(|c| c.is_ascii_digit());
-        if !(previous_is_digit && next.is_ascii_digit()) {
+        let previous = index.checked_sub(1).and_then(|p| chars.get(p)).copied();
+        // Keep tokens whole: a dot inside a domain / file name / identifier /
+        // decimal ("google.com", "foo.rs", "3.14") and a comma inside a grouped
+        // number ("1,000") must not gain a following space.
+        let intra_token = match current {
+            '.' => previous.is_some_and(char::is_alphanumeric) && next.is_alphanumeric(),
+            ',' => previous.is_some_and(|c| c.is_ascii_digit()) && next.is_ascii_digit(),
+            _ => false,
+        };
+        if !intra_token {
             spaced.push(' ');
         }
     }
@@ -638,10 +643,29 @@ fn apply_style(text: &str, style: StyleProfile) -> String {
     }
 }
 
+/// A whitespace-free token with an internal dot flanked by alphanumerics — a
+/// URL, domain, file name, or dotted identifier ("google.com", "foo.rs",
+/// "os.path") — which prose styling must treat literally.
+fn is_dotted_token(text: &str) -> bool {
+    if text.is_empty() || text.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    chars
+        .windows(3)
+        .any(|w| w[1] == '.' && w[0].is_alphanumeric() && w[2].is_alphanumeric())
+}
+
 fn format_prose(text: &str) -> String {
-    let mut chars: Vec<char> = text.trim().chars().collect();
+    let trimmed = text.trim();
+    // A bare dotted token (URL, domain, file name, dotted identifier) is literal
+    // text — don't capitalize it or append a sentence period.
+    if is_dotted_token(trimmed) {
+        return trimmed.to_string();
+    }
+    let mut chars: Vec<char> = trimmed.chars().collect();
     if !chars.iter().any(|character| character.is_alphabetic()) {
-        return text.trim().to_string();
+        return trimmed.to_string();
     }
     chars = capitalize_sentences(&chars);
 
@@ -672,15 +696,17 @@ fn capitalize_sentences(chars: &[char]) -> Vec<char> {
         }
         output.push(character);
         if SENTENCE_TERMINATORS.contains(&character) {
-            let decimal_point = character == '.'
+            // A dot inside a token ("google.com", "foo.rs", "3.14") is not a
+            // sentence boundary, so the following letter must not be capitalized.
+            let intra_word_dot = character == '.'
                 && index
                     .checked_sub(1)
                     .and_then(|previous| chars.get(previous))
-                    .is_some_and(|previous| previous.is_ascii_digit())
+                    .is_some_and(|previous| previous.is_alphanumeric())
                 && chars
                     .get(index + 1)
-                    .is_some_and(|next| next.is_ascii_digit());
-            if !decimal_point {
+                    .is_some_and(|next| next.is_alphanumeric());
+            if !intra_word_dot {
                 capitalize_next = true;
             }
         }
@@ -1228,6 +1254,27 @@ mod tests {
             "First sentence. Second sentence."
         );
         assert_eq!(polish("...", &config).text, "...");
+    }
+
+    #[test]
+    fn dotted_tokens_survive_polish() {
+        // Reported bug: prose split and capitalized a domain ("Google. Com.").
+        assert_eq!(run("Google.com"), "Google.com");
+        assert_eq!(normalize("google.com"), "google.com");
+        let mut config = defaults();
+        // File names and dotted identifiers stay literal in prose.
+        assert_eq!(polish("foo.rs", &config).text, "foo.rs");
+        assert_eq!(polish("os.path.join", &config).text, "os.path.join");
+        // Inside a sentence: dot kept, next word not capitalized, period added.
+        assert_eq!(
+            polish("check out google.com", &config).text,
+            "Check out google.com."
+        );
+        // Numbers still behave; a bare number is left literal.
+        assert_eq!(polish("version 3.14", &config).text, "Version 3.14.");
+        // Terminal style leaves the domain intact too.
+        config.style = StyleProfile::Terminal;
+        assert_eq!(polish("Google.com", &config).text, "Google.com");
     }
 
     #[test]
