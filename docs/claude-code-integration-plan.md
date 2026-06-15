@@ -167,18 +167,21 @@ terminal-activity tie-break above.)*
 `git ls-files --cached --others --exclude-standard` (fast, honors `.gitignore`),
 with a bounded, symlink-free recursive walk fallback for non-git dirs (skips
 `.git`, `target`, `node_modules`, `.venv*`, …), truncated to `max_files`. It is
-a flat `Vec<String>` of paths; the matcher derives basename/stem keys on demand
-rather than pre-indexing them. The daemon caches one index keyed by cwd and
-rebuilds it when the cwd changes — built lazily at finalize, off the
+a flat `Vec<String>` of paths. From this the daemon builds a
+`sunoto-polish::FileMatchIndex` — the lowercased `(path, basename, stem)` match
+keys precomputed once — and caches `(cwd, FileMatchIndex)`, rebuilding when the
+cwd changes. Precomputing the keys keeps `resolve_file_references` free of
+per-utterance lowercasing/allocation (~4× faster matching; it previously rebuilt
+the keys on every spoken reference). Built lazily at finalize, off the
 partial-streaming path. *(Background warming and mtime/inotify refresh are
 deferred to Phase C; today the first dictation in a new repo pays the
-`git ls-files`.)*
+`git ls-files` + key build.)*
 
 ### 4.3 Reference resolution (`sunoto-polish::resolve_file_references`)
 
-`resolve_file_references(text, files, ref_template, &FileReferenceConfig) -> String`
-— pure, no I/O, well inside the deterministic budget. The daemon runs it
-**after** `polish()` (not as a stage inside it, since it needs the file list),
+`resolve_file_references(text, &FileMatchIndex, ref_template, &FileReferenceConfig)
+-> String` — pure, no I/O, well inside the deterministic budget. The daemon runs
+it **after** `polish()` (not as a stage inside it, since it needs the file list),
 gated by `resolve_agent_file_references`: only when `file_references.enabled`,
 the focused class is a terminal, and `detect_agent` returns an agent + cwd. The
 `ref_template` of the matched registry row is applied to each resolved path

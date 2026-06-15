@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::raw::c_int;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +18,7 @@ use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, Si
 use sunoto_linux::x11::{
     BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error,
 };
-use sunoto_polish::{polish, resolve_file_references, resolve_style};
+use sunoto_polish::{FileMatchIndex, polish, resolve_file_references, resolve_style};
 
 use crate::logging;
 use crate::settings::{self, Settings, sanitize_for_insertion};
@@ -301,7 +302,7 @@ fn resolve_agent_file_references(
     settings: &Settings,
     focused_class: Option<&(String, String)>,
     focused_pid: Option<u32>,
-    cache: &mut Option<FileIndex>,
+    cache: &mut Option<(PathBuf, FileMatchIndex)>,
     session_id: u64,
 ) -> String {
     let config = &settings.polish.file_references;
@@ -331,17 +332,20 @@ fn resolve_agent_file_references(
     let Some(agent) = config.agents.iter().find(|agent| agent.name == name) else {
         return text;
     };
-    if cache.as_ref().map(|index| index.root.as_path()) != Some(cwd.as_path()) {
+    if cache.as_ref().map(|(root, _)| root.as_path()) != Some(cwd.as_path()) {
         logging::info(&format!(
             "session {session_id}: indexing {} for {name} file references",
             cwd.display()
         ));
-        *cache = Some(FileIndex::build(&cwd, config.max_index_files));
+        // List the files (sunoto-context), then precompute the matcher's keys
+        // once here, off the per-utterance path, and cache both keyed by cwd.
+        let listing = FileIndex::build(&cwd, config.max_index_files);
+        *cache = Some((cwd.clone(), FileMatchIndex::build(&listing.files)));
     }
-    let Some(index) = cache.as_ref() else {
+    let Some((_, file_index)) = cache.as_ref() else {
         return text;
     };
-    let resolved = resolve_file_references(&text, &index.files, &agent.ref_template, config);
+    let resolved = resolve_file_references(&text, file_index, &agent.ref_template, config);
     if resolved != text {
         logging::info(&format!(
             "session {session_id}: resolved {name} file references"
@@ -691,7 +695,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut preroll = AudioPreRoll::new(settings.preroll_ms as usize * SAMPLES_PER_MS);
     let mut focused_class: Option<(String, String)> = None;
     let mut focused_pid: Option<u32> = None;
-    let mut file_index: Option<FileIndex> = None;
+    let mut file_index: Option<(PathBuf, FileMatchIndex)> = None;
     let mut timing: Option<SessionTiming> = None;
     let mut audio_stats: Option<SessionAudioStats> = None;
     let mut sidecar_ready = false;

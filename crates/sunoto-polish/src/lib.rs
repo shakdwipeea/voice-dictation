@@ -827,20 +827,64 @@ fn path_keys(path: &str) -> (String, String) {
     (base, stem)
 }
 
-/// The one file matching `pred(path_lower, basename_lower, stem_lower)`, or
-/// `None` if zero or more than one match.
-fn unique_where<'a>(
-    files: &'a [String],
-    keyed: &[(String, String, String)],
-    pred: impl Fn(&str, &str, &str) -> bool,
-) -> Option<&'a str> {
+/// Lowercased match keys for one indexed file: the original repo-relative
+/// `path` (emitted verbatim on a match) plus the lowercased full path,
+/// basename, and stem the matcher compares against.
+struct FileKey {
+    path: String,
+    path_lower: String,
+    base: String,
+    stem: String,
+}
+
+/// A working directory's file list with match keys precomputed once. Building
+/// this off the hot path (when the index is built per cwd) and reusing it keeps
+/// `resolve_file_references` free of per-utterance lowercasing/allocation — the
+/// matcher previously rebuilt these keys on every spoken reference.
+#[derive(Default)]
+pub struct FileMatchIndex {
+    keys: Vec<FileKey>,
+}
+
+impl FileMatchIndex {
+    /// Derive the match keys for `files` (repo-relative, forward-slash paths).
+    pub fn build(files: &[String]) -> Self {
+        let keys = files
+            .iter()
+            .map(|file| {
+                let (base, stem) = path_keys(file);
+                FileKey {
+                    path: file.clone(),
+                    path_lower: file.to_lowercase(),
+                    base,
+                    stem,
+                }
+            })
+            .collect();
+        Self { keys }
+    }
+
+    /// Number of indexed files.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// True when no files are indexed (resolution is then a no-op).
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// The one file whose precomputed keys satisfy `pred`, or `None` if zero or
+/// more than one match.
+fn unique_where<'a>(keys: &'a [FileKey], pred: impl Fn(&FileKey) -> bool) -> Option<&'a str> {
     let mut hit: Option<&'a str> = None;
-    for (file, (path, base, stem)) in files.iter().zip(keyed.iter()) {
-        if pred(path, base, stem) {
+    for key in keys {
+        if pred(key) {
             if hit.is_some() {
                 return None;
             }
-            hit = Some(file.as_str());
+            hit = Some(key.path.as_str());
         }
     }
     hit
@@ -848,8 +892,8 @@ fn unique_where<'a>(
 
 /// Resolve a spoken name (lowercased word tokens) to one file path, trying
 /// tiers from most precise to most forgiving and returning the first tier that
-/// yields a unique answer.
-fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
+/// yields a unique answer. `keys` are precomputed once per working directory.
+fn resolve_query<'a>(query: &[String], keys: &'a [FileKey]) -> Option<&'a str> {
     let toks: Vec<String> = query
         .iter()
         .map(|token| token.trim_matches('.').to_lowercase())
@@ -862,13 +906,6 @@ fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
     if toks.is_empty() {
         return None;
     }
-    let keyed: Vec<(String, String, String)> = files
-        .iter()
-        .map(|file| {
-            let (base, stem) = path_keys(file);
-            (file.to_lowercase(), base, stem)
-        })
-        .collect();
 
     // Tier 1: basename/stem equals a separator-aware join ("daemon" "rs" or
     // "daemon" "dot" "rs" -> "daemon.rs"; "agents" "md" -> "agents.md").
@@ -879,25 +916,27 @@ fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
         toks.join("."),
     ];
     joins.sort();
-    if let Some(found) = unique_where(files, &keyed, |_, base, stem| {
+    if let Some(found) = unique_where(keys, |key| {
         joins
             .iter()
-            .any(|join| join.as_str() == base || join.as_str() == stem)
+            .any(|join| join.as_str() == key.base || join.as_str() == key.stem)
     }) {
         return Some(found);
     }
     // Tier 2: the last token names the file; earlier tokens locate it in the
     // path ("polish" "lib" -> the lib.rs under sunoto-polish).
     let (head, quals) = toks.split_last().unwrap();
-    if let Some(found) = unique_where(files, &keyed, |path, base, stem| {
-        (base == head.as_str() || stem == head.as_str())
-            && quals.iter().all(|qualifier| path.contains(qualifier.as_str()))
+    if let Some(found) = unique_where(keys, |key| {
+        (key.base == head.as_str() || key.stem == head.as_str())
+            && quals
+                .iter()
+                .all(|qualifier| key.path_lower.contains(qualifier.as_str()))
     }) {
         return Some(found);
     }
     // Tier 3: every token appears in the basename ("integration" "plan" "md").
-    if let Some(found) = unique_where(files, &keyed, |_, base, _| {
-        toks.iter().all(|token| base.contains(token.as_str()))
+    if let Some(found) = unique_where(keys, |key| {
+        toks.iter().all(|token| key.base.contains(token.as_str()))
     }) {
         return Some(found);
     }
@@ -907,13 +946,13 @@ fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
     let mut best: Option<&'a str> = None;
     let mut best_score = 1usize;
     let mut tie = false;
-    for (file, (_, base, _)) in files.iter().zip(keyed.iter()) {
+    for key in keys {
         let score = toks
             .iter()
-            .filter(|token| base.contains(token.as_str()))
+            .filter(|token| key.base.contains(token.as_str()))
             .count();
         if score > best_score {
-            best = Some(file.as_str());
+            best = Some(key.path.as_str());
             best_score = score;
             tie = false;
         } else if score == best_score && best.is_some() {
@@ -923,21 +962,23 @@ fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
     if best_score >= 2 && !tie { best } else { None }
 }
 
-/// Rewrite spoken file references in `text` to `@path` mentions using `files`
-/// (repo-relative paths). See the module note above for the safety contract.
 /// Render a resolved repo-relative `path` into an agent's mention syntax by
 /// substituting `{path}` in its template (e.g. `@{path}` → `@src/lib.rs`).
 fn render_ref(template: &str, path: &str) -> String {
     template.replace("{path}", path)
 }
 
+/// Rewrite spoken file references in `text` to the agent's mention syntax
+/// (`ref_template`, `{path}` substituted) using `index`, the working
+/// directory's precomputed file keys. See the module note above for the safety
+/// contract.
 pub fn resolve_file_references(
     text: &str,
-    files: &[String],
+    file_index: &FileMatchIndex,
     ref_template: &str,
     config: &FileReferenceConfig,
 ) -> String {
-    if files.is_empty() {
+    if file_index.is_empty() {
         return text.to_string();
     }
     let nouns: Vec<String> = config
@@ -983,7 +1024,7 @@ pub fn resolve_file_references(
                     .iter()
                     .map(|word| word.lower.clone())
                     .collect();
-                if let Some(path) = resolve_query(&query, files) {
+                if let Some(path) = resolve_query(&query, &file_index.keys) {
                     edits.push((span_start, word.end, render_ref(ref_template, path)));
                 }
             }
@@ -1007,7 +1048,7 @@ pub fn resolve_file_references(
                     .iter()
                     .map(|word| word.lower.clone())
                     .collect();
-                if let Some(path) = resolve_query(&query, files) {
+                if let Some(path) = resolve_query(&query, &file_index.keys) {
                     edits.push((span_start, words[cursor - 1].end, render_ref(ref_template, path)));
                 }
             }
@@ -1060,7 +1101,8 @@ mod tests {
     }
 
     fn refs(text: &str) -> String {
-        resolve_file_references(text, &repo_files(), "@{path}", &FileReferenceConfig::default())
+        let index = FileMatchIndex::build(&repo_files());
+        resolve_file_references(text, &index, "@{path}", &FileReferenceConfig::default())
     }
 
     #[test]
@@ -1119,7 +1161,12 @@ mod tests {
         assert_eq!(refs("the daemon is fast"), "the daemon is fast");
         // Empty index: untouched.
         assert_eq!(
-            resolve_file_references("open settings", &[], "@{path}", &FileReferenceConfig::default()),
+            resolve_file_references(
+                "open settings",
+                &FileMatchIndex::build(&[]),
+                "@{path}",
+                &FileReferenceConfig::default()
+            ),
             "open settings"
         );
         // Idempotent: a resolved mention is not rewritten again.
@@ -1134,7 +1181,7 @@ mod tests {
         assert_eq!(
             resolve_file_references(
                 "open settings",
-                &repo_files(),
+                &FileMatchIndex::build(&repo_files()),
                 "/add {path}",
                 &FileReferenceConfig::default()
             ),
