@@ -53,12 +53,13 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
   microseconds): filler removal, "Tuesday, actually Wednesday" corrections,
   personal dictionary, snippets, and per-app style (e.g. terminals get
   lowercase/no-punctuation treatment via WM_CLASS detection).
-- **Developer context (opt-in):** dictate into a terminal running Claude Code
-  and spoken file references resolve to `@path` mentions, matched against that
-  session's working directory. With one session the daemon finds it directly;
-  because gnome-terminal shares one process across tabs, the *active* directory
-  comes from a small Claude Code hook (`bin/sunoto-claude-cwd-hook.sh`, wired to
-  `UserPromptSubmit`/`SessionStart`). Off by default (`polish.file_references`).
+- **Developer context (opt-in):** dictate into a terminal running a coding
+  agent (Claude Code and Gemini CLI by default; any agent is one config row) and
+  spoken file references resolve to that agent's `@path` mention syntax, matched
+  against the session's working directory. With one session the daemon finds it
+  directly; because gnome-terminal shares one process across tabs, when several
+  sessions match it picks the one whose terminal was most recently active (no
+  per-agent hook needed). Off by default (`polish.file_references`).
 - **Injection safety:** Enter/Tab are neutralized by default, focus is
   revalidated before typing (if you switched windows, the text parks on the
   clipboard with a notice instead), and held modifiers are released around
@@ -98,7 +99,7 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
 | `polish_enabled` | `true` | Deterministic cleanup pipeline on/off. |
 | `overlay_backend` | `"auto"` | `"wayland"` for a Wayland GTK/layer-shell overlay, `"x11"` for X11 anchoring, `"auto"` to pick from the active GDK backend. |
 | `polish.app_styles` | terminal rules | Per-WM_CLASS writing styles. |
-| `polish.file_references` | disabled | Resolve spoken file names to Claude Code `@path` mentions when dictating into a terminal running `claude` (opt-in; set `enabled` true). |
+| `polish.file_references` | disabled | Resolve spoken file names to the focused agent's mention syntax when dictating into a terminal running a configured agent. `agents` is a registry of `{name, process, ref_template}` rows (default: `claude`, `gemini`, both `@{path}`); add a row for others, e.g. Aider `{"name":"aider","process":"aider","ref_template":"/add {path}"}`. Opt-in; set `enabled` true. |
 
 See [desktop configuration](docs/desktop-configuration.md) for the complete
 Wayland/Hyprland and X11 setup, keybindings, profiles, and troubleshooting.

@@ -10,86 +10,74 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
-/// A developer tool detected in the focused window's process subtree.
+/// What the detector needs to recognize one agent: a `name` to report back
+/// (which selects the reference syntax) and the `/proc/<pid>/comm` value the
+/// agent runs as. The daemon builds these from the configured registry, so
+/// adding an agent is config, not code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DevTool {
-    /// Claude Code CLI (the process is literally named `claude`), with the
-    /// working directory it is running in.
-    ClaudeCode { cwd: PathBuf },
+pub struct AgentProcess {
+    /// Configured agent identifier, echoed back in `DetectedAgent::name`.
+    pub name: String,
+    /// The `/proc/<pid>/comm` value to match (e.g. `claude`, `gemini`).
+    pub comm: String,
+}
+
+/// A coding agent found running in the focused window's process subtree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedAgent {
+    /// The configured agent `name` that matched (selects the reference syntax).
+    pub name: String,
+    /// The working directory the agent is running in.
+    pub cwd: PathBuf,
 }
 
 /// Upper bound on the `/proc` sweep, so a runaway process table can never stall
-/// the caller. Real systems have far fewer processes named `claude`.
-const MAX_CLAUDE_CANDIDATES: usize = 64;
+/// the caller. Real systems have far fewer agent processes than this.
+const MAX_AGENT_CANDIDATES: usize = 64;
 /// Bound on the parent-chain walk when proving descent.
 const MAX_ANCESTRY_DEPTH: usize = 64;
 
-/// Detect a supported developer tool running inside the process subtree of
-/// `window_pid` (the PID that owns the focused window — for a terminal, the
-/// emulator process).
+/// Detect a coding agent running inside the process subtree of `window_pid`
+/// (the PID that owns the focused window — for a terminal, the emulator
+/// process). `agents` is the configured registry: each entry pairs a `name`
+/// with the `/proc/<pid>/comm` value to match, so new agents are added by
+/// config rather than code.
 ///
 /// gnome-terminal runs every tab and window under a single server process, so
-/// `window_pid` alone cannot say which Claude session is focused. We gather
-/// every `claude` descendant's working directory and, when there is more than
-/// one, break the tie with the active-cwd hint the Claude Code hook records
-/// (the most recently active session). A single candidate needs no hint; with
-/// several and no usable hint we refuse to guess.
-pub fn detect_tool(window_pid: u32) -> Option<DevTool> {
-    let cwds = claude_descendant_cwds(window_pid);
-    select_cwd(&cwds, read_active_cwd().as_deref()).map(|cwd| DevTool::ClaudeCode { cwd })
+/// `window_pid` alone cannot say which session is focused. When more than one
+/// agent session matches, we break the tie by terminal activity — the focused
+/// session is the one whose pts was most recently used (see `tty_activity`) —
+/// which is agent-agnostic and needs no per-agent hook. A single candidate is
+/// used directly; on a tie, or with no activity to compare, we refuse to guess.
+pub fn detect_agent(window_pid: u32, agents: &[AgentProcess]) -> Option<DetectedAgent> {
+    let candidates = agent_candidates(window_pid, agents);
+    select_candidate(candidates).map(|chosen| DetectedAgent {
+        name: chosen.name,
+        cwd: chosen.cwd,
+    })
 }
 
-/// Working directories of every `claude` process under `window_pid`, de-duped.
-fn claude_descendant_cwds(window_pid: u32) -> Vec<PathBuf> {
-    let mut cwds: Vec<PathBuf> = Vec::new();
-    for pid in processes_named("claude") {
-        if is_descendant_of(pid, window_pid)
-            && let Some(cwd) = process_cwd(pid)
-            && !cwds.contains(&cwd)
-        {
-            cwds.push(cwd);
-        }
-    }
-    cwds
+/// One agent session under the focused window: which agent matched, its working
+/// directory, and when its terminal was last active (used only to break ties).
+struct Candidate {
+    name: String,
+    cwd: PathBuf,
+    activity: Option<SystemTime>,
 }
 
-/// Pick the working directory to resolve against: the sole candidate, or the
-/// one the active-cwd hint points to when several Claude sessions share a
-/// terminal. Returns `None` rather than guess when the hint cannot decide.
-fn select_cwd(cwds: &[PathBuf], active: Option<&Path>) -> Option<PathBuf> {
-    match cwds {
-        [] => None,
-        [only] => Some(only.clone()),
-        many => active
-            .filter(|hint| many.iter().any(|cwd| cwd.as_path() == *hint))
-            .map(Path::to_path_buf),
-    }
-}
-
-/// Path of the active-cwd hint file written by `bin/sunoto-claude-cwd-hook.sh`:
-/// `$XDG_RUNTIME_DIR/sunoto/claude-active-cwd`.
-pub fn active_cwd_file() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("sunoto/claude-active-cwd")
-}
-
-/// The most recently recorded active Claude working directory, if any.
-fn read_active_cwd() -> Option<PathBuf> {
-    let raw = fs::read_to_string(active_cwd_file()).ok()?;
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
-}
-
-/// PIDs whose `/proc/<pid>/comm` equals `name`, capped at a sane maximum.
-fn processes_named(name: &str) -> Vec<u32> {
-    let mut pids = Vec::new();
+/// Every configured agent session under `window_pid`, found in a single `/proc`
+/// pass and de-duplicated by (name, cwd) keeping the most recent activity.
+fn agent_candidates(window_pid: u32, agents: &[AgentProcess]) -> Vec<Candidate> {
+    let mut candidates: Vec<Candidate> = Vec::new();
     let Ok(entries) = fs::read_dir("/proc") else {
-        return pids;
+        return candidates;
     };
     for entry in entries.flatten() {
+        if candidates.len() >= MAX_AGENT_CANDIDATES {
+            break;
+        }
         let Some(pid) = entry
             .file_name()
             .to_str()
@@ -97,14 +85,80 @@ fn processes_named(name: &str) -> Vec<u32> {
         else {
             continue; // non-numeric /proc entries (self, cpuinfo, ...)
         };
-        if process_comm(pid).as_deref() == Some(name) {
-            pids.push(pid);
-            if pids.len() >= MAX_CLAUDE_CANDIDATES {
-                break;
+        let Some(comm) = process_comm(pid) else {
+            continue;
+        };
+        let Some(spec) = agents.iter().find(|agent| agent.comm == comm) else {
+            continue;
+        };
+        if !is_descendant_of(pid, window_pid) {
+            continue;
+        }
+        let Some(cwd) = process_cwd(pid) else {
+            continue;
+        };
+        let activity = tty_activity(pid);
+        match candidates
+            .iter_mut()
+            .find(|candidate| candidate.name == spec.name && candidate.cwd == cwd)
+        {
+            Some(existing) => existing.activity = max_time(existing.activity, activity),
+            None => candidates.push(Candidate {
+                name: spec.name.clone(),
+                cwd,
+                activity,
+            }),
+        }
+    }
+    candidates
+}
+
+/// Choose the session to resolve against: the sole candidate, or — when several
+/// sessions share a terminal — the one whose terminal was most recently active.
+/// Refuses to guess on a tie, or when no activity is known, the same safe
+/// fallback the resolver uses elsewhere for an undecidable match.
+fn select_candidate(mut candidates: Vec<Candidate>) -> Option<Candidate> {
+    match candidates.len() {
+        0 => None,
+        1 => candidates.pop(),
+        _ => {
+            let newest = candidates.iter().filter_map(|c| c.activity).max()?;
+            let mut at_newest = candidates.into_iter().filter(|c| c.activity == Some(newest));
+            match (at_newest.next(), at_newest.next()) {
+                (Some(only), None) => Some(only),
+                _ => None, // tie → refuse to guess
             }
         }
     }
-    pids
+}
+
+/// Most recent activity on `pid`'s controlling terminal: the newer of its pts
+/// device's access (input) and modify (output) times. The focused terminal is
+/// the one the user is interacting with, so its pts is the most recently
+/// active. Agent-agnostic — it reads the terminal device, not the agent — and
+/// replaces the old per-agent cwd hook. `None` when the process has no pts, in
+/// which case it cannot win a tie.
+fn tty_activity(pid: u32) -> Option<SystemTime> {
+    let pts = process_pts(pid)?;
+    let meta = fs::metadata(&pts).ok()?;
+    max_time(meta.accessed().ok(), meta.modified().ok())
+}
+
+/// The `/dev/pts/N` slave backing `pid`'s stdio — stdin, then stdout, then
+/// stderr, whichever first points at a pts.
+fn process_pts(pid: u32) -> Option<PathBuf> {
+    [0, 1, 2].into_iter().find_map(|fd| {
+        let target = fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok()?;
+        target.to_str()?.starts_with("/dev/pts/").then_some(target)
+    })
+}
+
+/// The later of two optional timestamps.
+fn max_time(a: Option<SystemTime>, b: Option<SystemTime>) -> Option<SystemTime> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// The process name from `/proc/<pid>/comm` (the kernel-truncated comm value).
@@ -246,26 +300,49 @@ mod tests {
     }
 
     #[test]
-    fn select_cwd_uses_the_active_hint_only_to_break_ties() {
-        let voice = PathBuf::from("/x/voice-dictation");
-        let vaani = PathBuf::from("/x/vaani-livekit");
-        // Sole candidate: used directly, hint irrelevant.
+    fn select_candidate_uses_terminal_activity_only_to_break_ties() {
+        use std::time::Duration;
+        let at = |secs| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
+        let candidate = |name: &str, cwd: &str, activity| Candidate {
+            name: name.to_string(),
+            cwd: PathBuf::from(cwd),
+            activity,
+        };
+
+        // Sole candidate: used directly, activity irrelevant.
         assert_eq!(
-            select_cwd(std::slice::from_ref(&voice), None),
-            Some(voice.clone())
+            select_candidate(vec![candidate("claude", "/x/voice-dictation", None)])
+                .map(|chosen| chosen.cwd),
+            Some(PathBuf::from("/x/voice-dictation"))
         );
-        // Several candidates: the hint picks the matching one.
+        // Several candidates: the most recently active terminal wins, across
+        // agents as well as sessions.
         assert_eq!(
-            select_cwd(&[vaani.clone(), voice.clone()], Some(&voice)),
-            Some(voice.clone())
+            select_candidate(vec![
+                candidate("claude", "/x/vaani-livekit", at(10)),
+                candidate("gemini", "/x/voice-dictation", at(20)),
+            ])
+            .map(|chosen| chosen.cwd),
+            Some(PathBuf::from("/x/voice-dictation"))
         );
-        // Several candidates, hint not among them: refuse to guess.
+        // Several candidates tied on activity: refuse to guess.
         assert_eq!(
-            select_cwd(&[vaani.clone(), voice.clone()], Some(Path::new("/x/other"))),
+            select_candidate(vec![
+                candidate("claude", "/x/vaani-livekit", at(5)),
+                candidate("claude", "/x/voice-dictation", at(5)),
+            ])
+            .map(|chosen| chosen.cwd),
             None
         );
-        // Several candidates, no hint: refuse to guess.
-        assert_eq!(select_cwd(&[vaani, voice], None), None);
+        // Several candidates, no activity to compare: refuse to guess.
+        assert_eq!(
+            select_candidate(vec![
+                candidate("claude", "/x/vaani-livekit", None),
+                candidate("claude", "/x/voice-dictation", None),
+            ])
+            .map(|chosen| chosen.cwd),
+            None
+        );
     }
 
     #[test]

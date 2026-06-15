@@ -15,33 +15,35 @@ variables, file names, and CLI commands"; "use of nearby text as context").
 Phases A and B are implemented on branch `feat/claude-code-file-references`,
 shipped **default-off** (`polish.file_references.enabled = false`):
 
-- **`sunoto-context`** (new crate): `/proc`-based `claude` detection + cwd, and
-  a `git ls-files` / bounded-walk file index.
+- **`sunoto-context`** (new crate): config-driven `/proc` agent detection + cwd
+  (`detect_agent` over an `AgentProcess` registry), and a `git ls-files` /
+  bounded-walk file index.
 - **`sunoto-linux`**: focused-window `_NET_WM_PID` and `_NET_WM_NAME` reads via
   a new `window_context` (the WM_CLASS climb now reads all three at once).
 - **`sunoto-polish`**: `resolve_file_references` (conservative,
-  unique-match-only) plus `FileReferenceConfig`.
-- **`sunoto-daemon`**: detects Claude Code at finalize (terminal windows only,
-  so the `/proc` scan is skipped otherwise), caches the index per cwd, and
+  unique-match-only, per-agent `ref_template`) plus `FileReferenceConfig` and its
+  `AgentConfig` registry.
+- **`sunoto-daemon`**: detects any configured agent at finalize (terminal windows
+  only, so the `/proc` scan is skipped otherwise), caches the index per cwd, and
   rewrites references after the polish pass.
 
 Verified: `cargo test --workspace` (including new resolver and `/proc` tests),
 `cargo clippy --workspace -- -D warnings`, and the GPU-free Python protocol
-suites all pass. Phase C (disambiguation UX, overlay indication, other tools)
-remains future work.
+suites all pass. Phase C (overlay indication, eval corpus) remains future work.
 
 **Update (later June 15) — field-tested live, two fixes from the logs:**
 
 1. **Wrong session picked.** gnome-terminal runs every tab/window under one
    `gnome-terminal-server` PID, so PID-only detection found *all* `claude`
    sessions and indexed the first `/proc` listed (the wrong repo). The daemon
-   now gathers every `claude` working directory under the focused terminal and,
-   when there is more than one, picks the active one from a hint file written by
-   a Claude Code hook — `bin/sunoto-claude-cwd-hook.sh`, wired to
-   `UserPromptSubmit`/`SessionStart` in `~/.claude/settings.json`, writing
-   `$XDG_RUNTIME_DIR/sunoto/claude-active-cwd`. A sole session needs no hook;
-   with several and no usable hint the daemon refuses to guess
-   (`select_cwd`, unit-tested).
+   now gathers every matching agent session under the focused terminal and, when
+   there is more than one, picks the session whose **controlling terminal was
+   most recently active** (`/dev/pts/N` atime/mtime via `/proc/<pid>/fd`) — an
+   agent-agnostic, hook-free tie-break (`select_candidate`, unit-tested). A sole
+   session needs no tie-break; on a tie, or with no readable pts activity, the
+   daemon refuses to guess. *(An earlier iteration used a Claude-specific cwd
+   hint file written by a Claude Code hook; the terminal-activity tie-break
+   replaced it so the mechanism generalizes to every agent.)*
 2. **Matcher too strict.** Now four tiers (exact separator-aware join →
    path-qualified → all-tokens-in-basename → best-overlap), tolerating spoken
    `hyphen`/`dot`, compound names (`make file` → `Makefile`), and a one-word ASR
@@ -131,27 +133,33 @@ from `hyprctl activewindow -j`. The daemon carries them as
 release. `class` still drives `resolve_style`; `pid` feeds tool detection;
 `title` is logged.
 
-`sunoto-context` (new std-only crate) turns the PID into a tool + working dir:
+`sunoto-context` (std-only crate) turns the PID + a config-driven agent registry
+into a detected agent + working dir:
 
 ```
-enum DevTool { ClaudeCode { cwd: PathBuf } }   // VsCode, Shell, ... later
-fn detect_tool(window_pid: u32) -> Option<DevTool>
+struct AgentProcess  { name: String, comm: String }      // one registry row
+struct DetectedAgent { name: String, cwd: PathBuf }
+fn detect_agent(window_pid: u32, agents: &[AgentProcess]) -> Option<DetectedAgent>
 ```
 
-- Enumerate processes named `claude`; keep those that descend from `window_pid`
-  (walk each one's `/proc/<pid>/status` `PPid` chain, bounded) and read its
-  `/proc/<pid>/cwd`.
-- **Disambiguate** (`select_cwd`): gnome-terminal shares one server PID across
-  tabs, so a window PID can match several `claude` sessions. One candidate is
-  used directly; with several, the active-cwd hint
-  (`$XDG_RUNTIME_DIR/sunoto/claude-active-cwd`, written by the Claude Code hook
-  `bin/sunoto-claude-cwd-hook.sh`) breaks the tie, and the daemon **refuses to
-  guess** when the hint matches no candidate.
+- One `/proc` pass: keep processes whose `comm` matches any registry row and
+  that descend from `window_pid` (walk each one's `/proc/<pid>/status` `PPid`
+  chain, bounded), reading `/proc/<pid>/cwd` for each.
+- **Disambiguate** (`select_candidate`): gnome-terminal shares one server PID
+  across tabs, so a window PID can match several agent sessions. One candidate
+  is used directly; with several, the daemon picks the session whose
+  **controlling terminal was most recently active** — the newer of its
+  `/dev/pts/N` atime (input) / mtime (output), read via `/proc/<pid>/fd`. This
+  is agent-agnostic (it reads the terminal device, not the agent), needs **no
+  per-agent hook**, and the daemon still **refuses to guess** on a tie or when
+  no pts activity is readable.
 
 The daemon logs `insertion target at release:` (class + title) and, on a cache
 miss, `indexing <cwd> …`. *(The original design walked to "the first `claude`
 descendant"; field testing showed that picks an arbitrary session under a
-shared terminal — hence the hint-based `select_cwd`.)*
+shared terminal. The first fix was a Claude-specific cwd hint file written by a
+Claude Code hook; this was then replaced by the hook-free, agent-agnostic
+terminal-activity tie-break above.)*
 
 ### 4.2 File index (`sunoto-context::FileIndex`)
 
@@ -168,11 +176,13 @@ deferred to Phase C; today the first dictation in a new repo pays the
 
 ### 4.3 Reference resolution (`sunoto-polish::resolve_file_references`)
 
-`resolve_file_references(text, files, &FileReferenceConfig) -> String` — pure,
-no I/O, well inside the deterministic budget. The daemon runs it **after**
-`polish()` (not as a stage inside it, since it needs the file list), gated by
-`resolve_claude_file_references`: only when `file_references.enabled`, the
-focused class is a terminal, and `detect_tool` returns a cwd.
+`resolve_file_references(text, files, ref_template, &FileReferenceConfig) -> String`
+— pure, no I/O, well inside the deterministic budget. The daemon runs it
+**after** `polish()` (not as a stage inside it, since it needs the file list),
+gated by `resolve_agent_file_references`: only when `file_references.enabled`,
+the focused class is a terminal, and `detect_agent` returns an agent + cwd. The
+`ref_template` of the matched registry row is applied to each resolved path
+(`{path}` substituted), so the output syntax is per-agent config, not code.
 
 - **Spans.** A run of name words adjacent to a trigger: a trigger **noun** after
   the name ("the daemon **file**") or a trigger **verb** before it ("**open**
@@ -194,12 +204,21 @@ Reusing the personal dictionary for project jargon is left to Phase C.
 ```jsonc
 "file_references": {
   "enabled": false,                                 // opt-in
-  "tools": ["claude"],                              // focused-tool gate
+  "agents": [                                        // registry: one row per agent
+    { "name": "claude", "process": "claude", "ref_template": "@{path}" },
+    { "name": "gemini", "process": "gemini", "ref_template": "@{path}" }
+    // add e.g. { "name": "aider", "process": "aider", "ref_template": "/add {path}" }
+  ],
   "trigger_nouns": ["file", "module", "script"],
   "trigger_verbs": ["open", "edit", "check", "update", "read", "see"],
   "max_index_files": 5000
 }
 ```
+
+`agents` replaces the original `tools` string list: detection, cwd resolution,
+and rendering are one generic engine, so a new agent is a row (process name +
+`{path}` template), never new code. A stale `tools` key in an old config is
+simply ignored (no `deny_unknown_fields`), so the change is backward-compatible.
 
 Backward-compatible exactly like every other settings addition (the
 `serde(default)` round-trip test guards it). *(The original sketch had a single
@@ -224,19 +243,25 @@ verb triggers and gates on a unique match, not a score.)*
   `FocusInfo { class, pid, title }`. Verifiable in `journalctl`, reusable by
   every later feature.
 - **Phase B — file index + resolver. ✅ Done (default-off).** `FileIndex` +
-  `resolve_file_references` + `FileReferenceConfig` + the Claude Code cwd hook.
-  Index is lazily built and cwd-cached (background warming deferred to C). Unit
-  tests cover the matcher, `select_cwd`, and the `/proc` helpers.
-- **Phase C — polish & generalization (next).** Disambiguation UX, overlay
-  indication ("↳ 2 file refs"), background index warming + inotify refresh,
-  spoken CLI/identifier formatting in terminals, the spoken→expected corpus +
-  eval, dictionary reuse for jargon, and extending `DevTool` to VS Code
-  (workspace cwd) and plain shells (relative paths, no `@`).
+  `resolve_file_references` + `FileReferenceConfig`. Index is lazily built and
+  cwd-cached (background warming deferred to C). Unit tests cover the matcher,
+  `select_candidate`, and the `/proc` helpers.
+- **Phase B′ — agent generalization. ✅ Done (default-off).** `DevTool` →
+  config-driven registry (`AgentConfig` rows: `process` + `ref_template`);
+  `detect_agent` matches any configured agent in one `/proc` pass; the
+  Claude-specific cwd hook replaced by hook-free terminal-activity disambiguation
+  (`select_candidate`). Claude Code + Gemini CLI ship as default rows; Codex /
+  Aider are config rows (syntax pending verification).
+- **Phase C — polish & remaining generalization (next).** Overlay indication
+  ("↳ 2 file refs"), background index warming + inotify refresh, spoken
+  CLI/identifier formatting in terminals, the spoken→expected corpus + eval,
+  dictionary reuse for jargon, and non-terminal targets — VS Code (workspace
+  cwd) and plain shells (relative paths, no `@`).
 
 ## 7. Testing (matches repo conventions)
 
-- `sunoto-context`: `select_cwd` tie-breaking, the `/proc` descendant/`comm`
-  helpers, and the file-index walk (temp-dir fixture).
+- `sunoto-context`: `select_candidate` activity tie-breaking, the `/proc`
+  descendant/`comm` helpers, and the file-index walk (temp-dir fixture).
 - `sunoto-polish`: `resolve_file_references` — unique matches, ASR-noise
   tolerance (spoken hyphens, `make file`→`Makefile`, `cloud`→`claude`), and the
   conservative cases (ambiguous/unknown → unchanged, idempotent).
@@ -252,7 +277,7 @@ verb triggers and gates on a unique match, not a score.)*
 | --- | --- |
 | Over-triggering (rewriting non-file phrases) | Trigger words + confidence gate + default-off + visible indication |
 | ASR mangles project file names | Four-tier matcher tolerant of spoken separators and a one-word slip; unique-match-only (dictionary reuse deferred to C) |
-| Multiple `claude` under one terminal (gnome-terminal tabs) | **Resolved:** `select_cwd` uses the Claude Code cwd hook (most-recently-active session) and refuses to guess without it |
+| Multiple agent sessions under one terminal (gnome-terminal tabs) | **Resolved:** `select_candidate` picks the most-recently-active controlling terminal (pts atime/mtime) — hook-free, agent-agnostic — and refuses to guess on a tie |
 | Title-based detection unreliable across terminals | Rely on `/proc`; title is only a secondary hint |
 | Latency | Index cached + warmed off the release path; resolver is pure string work |
 | Stale cwd after `cd` | cwd re-read at each capture (cheap); index keyed by cwd |

@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
-use sunoto_context::{DevTool, FileIndex, detect_tool};
+use sunoto_context::{AgentProcess, DetectedAgent, FileIndex, detect_agent};
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionState};
 use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_linux::x11::{
@@ -291,11 +291,12 @@ fn is_terminal_class(class: &str) -> bool {
     .any(|needle| class.contains(needle))
 }
 
-/// Resolve spoken file references to Claude Code `@path` mentions when the
-/// focused window is a terminal running `claude`. Gated by config and the
-/// terminal-class check so the `/proc` scan never runs for ordinary dictation;
-/// the per-cwd file index is cached. Any miss leaves the text untouched.
-fn resolve_claude_file_references(
+/// Resolve spoken file references to the focused coding agent's mention syntax
+/// (e.g. Claude Code / Gemini CLI `@path`) when the focused window is a terminal
+/// running a configured agent. Gated by config and the terminal-class check so
+/// the `/proc` scan never runs for ordinary dictation; the per-cwd file index is
+/// cached. Any miss leaves the text untouched.
+fn resolve_agent_file_references(
     text: String,
     settings: &Settings,
     focused_class: Option<&(String, String)>,
@@ -304,24 +305,35 @@ fn resolve_claude_file_references(
     session_id: u64,
 ) -> String {
     let config = &settings.polish.file_references;
-    if !config.enabled || !config.tools.iter().any(|tool| tool.as_str() == "claude") {
+    if !config.enabled || config.agents.is_empty() {
         return text;
     }
     let Some(pid) = focused_pid else {
         return text;
     };
-    // Claude Code runs inside a terminal; skip the /proc scan for anything else.
+    // Coding agents run inside a terminal; skip the /proc scan for anything else.
     let in_terminal = focused_class
         .is_some_and(|(instance, class)| is_terminal_class(instance) || is_terminal_class(class));
     if !in_terminal {
         return text;
     }
-    let Some(DevTool::ClaudeCode { cwd }) = detect_tool(pid) else {
+    let specs: Vec<AgentProcess> = config
+        .agents
+        .iter()
+        .map(|agent| AgentProcess {
+            name: agent.name.clone(),
+            comm: agent.process.clone(),
+        })
+        .collect();
+    let Some(DetectedAgent { name, cwd }) = detect_agent(pid, &specs) else {
+        return text;
+    };
+    let Some(agent) = config.agents.iter().find(|agent| agent.name == name) else {
         return text;
     };
     if cache.as_ref().map(|index| index.root.as_path()) != Some(cwd.as_path()) {
         logging::info(&format!(
-            "session {session_id}: indexing {} for Claude Code file references",
+            "session {session_id}: indexing {} for {name} file references",
             cwd.display()
         ));
         *cache = Some(FileIndex::build(&cwd, config.max_index_files));
@@ -329,10 +341,10 @@ fn resolve_claude_file_references(
     let Some(index) = cache.as_ref() else {
         return text;
     };
-    let resolved = resolve_file_references(&text, &index.files, config);
+    let resolved = resolve_file_references(&text, &index.files, &agent.ref_template, config);
     if resolved != text {
         logging::info(&format!(
-            "session {session_id}: resolved Claude Code file references"
+            "session {session_id}: resolved {name} file references"
         ));
     }
     resolved
@@ -920,7 +932,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         } else {
                             text
                         };
-                        let output = resolve_claude_file_references(
+                        let output = resolve_agent_file_references(
                             output,
                             &settings,
                             focused_class.as_ref(),

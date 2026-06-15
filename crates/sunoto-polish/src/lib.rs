@@ -59,16 +59,46 @@ impl Default for PolishConfig {
     }
 }
 
+/// One coding agent the file-reference resolver knows about: the `/proc`
+/// process name to detect it by, and the template that turns a repo-relative
+/// path into that agent's mention syntax. Adding an agent is a config row, not
+/// code — only the process name and template differ between agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// Identifier reported by detection; selects this row's template.
+    pub name: String,
+    /// The `/proc/<pid>/comm` value the agent runs as (e.g. `claude`).
+    pub process: String,
+    /// Mention template; `{path}` is replaced with the repo-relative path
+    /// (e.g. `@{path}` for Claude Code and Gemini CLI).
+    pub ref_template: String,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            process: String::new(),
+            ref_template: "@{path}".to_string(),
+        }
+    }
+}
+
 /// Spoken file-reference resolution (e.g. Claude Code `@path` mentions). The
-/// daemon gates this on `enabled` and on a matching focused tool; this config
-/// carries the triggers and the index bound. Off by default.
+/// daemon gates this on `enabled` and on detecting one of `agents` in the
+/// focused terminal; this config carries the agent registry, the triggers, and
+/// the index bound. Off by default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileReferenceConfig {
-    /// Master switch (the daemon also requires a matching focused tool).
+    /// Master switch (the daemon also requires a matching focused agent).
     pub enabled: bool,
-    /// Focused tools that activate resolution (forward-compatible; v1: claude).
-    pub tools: Vec<String>,
+    /// Coding agents to recognize and their mention syntax. Detecting any of
+    /// these under the focused terminal activates resolution. Defaults cover
+    /// the agents that use inline `@path` (Claude Code, Gemini CLI); add a row
+    /// for others (e.g. Aider `/add {path}`) after confirming their syntax.
+    pub agents: Vec<AgentConfig>,
     /// Nouns that, following a name, mark a file reference ("the daemon file").
     pub trigger_nouns: Vec<String>,
     /// Verbs that, preceding a name, mark a file reference ("open daemon").
@@ -79,9 +109,14 @@ pub struct FileReferenceConfig {
 
 impl Default for FileReferenceConfig {
     fn default() -> Self {
+        let agent = |name: &str, process: &str| AgentConfig {
+            name: name.to_string(),
+            process: process.to_string(),
+            ref_template: "@{path}".to_string(),
+        };
         Self {
             enabled: false,
-            tools: vec!["claude".to_string()],
+            agents: vec![agent("claude", "claude"), agent("gemini", "gemini")],
             trigger_nouns: ["file", "module", "script"].map(str::to_string).to_vec(),
             trigger_verbs: ["open", "edit", "check", "update", "read", "see"]
                 .map(str::to_string)
@@ -890,9 +925,16 @@ fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
 
 /// Rewrite spoken file references in `text` to `@path` mentions using `files`
 /// (repo-relative paths). See the module note above for the safety contract.
+/// Render a resolved repo-relative `path` into an agent's mention syntax by
+/// substituting `{path}` in its template (e.g. `@{path}` → `@src/lib.rs`).
+fn render_ref(template: &str, path: &str) -> String {
+    template.replace("{path}", path)
+}
+
 pub fn resolve_file_references(
     text: &str,
     files: &[String],
+    ref_template: &str,
     config: &FileReferenceConfig,
 ) -> String {
     if files.is_empty() {
@@ -942,7 +984,7 @@ pub fn resolve_file_references(
                     .map(|word| word.lower.clone())
                     .collect();
                 if let Some(path) = resolve_query(&query, files) {
-                    edits.push((span_start, word.end, format!("@{path}")));
+                    edits.push((span_start, word.end, render_ref(ref_template, path)));
                 }
             }
         }
@@ -966,7 +1008,7 @@ pub fn resolve_file_references(
                     .map(|word| word.lower.clone())
                     .collect();
                 if let Some(path) = resolve_query(&query, files) {
-                    edits.push((span_start, words[cursor - 1].end, format!("@{path}")));
+                    edits.push((span_start, words[cursor - 1].end, render_ref(ref_template, path)));
                 }
             }
         }
@@ -1018,7 +1060,7 @@ mod tests {
     }
 
     fn refs(text: &str) -> String {
-        resolve_file_references(text, &repo_files(), &FileReferenceConfig::default())
+        resolve_file_references(text, &repo_files(), "@{path}", &FileReferenceConfig::default())
     }
 
     #[test]
@@ -1077,12 +1119,27 @@ mod tests {
         assert_eq!(refs("the daemon is fast"), "the daemon is fast");
         // Empty index: untouched.
         assert_eq!(
-            resolve_file_references("open settings", &[], &FileReferenceConfig::default()),
+            resolve_file_references("open settings", &[], "@{path}", &FileReferenceConfig::default()),
             "open settings"
         );
         // Idempotent: a resolved mention is not rewritten again.
         let once = refs("look at the daemon file");
         assert_eq!(refs(&once), once);
+    }
+
+    #[test]
+    fn file_references_honor_the_agent_template() {
+        // The same match renders into whatever mention syntax the agent uses;
+        // only the template differs per agent (e.g. Aider `/add {path}`).
+        assert_eq!(
+            resolve_file_references(
+                "open settings",
+                &repo_files(),
+                "/add {path}",
+                &FileReferenceConfig::default()
+            ),
+            "open /add apps/daemon/src/settings.rs"
+        );
     }
 
     #[test]

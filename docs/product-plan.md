@@ -34,29 +34,35 @@ code):
 
 - **Detection** — process name under the focused terminal (`claude`, `codex`,
   …), read from `/proc`.
-- **Working directory** — in order: (1) the agent's own hook writes an active-cwd
-  hint (Claude Code: `UserPromptSubmit`/`SessionStart` →
-  `bin/sunoto-claude-cwd-hook.sh`); (2) `/proc/<pid>/cwd` for a single session;
-  (3) a shell hint or pinned project otherwise.
-- **Reference syntax** — per-agent template (Claude Code `@{path}`; others
-  configurable, confirm on integration).
+- **Working directory** — agent-agnostic, no per-agent hook: `/proc/<pid>/cwd`
+  of the agent under the focused window. A single session is used directly; when
+  several share one terminal process (gnome-terminal tabs), the focused one is
+  the session whose pts was most recently active (controlling-terminal
+  atime/mtime). Refuse to guess on a tie.
+- **Reference syntax** — per-agent template, config-driven (`ref_template`,
+  `{path}` substituted): Claude Code / Gemini CLI `@{path}`; others configurable
+  (e.g. Aider `/add {path}`), confirm on integration.
 - **Commands** *(later)* — spoken agent commands (accept / reject / run),
   injection-safe.
 
-The spoken-file matcher is **agent-agnostic** (four tiers, unique-match-only;
-see `claude-code-integration-plan.md`) — only the cwd and output syntax differ.
+Detection, cwd resolution, and the four-tier matcher are **one generic engine**;
+each agent is a config row (`{name, process, ref_template}`), so adding an agent
+is settings, not code. The matcher is agent-agnostic (four tiers,
+unique-match-only; see `claude-code-integration-plan.md`) — only the process
+name and output template differ.
 
 | Agent | process | cwd source | file ref → | status |
 | --- | --- | --- | --- | --- |
-| Claude Code | `claude` | hook hint | `@path` | **shipped** |
-| OpenAI Codex CLI | `codex` | `/proc`; hook if any | `@path` *(verify)* | planned |
-| Aider | `aider` | `/proc` | `/add path` *(verify)* | planned |
-| Gemini CLI | `gemini` | `/proc` | `@path` *(verify)* | planned |
-| generic | configurable | `/proc` or shell hint | configurable | config-only |
+| Claude Code | `claude` | `/proc` + activity | `@path` | **shipped** |
+| Gemini CLI | `gemini` | `/proc` + activity | `@path` | **shipped** (default row) |
+| OpenAI Codex CLI | `codex` | `/proc` + activity | `/mention path` *(picker — verify)* | config row |
+| Aider | `aider` | `/proc` + activity | `/add path` *(verify)* | config row |
+| generic | configurable | `/proc` + activity | configurable | config-only |
 
 **Limitation:** gnome-terminal shares one process across tabs, so multiple
-*hookless* sessions under one terminal can't be told apart — the hint
-disambiguates when present, else the daemon refuses to guess.
+sessions under one terminal can't be told apart from X11 alone — the daemon
+breaks the tie by controlling-terminal activity (most recently used pts) and
+refuses to guess when that ties.
 
 ## How it works
 
@@ -92,10 +98,12 @@ detectable; resolved `@paths` are repo-relative and local-only.
 
 - **Done:** Rust daemon, X11 push-to-talk + insertion, always-warm Nemotron,
   deterministic polish (dictionary / snippets / app-styles), GTK overlay,
-  systemd packaging, and the **Claude Code adapter** (default-off).
-- **Now — coding-agent layer:** generalize `DevTool` into the config-driven
-  adapter registry; add Codex / Aider / Gemini; overlay "↳ N file refs"; spoken
-  developer formatting; a reference-resolution corpus + eval.
+  systemd packaging, and the **config-driven agent registry** (default-off) —
+  one generic engine, agents as config rows, hook-free cwd via terminal-activity
+  recency; Claude Code + Gemini CLI ship as default rows.
+- **Now — coding-agent layer:** verify and add Codex / Aider rows; overlay
+  "↳ N file refs"; spoken developer formatting; a reference-resolution corpus +
+  eval.
 - **Later:** Wayland adapters (GNOME / KDE / Hyprland via portals + AT-SPI),
   settings UI + tray, `.deb` / AppImage packaging, dictation history, warm-start
   reduction (16–32 s → <10 s goal).
@@ -114,7 +122,7 @@ detectable; resolved `@paths` are repo-relative and local-only.
 | Risk | Mitigation |
 | --- | --- |
 | Per-agent file syntax varies / unknown | Config-driven adapter + unique-match-only resolution; verify on integration |
-| Multiple sessions under one terminal | Active-cwd hook hint; refuse to guess otherwise |
+| Multiple sessions under one terminal | Pick the most recently active terminal (pts activity); refuse to guess on a tie |
 | ASR mangles file names | Four-tier matcher tolerant of spoken separators and a one-word slip |
 | Wayland blocks universal insertion | Portals + AT-SPI with capability-specific fallbacks |
 | GPU / NVIDIA unavailable | Replaceable backend + fallback; clear diagnostics |
