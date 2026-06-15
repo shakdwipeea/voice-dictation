@@ -39,6 +39,7 @@ pub struct PolishConfig {
     /// Base style, used when no app_styles rule matches the focused window.
     pub style: StyleProfile,
     pub app_styles: Vec<StyleRule>,
+    pub file_references: FileReferenceConfig,
 }
 
 impl Default for PolishConfig {
@@ -53,6 +54,37 @@ impl Default for PolishConfig {
             snippets: Vec::new(),
             style: StyleProfile::Prose,
             app_styles: default_app_styles(),
+            file_references: FileReferenceConfig::default(),
+        }
+    }
+}
+
+/// Spoken file-reference resolution (e.g. Claude Code `@path` mentions). The
+/// daemon gates this on `enabled` and on a matching focused tool; this config
+/// carries the triggers and the index bound. Off by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileReferenceConfig {
+    /// Master switch (the daemon also requires a matching focused tool).
+    pub enabled: bool,
+    /// Focused tools that activate resolution (forward-compatible; v1: claude).
+    pub tools: Vec<String>,
+    /// Nouns that, following a name, mark a file reference ("the daemon file").
+    pub trigger_nouns: Vec<String>,
+    /// Verbs that, preceding a name, mark a file reference ("open daemon").
+    pub trigger_verbs: Vec<String>,
+    /// Upper bound on indexed files (used by the daemon's index builder).
+    pub max_index_files: usize,
+}
+
+impl Default for FileReferenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tools: vec!["claude".to_string()],
+            trigger_nouns: ["file", "module", "script"].map(str::to_string).to_vec(),
+            trigger_verbs: ["open", "edit"].map(str::to_string).to_vec(),
+            max_index_files: 5000,
         }
     }
 }
@@ -654,6 +686,226 @@ fn capitalize_sentences(chars: &[char]) -> Vec<char> {
     output
 }
 
+// ---------------------------------------------------------------------------
+// File-reference resolution
+//
+// Rewrites spoken file references to `@relative/path` mentions for tools (like
+// Claude Code) that understand them. A pure transform over a file list the
+// daemon supplies from the focused tool's working directory; the daemon gates
+// it on `FileReferenceConfig::enabled` and the focused tool.
+//
+// Conservative by construction: a span is rewritten only when it maps to a
+// single, unambiguous file. Anything ambiguous or unmatched is left untouched,
+// the same safe-fallback rule the correction and snippet stages follow.
+// ---------------------------------------------------------------------------
+
+const REF_DETERMINERS: [&str; 14] = [
+    "the", "a", "an", "this", "that", "these", "those", "my", "our", "your", "his", "her", "their",
+    "its",
+];
+const REF_STOPWORDS: [&str; 11] = [
+    "to", "of", "in", "on", "at", "and", "or", "it", "please", "then", "also",
+];
+
+struct RefWord {
+    lower: String,
+    start: usize,
+    end: usize,
+}
+
+/// Word tokens (alphanumeric plus `_`, `-`, `.`) with their byte spans in the
+/// original text, so resolved references can be spliced back precisely.
+fn ref_words(text: &str) -> Vec<RefWord> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for (index, character) in text.char_indices() {
+        let is_word = character.is_alphanumeric() || matches!(character, '_' | '-' | '.');
+        match (is_word, start) {
+            (true, None) => start = Some(index),
+            (false, Some(begin)) => {
+                out.push(RefWord {
+                    lower: text[begin..index].to_lowercase(),
+                    start: begin,
+                    end: index,
+                });
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(begin) = start {
+        out.push(RefWord {
+            lower: text[begin..].to_lowercase(),
+            start: begin,
+            end: text.len(),
+        });
+    }
+    out
+}
+
+fn is_determiner(word: &str) -> bool {
+    REF_DETERMINERS.contains(&word)
+}
+
+/// (basename, stem), both lowercased, for a forward-slash relative path.
+fn path_keys(path: &str) -> (String, String) {
+    let base = path.rsplit('/').next().unwrap_or(path).to_lowercase();
+    let stem = match base.rfind('.') {
+        Some(dot) if dot > 0 => base[..dot].to_string(),
+        _ => base.clone(),
+    };
+    (base, stem)
+}
+
+/// The single file whose basename or stem equals `head` and whose path contains
+/// every `qualifier`; `None` when there is no match or more than one.
+fn unique_match<'a>(head: &str, qualifiers: &[String], files: &'a [String]) -> Option<&'a str> {
+    if head.len() < 2 {
+        return None;
+    }
+    let mut hit: Option<&'a str> = None;
+    for file in files {
+        let (base, stem) = path_keys(file);
+        if base != head && stem != head {
+            continue;
+        }
+        let lower = file.to_lowercase();
+        if !qualifiers
+            .iter()
+            .all(|qualifier| lower.contains(qualifier.as_str()))
+        {
+            continue;
+        }
+        match hit {
+            None => hit = Some(file.as_str()),
+            Some(existing) if existing == file.as_str() => {}
+            Some(_) => return None,
+        }
+    }
+    hit
+}
+
+/// Resolve a spoken name (lowercased word tokens) to one file path.
+fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
+    let tokens: Vec<String> = query
+        .iter()
+        .map(|token| token.trim_matches('.').to_string())
+        .filter(|token| !token.is_empty() && token.as_str() != "dot")
+        .collect();
+    let (head, qualifiers) = tokens.split_last()?;
+    // Interpretation A: the last token is the file name.
+    if let Some(found) = unique_match(head, qualifiers, files) {
+        return Some(found);
+    }
+    // Interpretation B: a spoken extension, e.g. "daemon" "rs" -> "daemon.rs".
+    if tokens.len() >= 2 {
+        let joined = format!("{}.{}", tokens[tokens.len() - 2], tokens[tokens.len() - 1]);
+        if let Some(found) = unique_match(&joined, &tokens[..tokens.len() - 2], files) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Rewrite spoken file references in `text` to `@path` mentions using `files`
+/// (repo-relative paths). See the module note above for the safety contract.
+pub fn resolve_file_references(
+    text: &str,
+    files: &[String],
+    config: &FileReferenceConfig,
+) -> String {
+    if files.is_empty() {
+        return text.to_string();
+    }
+    let nouns: Vec<String> = config
+        .trigger_nouns
+        .iter()
+        .map(|word| word.to_lowercase())
+        .collect();
+    let verbs: Vec<String> = config
+        .trigger_verbs
+        .iter()
+        .map(|word| word.to_lowercase())
+        .collect();
+    if nouns.is_empty() && verbs.is_empty() {
+        return text.to_string();
+    }
+    let words = ref_words(text);
+    let is_name = |word: &str| -> bool {
+        word.len() >= 2
+            && word.chars().any(|character| character.is_alphanumeric())
+            && !is_determiner(word)
+            && !REF_STOPWORDS.contains(&word)
+            && !nouns.iter().any(|noun| noun.as_str() == word)
+            && !verbs.iter().any(|verb| verb.as_str() == word)
+    };
+
+    // Pending rewrites as (start, end, replacement) byte spans.
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        let current = word.lower.as_str();
+        // Noun-suffix pattern: "<name...> <noun>" (e.g. "the daemon file").
+        if nouns.iter().any(|noun| noun.as_str() == current) {
+            let mut run_start = index;
+            while run_start > 0 && index - run_start < 3 && is_name(&words[run_start - 1].lower) {
+                run_start -= 1;
+            }
+            if run_start < index {
+                let mut span_start = words[run_start].start;
+                if run_start > 0 && is_determiner(&words[run_start - 1].lower) {
+                    span_start = words[run_start - 1].start;
+                }
+                let query: Vec<String> = words[run_start..index]
+                    .iter()
+                    .map(|word| word.lower.clone())
+                    .collect();
+                if let Some(path) = resolve_query(&query, files) {
+                    edits.push((span_start, word.end, format!("@{path}")));
+                }
+            }
+        }
+        // Verb-prefix pattern: "<verb> <name...>" (e.g. "open daemon").
+        if verbs.iter().any(|verb| verb.as_str() == current) {
+            let mut cursor = index + 1;
+            let mut span_start = None;
+            if cursor < words.len() && is_determiner(&words[cursor].lower) {
+                span_start = Some(words[cursor].start);
+                cursor += 1;
+            }
+            let run_begin = cursor;
+            while cursor < words.len() && cursor - run_begin < 3 && is_name(&words[cursor].lower) {
+                cursor += 1;
+            }
+            if cursor > run_begin {
+                let span_start = span_start.unwrap_or(words[run_begin].start);
+                let query: Vec<String> = words[run_begin..cursor]
+                    .iter()
+                    .map(|word| word.lower.clone())
+                    .collect();
+                if let Some(path) = resolve_query(&query, files) {
+                    edits.push((span_start, words[cursor - 1].end, format!("@{path}")));
+                }
+            }
+        }
+    }
+    if edits.is_empty() {
+        return text.to_string();
+    }
+    // Apply right-to-left; for equal starts the longer span wins, so a noun
+    // pattern that absorbs the trailing noun beats an overlapping verb pattern.
+    edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let mut result = text.to_string();
+    let mut next_boundary = result.len();
+    for (start, end, replacement) in edits {
+        if end > next_boundary {
+            continue; // overlaps an already-applied (rightward) edit
+        }
+        result.replace_range(start..end, &replacement);
+        next_boundary = start;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +916,77 @@ mod tests {
 
     fn run(text: &str) -> String {
         polish(text, &defaults()).text
+    }
+
+    fn repo_files() -> Vec<String> {
+        [
+            "apps/daemon/src/daemon.rs",
+            "apps/daemon/src/settings.rs",
+            "crates/sunoto-polish/src/lib.rs",
+            "crates/sunoto-core/src/lib.rs",
+            "Cargo.toml",
+            "README.md",
+        ]
+        .map(str::to_string)
+        .to_vec()
+    }
+
+    #[test]
+    fn file_references_resolve_unique_matches() {
+        let config = FileReferenceConfig::default();
+        let files = repo_files();
+        assert_eq!(
+            resolve_file_references("look at the daemon file", &files, &config),
+            "look at @apps/daemon/src/daemon.rs"
+        );
+        assert_eq!(
+            resolve_file_references("open settings", &files, &config),
+            "open @apps/daemon/src/settings.rs"
+        );
+        // A qualifier disambiguates an otherwise ambiguous stem ("lib").
+        assert_eq!(
+            resolve_file_references("edit the polish lib file", &files, &config),
+            "edit @crates/sunoto-polish/src/lib.rs"
+        );
+        // Spoken extension: "daemon dot rs" -> daemon.rs.
+        assert_eq!(
+            resolve_file_references("the daemon dot rs file", &files, &config),
+            "@apps/daemon/src/daemon.rs"
+        );
+        // Two references in one utterance.
+        assert_eq!(
+            resolve_file_references("open the daemon file and the settings file", &files, &config),
+            "open @apps/daemon/src/daemon.rs and @apps/daemon/src/settings.rs"
+        );
+    }
+
+    #[test]
+    fn file_references_stay_conservative() {
+        let config = FileReferenceConfig::default();
+        let files = repo_files();
+        // Ambiguous stem with no qualifier: untouched.
+        assert_eq!(
+            resolve_file_references("open the lib file", &files, &config),
+            "open the lib file"
+        );
+        // No matching file: untouched.
+        assert_eq!(
+            resolve_file_references("open the door", &files, &config),
+            "open the door"
+        );
+        // No trigger word: untouched.
+        assert_eq!(
+            resolve_file_references("the daemon is fast", &files, &config),
+            "the daemon is fast"
+        );
+        // Empty index: untouched.
+        assert_eq!(
+            resolve_file_references("open settings", &[], &config),
+            "open settings"
+        );
+        // Idempotent: a resolved mention is not rewritten again.
+        let once = resolve_file_references("look at the daemon file", &files, &config);
+        assert_eq!(resolve_file_references(&once, &files, &config), once);
     }
 
     #[test]
@@ -847,6 +1170,7 @@ mod tests {
             snippets: Vec::new(),
             style: StyleProfile::Default,
             app_styles: Vec::new(),
+            file_references: FileReferenceConfig::default(),
         };
         assert_eq!(
             polish("um, Tuesday , actually Wednesday", &config).text,

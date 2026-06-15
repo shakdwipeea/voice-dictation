@@ -8,6 +8,7 @@ version.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sunoto-audio = { path = "../../crates/sunoto-audio" }
+sunoto-context = { path = "../../crates/sunoto-context" }
 sunoto-core = { path = "../../crates/sunoto-core" }
 sunoto-ipc = { path = "../../crates/sunoto-ipc" }
 sunoto-linux = { path = "../../crates/sunoto-linux" }

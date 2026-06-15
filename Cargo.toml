@@ -2,6 +2,7 @@
 members = [
   "apps/daemon",
   "crates/sunoto-audio",
+  "crates/sunoto-context",
   "crates/sunoto-core",
   "crates/sunoto-ipc",
   "crates/sunoto-linux",

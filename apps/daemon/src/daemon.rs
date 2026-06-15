@@ -11,12 +11,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
+use sunoto_context::{DevTool, FileIndex, detect_tool};
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionState};
 use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_linux::x11::{
     BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error,
 };
-use sunoto_polish::{polish, resolve_style};
+use sunoto_polish::{polish, resolve_file_references, resolve_style};
 
 use crate::logging;
 use crate::settings::{self, Settings, sanitize_for_insertion};
@@ -42,8 +43,8 @@ fn install_signal_handlers() {
     const SIGTERM: c_int = 15;
     // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
     unsafe {
-        signal(SIGINT, on_termination_signal as usize);
-        signal(SIGTERM, on_termination_signal as usize);
+        signal(SIGINT, on_termination_signal as *const () as usize);
+        signal(SIGTERM, on_termination_signal as *const () as usize);
     }
 }
 
@@ -54,10 +55,18 @@ pub enum DaemonEvent {
     /// Messages from the GTK overlay UI sidecar (ready handshake, exit).
     Overlay(SidecarMessage),
     Ui(UiReport),
-    /// WM_CLASS (instance, class) of the window focused at shortcut release;
+    /// Focused-window context (class, PID, title) captured at shortcut release;
     /// reported by the UI thread right after CaptureFocus.
-    FocusClass(Option<(String, String)>),
+    Focus(FocusInfo),
     Fatal(String),
+}
+
+/// Focused-window context the main loop needs: the WM_CLASS for styling and the
+/// PID/title for detecting a developer tool (e.g. Claude Code) running inside.
+pub struct FocusInfo {
+    pub class: Option<(String, String)>,
+    pub pid: Option<u32>,
+    pub title: Option<String>,
 }
 
 pub struct UiReport {
@@ -94,6 +103,8 @@ fn desktop_backend(settings: &Settings) -> DesktopBackend {
 struct FocusSnapshot {
     token: Option<String>,
     class: Option<(String, String)>,
+    pid: Option<u32>,
+    title: Option<String>,
 }
 
 enum UiBackend {
@@ -115,9 +126,12 @@ impl UiBackend {
         match self {
             Self::X11(adapter) => {
                 let focus = adapter.focused_window();
+                let context = adapter.window_context(focus);
                 FocusSnapshot {
                     token: Some(focus.to_string()),
-                    class: adapter.window_class(focus),
+                    class: context.class,
+                    pid: context.pid,
+                    title: context.title,
                 }
             }
             Self::Wayland(adapter) => adapter.capture_focus(),
@@ -173,10 +187,14 @@ impl WaylandUiAdapter {
             Some(window) => FocusSnapshot {
                 token: Some(window.address),
                 class: window.class.map(|class| (class.clone(), class)),
+                pid: window.pid,
+                title: window.title,
             },
             None => FocusSnapshot {
                 token: None,
                 class: None,
+                pid: None,
+                title: None,
             },
         }
     }
@@ -273,6 +291,53 @@ fn is_terminal_class(class: &str) -> bool {
     .any(|needle| class.contains(needle))
 }
 
+/// Resolve spoken file references to Claude Code `@path` mentions when the
+/// focused window is a terminal running `claude`. Gated by config and the
+/// terminal-class check so the `/proc` scan never runs for ordinary dictation;
+/// the per-cwd file index is cached. Any miss leaves the text untouched.
+fn resolve_claude_file_references(
+    text: String,
+    settings: &Settings,
+    focused_class: Option<&(String, String)>,
+    focused_pid: Option<u32>,
+    cache: &mut Option<FileIndex>,
+    session_id: u64,
+) -> String {
+    let config = &settings.polish.file_references;
+    if !config.enabled || !config.tools.iter().any(|tool| tool.as_str() == "claude") {
+        return text;
+    }
+    let Some(pid) = focused_pid else {
+        return text;
+    };
+    // Claude Code runs inside a terminal; skip the /proc scan for anything else.
+    let in_terminal = focused_class
+        .is_some_and(|(instance, class)| is_terminal_class(instance) || is_terminal_class(class));
+    if !in_terminal {
+        return text;
+    }
+    let Some(DevTool::ClaudeCode { cwd }) = detect_tool(pid) else {
+        return text;
+    };
+    if cache.as_ref().map(|index| index.root.as_path()) != Some(cwd.as_path()) {
+        logging::info(&format!(
+            "session {session_id}: indexing {} for Claude Code file references",
+            cwd.display()
+        ));
+        *cache = Some(FileIndex::build(&cwd, config.max_index_files));
+    }
+    let Some(index) = cache.as_ref() else {
+        return text;
+    };
+    let resolved = resolve_file_references(&text, &index.files, config);
+    if resolved != text {
+        logging::info(&format!(
+            "session {session_id}: resolved Claude Code file references"
+        ));
+    }
+    resolved
+}
+
 fn run_command(mut command: Command, label: &str) -> Result<(), String> {
     let status = command
         .status()
@@ -286,6 +351,8 @@ fn run_command(mut command: Command, label: &str) -> Result<(), String> {
 struct HyprlandWindow {
     address: String,
     class: Option<String>,
+    pid: Option<u32>,
+    title: Option<String>,
 }
 
 fn active_hyprland_window() -> Option<HyprlandWindow> {
@@ -306,7 +373,22 @@ fn active_hyprland_window() -> Option<HyprlandWindow> {
         .and_then(serde_json::Value::as_str)
         .filter(|class| !class.is_empty())
         .map(str::to_string);
-    Some(HyprlandWindow { address, class })
+    let pid = payload
+        .get("pid")
+        .and_then(serde_json::Value::as_u64)
+        .map(|pid| pid as u32)
+        .filter(|&pid| pid != 0);
+    let title = payload
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string);
+    Some(HyprlandWindow {
+        address,
+        class,
+        pid,
+        title,
+    })
 }
 
 fn require_program(program: &str) -> Result<(), String> {
@@ -336,7 +418,12 @@ fn ui_thread(commands: Receiver<UiCommand>, events: Sender<DaemonEvent>, backend
             Ok(UiCommand::CaptureFocus) => {
                 let focus = adapter.capture_focus();
                 focus_at_release = focus.token;
-                if events.send(DaemonEvent::FocusClass(focus.class)).is_err() {
+                let report = DaemonEvent::Focus(FocusInfo {
+                    class: focus.class,
+                    pid: focus.pid,
+                    title: focus.title,
+                });
+                if events.send(report).is_err() {
                     return;
                 }
             }
@@ -591,6 +678,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut machine = SessionMachine::default();
     let mut preroll = AudioPreRoll::new(settings.preroll_ms as usize * SAMPLES_PER_MS);
     let mut focused_class: Option<(String, String)> = None;
+    let mut focused_pid: Option<u32> = None;
+    let mut file_index: Option<FileIndex> = None;
     let mut timing: Option<SessionTiming> = None;
     let mut audio_stats: Option<SessionAudioStats> = None;
     let mut sidecar_ready = false;
@@ -653,6 +742,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     // The class arrives with the fresh focus capture below; a
                     // stale one from an earlier session must not style this one.
                     focused_class = None;
+                    focused_pid = None;
                     timing = Some(SessionTiming {
                         session_id,
                         released_at: Instant::now(),
@@ -830,6 +920,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         } else {
                             text
                         };
+                        let output = resolve_claude_file_references(
+                            output,
+                            &settings,
+                            focused_class.as_ref(),
+                            focused_pid,
+                            &mut file_index,
+                            session_id,
+                        );
                         let sanitized =
                             sanitize_for_insertion(&output, settings.allow_enter_and_tab);
                         if sanitized.is_empty() {
@@ -912,18 +1010,24 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     ui.overlay_ready = false;
                 }
             }
-            Ok(DaemonEvent::FocusClass(class)) => {
+            Ok(DaemonEvent::Focus(focus)) => {
                 // Logged per session: when text "disappears", the first
                 // question is always which window actually received it.
-                match class.as_ref() {
+                match focus.class.as_ref() {
                     Some((instance, class_name)) => logging::info(&format!(
-                        "insertion target at release: {instance:?} / {class_name:?}"
+                        "insertion target at release: {instance:?} / {class_name:?}{}",
+                        focus
+                            .title
+                            .as_deref()
+                            .map(|title| format!(" title {title:?}"))
+                            .unwrap_or_default()
                     )),
                     None => logging::warn(
                         "insertion target at release has no WM_CLASS (text may land in a non-text window)",
                     ),
                 }
-                focused_class = class;
+                focused_class = focus.class;
+                focused_pid = focus.pid;
             }
             Ok(DaemonEvent::Ui(report)) => {
                 match report.result {

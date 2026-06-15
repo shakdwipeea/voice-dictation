@@ -80,6 +80,10 @@ name = "sunoto-audio"
 version = "0.1.0"
 
 [[package]]
+name = "sunoto-context"
+version = "0.1.0"
+
+[[package]]
 name = "sunoto-core"
 version = "0.1.0"
 
@@ -90,6 +94,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sunoto-audio",
+ "sunoto-context",
  "sunoto-core",
  "sunoto-ipc",
  "sunoto-linux",

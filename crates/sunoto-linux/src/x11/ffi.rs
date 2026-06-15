@@ -51,6 +51,7 @@ pub const CW_OVERRIDE_REDIRECT: c_ulong = 1 << 9;
 pub const PROP_MODE_REPLACE: c_int = 0;
 pub const ANY_PROPERTY_TYPE: Atom = 0;
 pub const XA_ATOM: Atom = 4;
+pub const XA_CARDINAL: Atom = 6;
 pub const XA_STRING: Atom = 31;
 pub const XA_WM_CLASS: Atom = 67;
 

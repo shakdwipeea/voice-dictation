@@ -29,6 +29,17 @@ pub enum InsertionOutcome {
     ClipboardOnly,
 }
 
+/// Focused-window context read at shortcut release: WM_CLASS plus the
+/// `_NET_WM_PID` and `_NET_WM_NAME` of the same client window. The PID and
+/// title let the daemon detect a developer tool (e.g. Claude Code) running
+/// inside the focused terminal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowContext {
+    pub class: Option<(String, String)>,
+    pub pid: Option<u32>,
+    pub title: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum X11Error {
     DisplayUnavailable,
@@ -522,23 +533,126 @@ impl UiAdapter {
         focus
     }
 
-    /// WM_CLASS (instance, class) for `window`. The input focus usually sits
-    /// on a class-less child widget, so the lookup climbs toward the root
-    /// until a window carrying WM_CLASS is found.
+    /// WM_CLASS (instance, class) for `window`; see [`Self::window_context`].
     pub fn window_class(&self, window: u64) -> Option<(String, String)> {
+        self.window_context(window).class
+    }
+
+    /// Focused-window context: WM_CLASS plus the PID and title of the same
+    /// client window. The input focus usually sits on a class-less child
+    /// widget, so the lookup climbs toward the root until a window carrying
+    /// WM_CLASS is found, then reads `_NET_WM_PID`/`_NET_WM_NAME` from it.
+    pub fn window_context(&self, window: u64) -> WindowContext {
         let mut current: Window = window;
         // Bounded climb: a class-less chain all the way up means there is
         // genuinely nothing to read (e.g. focus is None or PointerRoot).
         for _ in 0..32 {
             if current <= 1 || current == self.connection.root {
-                return None;
+                return WindowContext::default();
             }
             if let Some(class) = self.read_wm_class(current) {
-                return Some(class);
+                return WindowContext {
+                    class: Some(class),
+                    pid: self.read_net_wm_pid(current),
+                    title: self.read_net_wm_name(current),
+                };
             }
-            current = self.parent_window(current)?;
+            match self.parent_window(current) {
+                Some(parent) => current = parent,
+                None => return WindowContext::default(),
+            }
         }
-        None
+        WindowContext::default()
+    }
+
+    /// `_NET_WM_PID` (owning process) for a client window, if advertised.
+    fn read_net_wm_pid(&self, window: Window) -> Option<u32> {
+        let property = self.connection.atom("_NET_WM_PID");
+        if property == 0 {
+            return None;
+        }
+        let mut actual_type: Atom = 0;
+        let mut actual_format: c_int = 0;
+        let mut item_count: c_ulong = 0;
+        let mut bytes_after: c_ulong = 0;
+        let mut data: *mut std::os::raw::c_uchar = ptr::null_mut();
+        // SAFETY: display is valid, all out-pointers are writable, and the
+        // returned buffer is freed before returning.
+        let status = unsafe {
+            XGetWindowProperty(
+                self.connection.display,
+                window,
+                property,
+                0,
+                1,
+                0,
+                XA_CARDINAL,
+                &mut actual_type,
+                &mut actual_format,
+                &mut item_count,
+                &mut bytes_after,
+                &mut data,
+            )
+        };
+        if status != 0 || data.is_null() {
+            return None;
+        }
+        // A 32-bit CARDINAL property is returned as one C `long`.
+        let pid = if actual_format == 32 && item_count >= 1 {
+            // SAFETY: Xlib returned at least one long-sized item at `data`.
+            Some(unsafe { *(data as *const c_ulong) } as u32)
+        } else {
+            None
+        };
+        // SAFETY: data was allocated by Xlib for this property read.
+        unsafe { XFree(data.cast()) };
+        pid.filter(|&value| value != 0)
+    }
+
+    /// `_NET_WM_NAME` (UTF-8 window title) for a client window, if advertised.
+    fn read_net_wm_name(&self, window: Window) -> Option<String> {
+        let property = self.connection.atom("_NET_WM_NAME");
+        let utf8 = self.connection.atom("UTF8_STRING");
+        if property == 0 || utf8 == 0 {
+            return None;
+        }
+        let mut actual_type: Atom = 0;
+        let mut actual_format: c_int = 0;
+        let mut item_count: c_ulong = 0;
+        let mut bytes_after: c_ulong = 0;
+        let mut data: *mut std::os::raw::c_uchar = ptr::null_mut();
+        // SAFETY: display is valid, all out-pointers are writable, and the
+        // returned buffer is copied out before being freed.
+        let status = unsafe {
+            XGetWindowProperty(
+                self.connection.display,
+                window,
+                property,
+                0,
+                1024,
+                0,
+                utf8,
+                &mut actual_type,
+                &mut actual_format,
+                &mut item_count,
+                &mut bytes_after,
+                &mut data,
+            )
+        };
+        if status != 0 || data.is_null() {
+            return None;
+        }
+        let title = if actual_format == 8 {
+            // SAFETY: Xlib returned `item_count` bytes at `data`.
+            let bytes = unsafe { std::slice::from_raw_parts(data, item_count as usize) };
+            let text = String::from_utf8_lossy(bytes).trim_matches('\0').to_string();
+            (!text.is_empty()).then_some(text)
+        } else {
+            None
+        };
+        // SAFETY: data was allocated by Xlib for this property read.
+        unsafe { XFree(data.cast()) };
+        title
     }
 
     fn read_wm_class(&self, window: Window) -> Option<(String, String)> {
