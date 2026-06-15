@@ -934,6 +934,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             logging::info(&format!("session {session_id}: empty result"));
                             ui.hide();
                         } else {
+                            logging::info(&format!(
+                                "session {session_id}: inserting {sanitized:?}"
+                            ));
                             let _ = ui_tx.send(UiCommand::Insert {
                                 session_id,
                                 text: sanitized,
