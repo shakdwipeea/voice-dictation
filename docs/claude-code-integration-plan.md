@@ -264,7 +264,7 @@ foundation for several product-plan items:
 
 - **Spoken CLI/code formatting in terminals** — "ls dash l a" → `ls -la`,
   identifier casing, `npm run dev`; extends the existing `Terminal` style.
-- **On-demand local-LLM polish** (product plan §7 step 8) — a second
+- **On-demand local-LLM polish** (the product plan's optional polish) — a second
   llama.cpp sidecar reached by a "polish that" command or second hotkey, run
   *after* fast insertion, never on the latency path.
 - **Nearby-text / screen context** — read the focused field (AT-SPI) or visible
