@@ -27,20 +27,60 @@ const MAX_ANCESTRY_DEPTH: usize = 64;
 
 /// Detect a supported developer tool running inside the process subtree of
 /// `window_pid` (the PID that owns the focused window — for a terminal, the
-/// emulator process). Returns the first matching descendant's tool and cwd.
+/// emulator process).
 ///
-/// Strategy: enumerate processes named `claude`, then keep the first one that
-/// is a descendant of `window_pid` (by walking its parent chain). This is
-/// robust to the shell that sits between the terminal and `claude`.
+/// gnome-terminal runs every tab and window under a single server process, so
+/// `window_pid` alone cannot say which Claude session is focused. We gather
+/// every `claude` descendant's working directory and, when there is more than
+/// one, break the tie with the active-cwd hint the Claude Code hook records
+/// (the most recently active session). A single candidate needs no hint; with
+/// several and no usable hint we refuse to guess.
 pub fn detect_tool(window_pid: u32) -> Option<DevTool> {
+    let cwds = claude_descendant_cwds(window_pid);
+    select_cwd(&cwds, read_active_cwd().as_deref()).map(|cwd| DevTool::ClaudeCode { cwd })
+}
+
+/// Working directories of every `claude` process under `window_pid`, de-duped.
+fn claude_descendant_cwds(window_pid: u32) -> Vec<PathBuf> {
+    let mut cwds: Vec<PathBuf> = Vec::new();
     for pid in processes_named("claude") {
         if is_descendant_of(pid, window_pid)
             && let Some(cwd) = process_cwd(pid)
+            && !cwds.contains(&cwd)
         {
-            return Some(DevTool::ClaudeCode { cwd });
+            cwds.push(cwd);
         }
     }
-    None
+    cwds
+}
+
+/// Pick the working directory to resolve against: the sole candidate, or the
+/// one the active-cwd hint points to when several Claude sessions share a
+/// terminal. Returns `None` rather than guess when the hint cannot decide.
+fn select_cwd(cwds: &[PathBuf], active: Option<&Path>) -> Option<PathBuf> {
+    match cwds {
+        [] => None,
+        [only] => Some(only.clone()),
+        many => active
+            .filter(|hint| many.iter().any(|cwd| cwd.as_path() == *hint))
+            .map(Path::to_path_buf),
+    }
+}
+
+/// Path of the active-cwd hint file written by `bin/sunoto-claude-cwd-hook.sh`:
+/// `$XDG_RUNTIME_DIR/sunoto/claude-active-cwd`.
+pub fn active_cwd_file() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("sunoto/claude-active-cwd")
+}
+
+/// The most recently recorded active Claude working directory, if any.
+fn read_active_cwd() -> Option<PathBuf> {
+    let raw = fs::read_to_string(active_cwd_file()).ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
 }
 
 /// PIDs whose `/proc/<pid>/comm` equals `name`, capped at a sane maximum.
@@ -203,6 +243,29 @@ mod tests {
     fn own_comm_is_readable() {
         let comm = process_comm(std::process::id());
         assert!(comm.is_some_and(|name| !name.is_empty()));
+    }
+
+    #[test]
+    fn select_cwd_uses_the_active_hint_only_to_break_ties() {
+        let voice = PathBuf::from("/x/voice-dictation");
+        let vaani = PathBuf::from("/x/vaani-livekit");
+        // Sole candidate: used directly, hint irrelevant.
+        assert_eq!(
+            select_cwd(std::slice::from_ref(&voice), None),
+            Some(voice.clone())
+        );
+        // Several candidates: the hint picks the matching one.
+        assert_eq!(
+            select_cwd(&[vaani.clone(), voice.clone()], Some(&voice)),
+            Some(voice.clone())
+        );
+        // Several candidates, hint not among them: refuse to guess.
+        assert_eq!(
+            select_cwd(&[vaani.clone(), voice.clone()], Some(Path::new("/x/other"))),
+            None
+        );
+        // Several candidates, no hint: refuse to guess.
+        assert_eq!(select_cwd(&[vaani, voice], None), None);
     }
 
     #[test]

@@ -83,7 +83,9 @@ impl Default for FileReferenceConfig {
             enabled: false,
             tools: vec!["claude".to_string()],
             trigger_nouns: ["file", "module", "script"].map(str::to_string).to_vec(),
-            trigger_verbs: ["open", "edit"].map(str::to_string).to_vec(),
+            trigger_verbs: ["open", "edit", "check", "update", "read", "see"]
+                .map(str::to_string)
+                .to_vec(),
             max_index_files: 5000,
         }
     }
@@ -706,6 +708,13 @@ const REF_DETERMINERS: [&str; 14] = [
 const REF_STOPWORDS: [&str; 11] = [
     "to", "of", "in", "on", "at", "and", "or", "it", "please", "then", "also",
 ];
+/// Spoken punctuation words dropped from a file name before matching, so
+/// "claude hyphen code dot rs" reduces to the tokens claude / code / rs.
+const REF_SEPARATORS: [&str; 8] = [
+    "hyphen", "dash", "dot", "point", "period", "underscore", "slash", "space",
+];
+/// Most spoken words taken as a file name on either side of a trigger word.
+const RUN_CAP: usize = 8;
 
 struct RefWord {
     lower: String,
@@ -757,54 +766,100 @@ fn path_keys(path: &str) -> (String, String) {
     (base, stem)
 }
 
-/// The single file whose basename or stem equals `head` and whose path contains
-/// every `qualifier`; `None` when there is no match or more than one.
-fn unique_match<'a>(head: &str, qualifiers: &[String], files: &'a [String]) -> Option<&'a str> {
-    if head.len() < 2 {
-        return None;
-    }
+/// The one file matching `pred(path_lower, basename_lower, stem_lower)`, or
+/// `None` if zero or more than one match.
+fn unique_where<'a>(
+    files: &'a [String],
+    keyed: &[(String, String, String)],
+    pred: impl Fn(&str, &str, &str) -> bool,
+) -> Option<&'a str> {
     let mut hit: Option<&'a str> = None;
-    for file in files {
-        let (base, stem) = path_keys(file);
-        if base != head && stem != head {
-            continue;
-        }
-        let lower = file.to_lowercase();
-        if !qualifiers
-            .iter()
-            .all(|qualifier| lower.contains(qualifier.as_str()))
-        {
-            continue;
-        }
-        match hit {
-            None => hit = Some(file.as_str()),
-            Some(existing) if existing == file.as_str() => {}
-            Some(_) => return None,
+    for (file, (path, base, stem)) in files.iter().zip(keyed.iter()) {
+        if pred(path, base, stem) {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(file.as_str());
         }
     }
     hit
 }
 
-/// Resolve a spoken name (lowercased word tokens) to one file path.
+/// Resolve a spoken name (lowercased word tokens) to one file path, trying
+/// tiers from most precise to most forgiving and returning the first tier that
+/// yields a unique answer.
 fn resolve_query<'a>(query: &[String], files: &'a [String]) -> Option<&'a str> {
-    let tokens: Vec<String> = query
+    let toks: Vec<String> = query
         .iter()
-        .map(|token| token.trim_matches('.').to_string())
-        .filter(|token| !token.is_empty() && token.as_str() != "dot")
+        .map(|token| token.trim_matches('.').to_lowercase())
+        .filter(|token| {
+            token.len() >= 2
+                && !REF_SEPARATORS.contains(&token.as_str())
+                && !REF_STOPWORDS.contains(&token.as_str())
+        })
         .collect();
-    let (head, qualifiers) = tokens.split_last()?;
-    // Interpretation A: the last token is the file name.
-    if let Some(found) = unique_match(head, qualifiers, files) {
+    if toks.is_empty() {
+        return None;
+    }
+    let keyed: Vec<(String, String, String)> = files
+        .iter()
+        .map(|file| {
+            let (base, stem) = path_keys(file);
+            (file.to_lowercase(), base, stem)
+        })
+        .collect();
+
+    // Tier 1: basename/stem equals a separator-aware join ("daemon" "rs" or
+    // "daemon" "dot" "rs" -> "daemon.rs"; "agents" "md" -> "agents.md").
+    let mut joins = [
+        toks.join(""),
+        toks.join("-"),
+        toks.join("_"),
+        toks.join("."),
+    ];
+    joins.sort();
+    if let Some(found) = unique_where(files, &keyed, |_, base, stem| {
+        joins
+            .iter()
+            .any(|join| join.as_str() == base || join.as_str() == stem)
+    }) {
         return Some(found);
     }
-    // Interpretation B: a spoken extension, e.g. "daemon" "rs" -> "daemon.rs".
-    if tokens.len() >= 2 {
-        let joined = format!("{}.{}", tokens[tokens.len() - 2], tokens[tokens.len() - 1]);
-        if let Some(found) = unique_match(&joined, &tokens[..tokens.len() - 2], files) {
-            return Some(found);
+    // Tier 2: the last token names the file; earlier tokens locate it in the
+    // path ("polish" "lib" -> the lib.rs under sunoto-polish).
+    let (head, quals) = toks.split_last().unwrap();
+    if let Some(found) = unique_where(files, &keyed, |path, base, stem| {
+        (base == head.as_str() || stem == head.as_str())
+            && quals.iter().all(|qualifier| path.contains(qualifier.as_str()))
+    }) {
+        return Some(found);
+    }
+    // Tier 3: every token appears in the basename ("integration" "plan" "md").
+    if let Some(found) = unique_where(files, &keyed, |_, base, _| {
+        toks.iter().all(|token| base.contains(token.as_str()))
+    }) {
+        return Some(found);
+    }
+    // Tier 4: the basename containing the most tokens, given a strict winner
+    // with at least two hits (tolerates one ASR slip, e.g. "cloud" for
+    // "claude").
+    let mut best: Option<&'a str> = None;
+    let mut best_score = 1usize;
+    let mut tie = false;
+    for (file, (_, base, _)) in files.iter().zip(keyed.iter()) {
+        let score = toks
+            .iter()
+            .filter(|token| base.contains(token.as_str()))
+            .count();
+        if score > best_score {
+            best = Some(file.as_str());
+            best_score = score;
+            tie = false;
+        } else if score == best_score && best.is_some() {
+            tie = true;
         }
     }
-    None
+    if best_score >= 2 && !tie { best } else { None }
 }
 
 /// Rewrite spoken file references in `text` to `@path` mentions using `files`
@@ -847,7 +902,8 @@ pub fn resolve_file_references(
         // Noun-suffix pattern: "<name...> <noun>" (e.g. "the daemon file").
         if nouns.iter().any(|noun| noun.as_str() == current) {
             let mut run_start = index;
-            while run_start > 0 && index - run_start < 3 && is_name(&words[run_start - 1].lower) {
+            while run_start > 0 && index - run_start < RUN_CAP && is_name(&words[run_start - 1].lower)
+            {
                 run_start -= 1;
             }
             if run_start < index {
@@ -873,7 +929,8 @@ pub fn resolve_file_references(
                 cursor += 1;
             }
             let run_begin = cursor;
-            while cursor < words.len() && cursor - run_begin < 3 && is_name(&words[cursor].lower) {
+            while cursor < words.len() && cursor - run_begin < RUN_CAP && is_name(&words[cursor].lower)
+            {
                 cursor += 1;
             }
             if cursor > run_begin {
@@ -924,69 +981,82 @@ mod tests {
             "apps/daemon/src/settings.rs",
             "crates/sunoto-polish/src/lib.rs",
             "crates/sunoto-core/src/lib.rs",
+            "docs/claude-code-integration-plan.md",
             "Cargo.toml",
+            "Makefile",
             "README.md",
+            "AGENTS.md",
         ]
         .map(str::to_string)
         .to_vec()
     }
 
+    fn refs(text: &str) -> String {
+        resolve_file_references(text, &repo_files(), &FileReferenceConfig::default())
+    }
+
     #[test]
     fn file_references_resolve_unique_matches() {
-        let config = FileReferenceConfig::default();
-        let files = repo_files();
         assert_eq!(
-            resolve_file_references("look at the daemon file", &files, &config),
+            refs("look at the daemon file"),
             "look at @apps/daemon/src/daemon.rs"
         );
-        assert_eq!(
-            resolve_file_references("open settings", &files, &config),
-            "open @apps/daemon/src/settings.rs"
-        );
+        assert_eq!(refs("open settings"), "open @apps/daemon/src/settings.rs");
         // A qualifier disambiguates an otherwise ambiguous stem ("lib").
         assert_eq!(
-            resolve_file_references("edit the polish lib file", &files, &config),
+            refs("edit the polish lib file"),
             "edit @crates/sunoto-polish/src/lib.rs"
         );
         // Spoken extension: "daemon dot rs" -> daemon.rs.
+        assert_eq!(refs("the daemon dot rs file"), "@apps/daemon/src/daemon.rs");
+        // Spoken compound: "make file" -> Makefile.
+        assert_eq!(refs("go through the make file"), "go through @Makefile");
+        // Multi-word name reconstructs the hyphenated stem.
         assert_eq!(
-            resolve_file_references("the daemon dot rs file", &files, &config),
-            "@apps/daemon/src/daemon.rs"
+            refs("open the claude code integration plan file"),
+            "open @docs/claude-code-integration-plan.md"
         );
         // Two references in one utterance.
         assert_eq!(
-            resolve_file_references("open the daemon file and the settings file", &files, &config),
+            refs("open the daemon file and the settings file"),
             "open @apps/daemon/src/daemon.rs and @apps/daemon/src/settings.rs"
         );
     }
 
     #[test]
+    fn file_references_tolerate_asr_noise() {
+        // "agents.md" survives polish splitting it into "agents. md".
+        assert_eq!(refs("go to the agents. md file"), "go to @AGENTS.md");
+        // Spoken hyphens between the name parts.
+        assert_eq!(
+            refs("open the claude hyphen code hyphen integration hyphen plan file"),
+            "open @docs/claude-code-integration-plan.md"
+        );
+        // One slipped word ("cloud" for "claude") still resolves by overlap.
+        assert_eq!(
+            refs("the cloud code integration plan file"),
+            "@docs/claude-code-integration-plan.md"
+        );
+    }
+
+    #[test]
     fn file_references_stay_conservative() {
-        let config = FileReferenceConfig::default();
-        let files = repo_files();
         // Ambiguous stem with no qualifier: untouched.
-        assert_eq!(
-            resolve_file_references("open the lib file", &files, &config),
-            "open the lib file"
-        );
+        assert_eq!(refs("open the lib file"), "open the lib file");
+        // A trigger with no name is not a file request (would not pick Makefile).
+        assert_eq!(refs("can you open the file"), "can you open the file");
         // No matching file: untouched.
-        assert_eq!(
-            resolve_file_references("open the door", &files, &config),
-            "open the door"
-        );
+        assert_eq!(refs("open the door"), "open the door");
         // No trigger word: untouched.
-        assert_eq!(
-            resolve_file_references("the daemon is fast", &files, &config),
-            "the daemon is fast"
-        );
+        assert_eq!(refs("the daemon is fast"), "the daemon is fast");
         // Empty index: untouched.
         assert_eq!(
-            resolve_file_references("open settings", &[], &config),
+            resolve_file_references("open settings", &[], &FileReferenceConfig::default()),
             "open settings"
         );
         // Idempotent: a resolved mention is not rewritten again.
-        let once = resolve_file_references("look at the daemon file", &files, &config);
-        assert_eq!(resolve_file_references(&once, &files, &config), once);
+        let once = refs("look at the daemon file");
+        assert_eq!(refs(&once), once);
     }
 
     #[test]

@@ -54,10 +54,11 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
   personal dictionary, snippets, and per-app style (e.g. terminals get
   lowercase/no-punctuation treatment via WM_CLASS detection).
 - **Developer context (opt-in):** dictate into a terminal running Claude Code
-  and spoken file references resolve to `@path` mentions — the daemon reads the
-  focused window's PID, finds the `claude` process and its working directory,
-  and matches your words against that directory's files. Off by default
-  (`polish.file_references`).
+  and spoken file references resolve to `@path` mentions, matched against that
+  session's working directory. With one session the daemon finds it directly;
+  because gnome-terminal shares one process across tabs, the *active* directory
+  comes from a small Claude Code hook (`bin/sunoto-claude-cwd-hook.sh`, wired to
+  `UserPromptSubmit`/`SessionStart`). Off by default (`polish.file_references`).
 - **Injection safety:** Enter/Tab are neutralized by default, focus is
   revalidated before typing (if you switched windows, the text parks on the
   clipboard with a notice instead), and held modifiers are released around

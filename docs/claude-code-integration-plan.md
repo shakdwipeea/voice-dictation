@@ -27,9 +27,25 @@ shipped **default-off** (`polish.file_references.enabled = false`):
 
 Verified: `cargo test --workspace` (including new resolver and `/proc` tests),
 `cargo clippy --workspace -- -D warnings`, and the GPU-free Python protocol
-suites all pass. A live end-to-end dictation pass with the feature enabled
-still needs a human at the machine. Phase C (disambiguation UX, overlay
-indication, other tools) remains future work.
+suites all pass. Phase C (disambiguation UX, overlay indication, other tools)
+remains future work.
+
+**Update (later June 15) — field-tested live, two fixes from the logs:**
+
+1. **Wrong session picked.** gnome-terminal runs every tab/window under one
+   `gnome-terminal-server` PID, so PID-only detection found *all* `claude`
+   sessions and indexed the first `/proc` listed (the wrong repo). The daemon
+   now gathers every `claude` working directory under the focused terminal and,
+   when there is more than one, picks the active one from a hint file written by
+   a Claude Code hook — `bin/sunoto-claude-cwd-hook.sh`, wired to
+   `UserPromptSubmit`/`SessionStart` in `~/.claude/settings.json`, writing
+   `$XDG_RUNTIME_DIR/sunoto/claude-active-cwd`. A sole session needs no hook;
+   with several and no usable hint the daemon refuses to guess
+   (`select_cwd`, unit-tested).
+2. **Matcher too strict.** Now four tiers (exact separator-aware join →
+   path-qualified → all-tokens-in-basename → best-overlap), tolerating spoken
+   `hyphen`/`dot`, compound names (`make file` → `Makefile`), and a one-word ASR
+   slip (`cloud` → `claude`). Still rewrites only a unique result.
 
 ## 1. What we're building
 
