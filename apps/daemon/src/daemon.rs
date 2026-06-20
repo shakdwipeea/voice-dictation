@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionState};
-use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
-use sunoto_linux::x11::{
+use sunoto_desktop::{
     BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error,
 };
+use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_polish::{polish, resolve_style};
 
 use crate::logging;
@@ -42,8 +42,8 @@ fn install_signal_handlers() {
     const SIGTERM: c_int = 15;
     // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
     unsafe {
-        signal(SIGINT, on_termination_signal as usize);
-        signal(SIGTERM, on_termination_signal as usize);
+        signal(SIGINT, on_termination_signal as *const () as usize);
+        signal(SIGTERM, on_termination_signal as *const () as usize);
     }
 }
 
@@ -78,9 +78,13 @@ pub enum UiCommand {
 enum DesktopBackend {
     X11,
     Wayland,
+    Macos,
 }
 
 fn desktop_backend(settings: &Settings) -> DesktopBackend {
+    if cfg!(target_os = "macos") {
+        return DesktopBackend::Macos;
+    }
     if settings.overlay_backend == "wayland"
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value == "wayland")
         || std::env::var("WAYLAND_DISPLAY").is_ok()
@@ -99,6 +103,9 @@ struct FocusSnapshot {
 enum UiBackend {
     X11(UiAdapter),
     Wayland(WaylandUiAdapter),
+    // Phase 2-4: replace with a real `sunoto-macos` adapter (CGEventTap,
+    // CoreAudio, CGEvent insertion, NSPasteboard, NSWorkspace focus).
+    Macos(UiAdapter),
 }
 
 impl UiBackend {
@@ -108,6 +115,9 @@ impl UiBackend {
                 .map(Self::X11)
                 .map_err(|error| format!("X11 UI unavailable: {error}")),
             DesktopBackend::Wayland => WaylandUiAdapter::open().map(Self::Wayland),
+            DesktopBackend::Macos => UiAdapter::open()
+                .map(Self::Macos)
+                .map_err(|error| format!("macOS UI unavailable: {error}")),
         }
     }
 
@@ -121,12 +131,20 @@ impl UiBackend {
                 }
             }
             Self::Wayland(adapter) => adapter.capture_focus(),
+            Self::Macos(adapter) => {
+                let focus = adapter.focused_window();
+                FocusSnapshot {
+                    token: Some(focus.to_string()),
+                    class: adapter.window_class(focus),
+                }
+            }
         }
     }
 
     fn show_bubble(&mut self, kind: BubbleKind, text: &str) {
         match self {
             Self::X11(adapter) => adapter.bubble_show(kind, text),
+            Self::Macos(adapter) => adapter.bubble_show(kind, text),
             Self::Wayland(_) => {
                 let _ = (kind, text);
             }
@@ -136,6 +154,7 @@ impl UiBackend {
     fn hide_bubble(&mut self) {
         match self {
             Self::X11(adapter) => adapter.bubble_hide(),
+            Self::Macos(adapter) => adapter.bubble_hide(),
             Self::Wayland(_) => {}
         }
     }
@@ -147,13 +166,19 @@ impl UiBackend {
     ) -> Result<InsertionOutcome, String> {
         match self {
             Self::X11(adapter) => insert_x11(adapter, focus_at_release, text),
+            // macOS: CGEvent per-char unicode typing is unreliable across
+            // Cocoa apps (many ignore the unicode string on a synthetic
+            // event), so paste via the clipboard first and fall back to
+            // direct typing — the same ordering the Wayland path uses.
+            Self::Macos(adapter) => insert_macos(adapter, focus_at_release, text),
             Self::Wayland(adapter) => adapter.insert(focus_at_release, text),
         }
     }
 
     fn pump(&mut self) {
-        if let Self::X11(adapter) = self {
-            adapter.pump();
+        match self {
+            Self::X11(adapter) | Self::Macos(adapter) => adapter.pump(),
+            Self::Wayland(_) => {}
         }
     }
 }
@@ -387,6 +412,38 @@ fn insert_x11(
     }
 }
 
+fn insert_macos(
+    adapter: &mut UiAdapter,
+    focus_at_release: Option<String>,
+    text: &str,
+) -> Result<InsertionOutcome, String> {
+    let focus_now = adapter.focused_window();
+    if let Some(expected) = focus_at_release
+        && expected != focus_now.to_string()
+    {
+        // The user moved on; typing into the new window would put text
+        // somewhere they did not dictate it. Park it on the clipboard.
+        return adapter
+            .set_clipboard(text)
+            .map(|_| InsertionOutcome::ClipboardOnly)
+            .map_err(|error| error.to_string());
+    }
+    // Paste via clipboard is the reliable macOS insertion mechanism; direct
+    // CGEvent typing is the fallback (works in some apps, ignored in others).
+    match adapter.insert_via_clipboard(text) {
+        Ok(()) => Ok(InsertionOutcome::Pasted),
+        Err(paste_error) => match adapter.insert_direct(text) {
+            Ok(()) => Ok(InsertionOutcome::Typed),
+            Err(type_error) => {
+                logging::warn(&format!(
+                    "macOS paste failed ({paste_error}); direct typing failed ({type_error}); result left on clipboard"
+                ));
+                Ok(InsertionOutcome::ClipboardOnly)
+            }
+        },
+    }
+}
+
 /// Live overlay sidecar: requests go through a bounded channel serviced by a
 /// writer thread, so a wedged overlay drops UI frames instead of ever
 /// stalling the daemon loop. Dropping the handle ends the writer thread,
@@ -496,8 +553,12 @@ fn spawn_sidecar(
 
 struct SessionTiming {
     session_id: u64,
+    pressed_at: Instant,
     released_at: Instant,
+    finish_sent_at: Option<Instant>,
     final_at: Option<Instant>,
+    polish_done_at: Option<Instant>,
+    insert_dispatched_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -534,10 +595,13 @@ impl SessionAudioStats {
 pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     install_signal_handlers();
     let backend = desktop_backend(&settings);
-    let shortcut = if backend == DesktopBackend::X11 {
-        Some(Shortcut::parse(&settings.shortcut)?)
-    } else {
+    // Wayland has no global-grab primitive; it relies on compositor bindings
+    // driving `sunoto-daemon trigger press|release` over the control socket.
+    // X11 (XGrabKey) and macOS (CGEventTap) both install a real global hotkey.
+    let shortcut = if backend == DesktopBackend::Wayland {
         None
+    } else {
+        Some(Shortcut::parse(&settings.shortcut)?)
     };
     let (events_tx, events) = mpsc::channel::<DaemonEvent>();
 
@@ -592,6 +656,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut preroll = AudioPreRoll::new(settings.preroll_ms as usize * SAMPLES_PER_MS);
     let mut focused_class: Option<(String, String)> = None;
     let mut timing: Option<SessionTiming> = None;
+    let mut last_pressed_at: Option<Instant> = None;
     let mut audio_stats: Option<SessionAudioStats> = None;
     let mut sidecar_ready = false;
     let mut transcribe_deadline: Option<Instant> = None;
@@ -609,6 +674,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     continue;
                 }
                 if let SessionAction::Started { session_id } = machine.press() {
+                    last_pressed_at = Some(Instant::now());
                     logging::info(&format!("session {session_id}: recording"));
                     ui.show(BubbleKind::Recording, "recording...");
                     bubble_hide_at = None;
@@ -653,17 +719,35 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     // The class arrives with the fresh focus capture below; a
                     // stale one from an earlier session must not style this one.
                     focused_class = None;
+                    let released_at = Instant::now();
+                    let recording_ms = last_pressed_at
+                        .map(|pressed| released_at.duration_since(pressed).as_millis());
                     timing = Some(SessionTiming {
                         session_id,
-                        released_at: Instant::now(),
+                        pressed_at: last_pressed_at.unwrap_or(released_at),
+                        released_at,
+                        finish_sent_at: None,
                         final_at: None,
+                        polish_done_at: None,
+                        insert_dispatched_at: None,
                     });
-                    transcribe_deadline =
-                        Some(Instant::now() + Duration::from_millis(settings.final_timeout_ms));
+                    // Adaptive transcribe deadline: the offline backend's
+                    // latency grows ~linearly with utterance length, so give
+                    // long utterances proportionally more headroom than a flat
+                    // timeout allows. recorded_ms * rtf + final_timeout_ms.
+                    let recorded_ms = last_pressed_at
+                        .map(|p| released_at.duration_since(p).as_millis() as u64)
+                        .unwrap_or(0);
+                    let deadline_ms = settings.final_timeout_ms
+                        + (recorded_ms as f64 * settings.final_timeout_rtf) as u64;
+                    transcribe_deadline = Some(released_at + Duration::from_millis(deadline_ms));
                     if let Some(stats) = audio_stats.as_ref() {
                         logging::info(&format!(
-                            "session {session_id}: sent to ASR: {}",
-                            stats.summary()
+                            "session {session_id}: sent to ASR: {}{}, timeout {deadline_ms}ms",
+                            stats.summary(),
+                            recording_ms
+                                .map(|ms| format!(", recorded {ms}ms"))
+                                .unwrap_or_default(),
                         ));
                     }
                     // Focus is captured at release: that window is where the
@@ -674,6 +758,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     let send_error = sidecar
                         .as_mut()
                         .and_then(|client| client.send(&request).err());
+                    if send_error.is_none()
+                        && let Some(timing) = timing.as_mut()
+                    {
+                        timing.finish_sent_at = Some(Instant::now());
+                    }
                     if let Some(error) = send_error {
                         handle_sidecar_loss(
                             &format!("sidecar write failed: {error}"),
@@ -795,9 +884,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         audio_stats = None;
                         if let Some(timing) = timing.as_mut() {
                             timing.final_at = Some(Instant::now());
+                            let release_to_final = timing.released_at.elapsed().as_millis();
+                            let asr_turnaround = timing.finish_sent_at.map(|sent| {
+                                timing.final_at.unwrap().duration_since(sent).as_millis()
+                            });
                             logging::info(&format!(
-                                "session {session_id}: release-to-final {}ms",
-                                timing.released_at.elapsed().as_millis()
+                                "session {session_id}: release-to-final {release_to_final}ms{}",
+                                asr_turnaround
+                                    .map(|ms| format!(", ASR turnaround {ms}ms"))
+                                    .unwrap_or_default(),
                             ));
                         }
                         let output = if settings.polish_enabled {
@@ -832,10 +927,16 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         };
                         let sanitized =
                             sanitize_for_insertion(&output, settings.allow_enter_and_tab);
+                        if let Some(timing) = timing.as_mut() {
+                            timing.polish_done_at = Some(Instant::now());
+                        }
                         if sanitized.is_empty() {
                             logging::info(&format!("session {session_id}: empty result"));
                             ui.hide();
                         } else {
+                            if let Some(timing) = timing.as_mut() {
+                                timing.insert_dispatched_at = Some(Instant::now());
+                            }
                             let _ = ui_tx.send(UiCommand::Insert {
                                 session_id,
                                 text: sanitized,
@@ -928,19 +1029,77 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             Ok(DaemonEvent::Ui(report)) => {
                 match report.result {
                     Ok(outcome) => {
-                        let total = timing
+                        let insert_ms = report.insert_duration.as_millis();
+                        if let Some(timing) = timing
                             .as_ref()
                             .filter(|timing| timing.session_id == report.session_id)
-                            .map(|timing| timing.released_at.elapsed().as_millis());
-                        logging::info(&format!(
-                            "session {}: inserted via {:?} in {}ms{}",
-                            report.session_id,
-                            outcome,
-                            report.insert_duration.as_millis(),
-                            total
-                                .map(|ms| format!(", release-to-insertion {ms}ms"))
-                                .unwrap_or_default()
-                        ));
+                        {
+                            let now = Instant::now();
+                            let recording = timing
+                                .released_at
+                                .duration_since(timing.pressed_at)
+                                .as_millis();
+                            let release_to_finish_sent = timing
+                                .finish_sent_at
+                                .map(|t| t.duration_since(timing.released_at).as_millis());
+                            let asr_turnaround = match (timing.finish_sent_at, timing.final_at) {
+                                (Some(sent), Some(final_)) => {
+                                    Some(final_.duration_since(sent).as_millis())
+                                }
+                                _ => None,
+                            };
+                            let release_to_final = timing
+                                .final_at
+                                .map(|f| f.duration_since(timing.released_at).as_millis());
+                            let polish_ms = match (timing.final_at, timing.polish_done_at) {
+                                (Some(final_), Some(done)) => {
+                                    Some(done.duration_since(final_).as_millis())
+                                }
+                                _ => None,
+                            };
+                            let dispatch_ms =
+                                match (timing.polish_done_at, timing.insert_dispatched_at) {
+                                    (Some(done), Some(dispatched)) => {
+                                        Some(dispatched.duration_since(done).as_millis())
+                                    }
+                                    _ => None,
+                                };
+                            let insert_wait_ms = match (timing.insert_dispatched_at, now) {
+                                (Some(dispatched), _) => {
+                                    Some(now.duration_since(dispatched).as_millis())
+                                }
+                                _ => None,
+                            };
+                            let release_to_insertion =
+                                now.duration_since(timing.released_at).as_millis();
+                            logging::info(&format!(
+                                "session {}: inserted via {:?}; timing breakdown: \
+    recorded {recording}ms, \n    release->finish_sent {}ms, \n    ASR turnaround {}ms, \n    release->final {}ms, \n    polish {}ms, \n    dispatch {}ms, \n    insert {insert_ms}ms (waited {}ms for UI thread), \n    release->insertion {release_to_insertion}ms",
+                                report.session_id,
+                                outcome,
+                                release_to_finish_sent.unwrap_or(0),
+                                asr_turnaround
+                                    .map(|ms| ms.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                                release_to_final
+                                    .map(|ms| ms.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                                polish_ms
+                                    .map(|ms| ms.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                                dispatch_ms
+                                    .map(|ms| ms.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                                insert_wait_ms
+                                    .map(|ms| ms.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                            ));
+                        } else {
+                            logging::info(&format!(
+                                "session {}: inserted via {:?} in {insert_ms}ms",
+                                report.session_id, outcome
+                            ));
+                        }
                         if outcome == InsertionOutcome::ClipboardOnly {
                             show_error(
                                 &ui,
@@ -1194,22 +1353,62 @@ fn spawn_capture_thread(
     events: Sender<DaemonEvent>,
     stop: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, Box<dyn Error>> {
-    let capture = start_capture(CaptureConfig {
-        device: settings.microphone.clone(),
-        ..CaptureConfig::default()
-    })?;
+    let device = settings.microphone.clone();
     Ok(std::thread::spawn(move || {
+        // Retry capture startup with a backoff. On macOS the first attempt
+        // may fail until Microphone TCC permission is granted (the prompt
+        // appears on the first access); dying here would make the daemon
+        // unstartable before the user can grant it. Mirror the Linux
+        // capture-restart behavior: log, back off, and try again.
+        let backoffs = [250, 500, 1000, 2000, 4000];
+        let mut attempt = 0usize;
+        let mut capture: Option<sunoto_audio::CaptureHandle> = None;
         while !stop.load(Ordering::SeqCst) {
-            match capture.events().recv_timeout(Duration::from_millis(100)) {
+            if capture.is_none() {
+                match start_capture(CaptureConfig {
+                    device: device.clone(),
+                    ..CaptureConfig::default()
+                }) {
+                    Ok(handle) => capture = Some(handle),
+                    Err(error) => {
+                        logging::warn(&format!(
+                            "microphone capture unavailable: {error}; retrying"
+                        ));
+                        let delay = backoffs[attempt.min(backoffs.len() - 1)];
+                        attempt += 1;
+                        // Sleep in slices so stop() interrupts promptly.
+                        let mut remaining = Duration::from_millis(delay);
+                        while !remaining.is_zero() && !stop.load(Ordering::SeqCst) {
+                            let step = remaining.min(Duration::from_millis(50));
+                            std::thread::sleep(step);
+                            remaining = remaining.saturating_sub(step);
+                        }
+                        continue;
+                    }
+                }
+            }
+            let Some(handle) = capture.as_ref() else {
+                continue;
+            };
+            match handle.events().recv_timeout(Duration::from_millis(100)) {
                 Ok(event) => {
                     if events.send(DaemonEvent::Audio(event)).is_err() {
                         break;
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    // The capture stream ended (mic unplugged, permission
+                    // revoked, ...). Drop and retry.
+                    if let Some(h) = capture.take() {
+                        h.stop();
+                    }
+                    attempt = 0;
+                }
             }
         }
-        capture.stop();
+        if let Some(h) = capture.take() {
+            h.stop();
+        }
     }))
 }

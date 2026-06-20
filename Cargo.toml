@@ -3,8 +3,10 @@ members = [
   "apps/daemon",
   "crates/sunoto-audio",
   "crates/sunoto-core",
+  "crates/sunoto-desktop",
   "crates/sunoto-ipc",
   "crates/sunoto-linux",
+  "crates/sunoto-macos",
   "crates/sunoto-polish",
 ]
 resolver = "2"

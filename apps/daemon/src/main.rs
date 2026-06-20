@@ -11,16 +11,17 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use sunoto_desktop::{HotkeyListener, Shortcut, UiAdapter};
 use sunoto_ipc::{SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
-use sunoto_linux::x11::{HotkeyListener, Shortcut, UiAdapter};
 
 use settings::Settings;
 
 const USAGE: &str = "Usage: sunoto-daemon COMMAND [OPTIONS]
 
 Commands:
-  check                     verify X11, XTEST, shortcut, and the mock sidecar
-  selftest                  run X11 insertion, push-to-talk, clipboard self-tests
+  check                     verify hotkey, insertion, shortcut, and the mock sidecar
+  selftest                  run insertion, push-to-talk, clipboard self-tests
+  selftest hotkey           synthesize the configured shortcut and verify press/release
   insert TEXT               type TEXT at the focused cursor
   trigger press|release     send a push-to-talk edge to the running daemon
   run                       run the dictation daemon
@@ -31,9 +32,10 @@ Commands:
 
 Common options:
   --config PATH             settings file (default ~/.config/sunoto/config.json)
-  --backend mock|nemotron   override the configured ASR backend
-  --overlay-backend auto|x11|wayland
-                            override the GTK overlay backend
+  --backend mock|nemotron|nemotron_offline
+                            override the configured ASR backend
+  --overlay-backend auto|x11|wayland|macos
+                            override the overlay backend
   --profile-ms N            override the streaming profile (80|160|560|1120)
 
 Bench options:
@@ -68,13 +70,16 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
     let rest = &args[1..];
     match command {
         "check" => check(rest),
+        "selftest" if rest.first().is_some_and(|arg| arg == "hotkey") => {
+            selftest_hotkey(&rest[1..])
+        }
         "selftest" => selftest(),
         "insert" if rest.len() == 1 => {
             let mut ui = UiAdapter::open()?;
             let text = settings::sanitize_for_insertion(&rest[0], false);
             match ui.insert_direct(&text) {
                 Ok(()) => Ok(()),
-                Err(sunoto_linux::x11::X11Error::UnsupportedCharacter(_)) => {
+                Err(sunoto_desktop::X11Error::UnsupportedCharacter(_)) => {
                     ui.insert_via_clipboard(&text)?;
                     Ok(())
                 }
@@ -182,9 +187,9 @@ fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
     let loaded = load_settings(args)?;
     let shortcut = Shortcut::parse(&loaded.shortcut)?;
     drop(HotkeyListener::open(&shortcut)?);
-    println!("X11 hotkey grab: ok ({})", loaded.shortcut);
+    println!("global hotkey grab: ok ({})", loaded.shortcut);
     let ui = UiAdapter::open()?;
-    println!("X11 XTEST/UI connection: ok");
+    println!("UI/insertion connection: ok");
     match ui.window_class(ui.focused_window()) {
         Some((instance, class)) => println!("focused window class: {instance} / {class}"),
         None => println!("focused window class: unavailable"),
@@ -212,13 +217,25 @@ fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
 fn selftest() -> Result<(), Box<dyn Error>> {
     let mut ui = UiAdapter::open()?;
     ui.selftest_insert("sunoto phase one")?;
-    println!("X11 focused-cursor insertion self-test: passed");
+    println!("focused-cursor insertion self-test: passed");
     ui.selftest_clipboard()?;
-    println!("X11 clipboard round-trip self-test: passed");
+    println!("clipboard round-trip self-test: passed");
     ui.selftest_window_class()?;
-    println!("X11 window-class lookup self-test: passed");
+    println!("focused window-class lookup self-test: passed");
     let listener = HotkeyListener::open(&Shortcut::default())?;
     listener.selftest_push_to_talk()?;
-    println!("X11 push-to-talk self-test (modifier released first): passed");
+    println!("push-to-talk self-test (modifier released first): passed");
+    Ok(())
+}
+
+fn selftest_hotkey(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let loaded = load_settings(args)?;
+    let shortcut = Shortcut::parse(&loaded.shortcut)?;
+    let listener = HotkeyListener::open(&shortcut)?;
+    listener.selftest_push_to_talk()?;
+    println!(
+        "push-to-talk hotkey self-test: passed ({})",
+        loaded.shortcut
+    );
     Ok(())
 }

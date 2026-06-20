@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.earendil-works.sunoto</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Run the BARE binary, not the Sunoto.app bundle. The bare binary
+             at this fixed path holds a path-based TCC ListenEvent grant that
+             survives `cargo build` rebuilds; the app-bundle (bundle-id)
+             grant is cdhash-bound and breaks every rebuild, and its
+             LSBackgroundOnly launchd context suppresses the re-grant prompt.
+             See docs/macos-recurring-issues.md § inert-tap. -->
+        <string>__SUNOTO_DAEMON__</string>
+        <string>run</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUNOTO_ROOT</key>
+        <string>__SUNOTO_ROOT__</string>
+    </dict>
+
+    <!-- Load at login and keep the always-warm ASR sidecar resident. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/sunoto/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/sunoto/daemon.log</string>
+
+</dict>
+</plist>

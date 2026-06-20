@@ -139,7 +139,7 @@ class _SampleBuffer:
 
 
 class NemotronEngine:
-    """GPU streaming engine. Loads the model once and stays warm."""
+    """Cache-aware streaming engine. Loads the model once and stays warm."""
 
     backend = BACKEND_NAME
 
@@ -551,7 +551,12 @@ def serve(server: SidecarServer, stdin, protocol_out) -> int:
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="torch device for streaming RNNT: cuda by default, cpu for macOS, "
+        "or mps as an experimental Apple Silicon path",
+    )
     parser.add_argument(
         "--profile-ms",
         type=int,

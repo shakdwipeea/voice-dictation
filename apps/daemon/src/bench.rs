@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use sunoto_desktop::UiAdapter;
 use sunoto_ipc::{SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
-use sunoto_linux::x11::UiAdapter;
 use sunoto_polish::polish;
 
 use crate::logging;

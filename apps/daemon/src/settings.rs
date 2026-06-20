@@ -10,25 +10,39 @@ pub struct Settings {
     pub shortcut: String,
     /// PulseAudio source name, or "auto" for the first physical microphone.
     pub microphone: String,
-    /// "mock" or "nemotron".
+    /// "mock", "nemotron" (cache-aware RNNT streaming), or
+    /// "nemotron_offline" (whole-utterance).
     pub backend: String,
     /// Streaming profile: 80, 160, 560, or 1120 ms.
     pub profile_ms: u16,
     /// Audio retained before the shortcut press, so the first word survives.
     pub preroll_ms: u32,
     /// Watchdog: how long Transcribing may wait for the final result.
+    /// This is the fixed base; the effective deadline also scales with the
+    /// recorded audio length via `final_timeout_rtf` (so a long utterance
+    /// gets proportionally more time on offline backends whose latency
+    /// grows with audio duration).
     pub final_timeout_ms: u64,
+    /// Watchdog scale factor on the recorded audio duration. The effective
+    /// transcribe deadline is `final_timeout_ms + recorded_ms * final_timeout_rtf`,
+    /// covering offline backends (e.g. Nemotron offline on macOS) whose
+    /// latency is roughly proportional to utterance length.
+    pub final_timeout_rtf: f64,
     /// Override the sidecar interpreter (defaults depend on the backend).
     pub sidecar_python: Option<String>,
     /// Override the sidecar script path.
     pub sidecar_script: Option<String>,
+    /// ASR device override for Nemotron backends. Streaming "nemotron"
+    /// defaults to CUDA when unset; macOS should set "cpu" for streaming RNNT.
+    /// Offline "nemotron_offline" accepts "mps" or "cpu".
+    pub asr_device: Option<String>,
     /// Injecting Enter/Tab into a focused terminal can execute commands, so
     /// both are replaced with spaces unless explicitly allowed.
     pub allow_enter_and_tab: bool,
     /// GTK4 pill overlay (UI sidecar). When it cannot start (e.g. GTK4 is
     /// not installed) the daemon falls back to the native X11 bubble.
     pub overlay_enabled: bool,
-    /// "auto", "x11", or "wayland" for the GTK overlay sidecar.
+    /// "auto", "x11", "wayland", or "macos" for the overlay sidecar backend.
     pub overlay_backend: String,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
@@ -43,9 +57,11 @@ impl Default for Settings {
             backend: "mock".to_string(),
             profile_ms: 160,
             preroll_ms: 300,
-            final_timeout_ms: 5000,
+            final_timeout_ms: 8000,
+            final_timeout_rtf: 3.0,
             sidecar_python: None,
             sidecar_script: None,
+            asr_device: None,
             allow_enter_and_tab: false,
             overlay_enabled: true,
             overlay_backend: "auto".to_string(),
@@ -80,16 +96,37 @@ impl Settings {
         let (default_python, default_script, extra_args): (&str, PathBuf, Vec<String>) =
             match self.backend.as_str() {
                 "mock" => ("python3", root.join("services/asr/mock_sidecar.py"), vec![]),
-                "nemotron" => (
+                "nemotron" => ("python3", root.join("services/asr/nemotron_sidecar.py"), {
+                    let mut v = vec!["--profile-ms".to_string(), self.profile_ms.to_string()];
+                    push_asr_device_arg(&mut v, &self.asr_device);
+                    v
+                }),
+                "nemotron_offline" => (
                     "python3",
-                    root.join("services/asr/nemotron_sidecar.py"),
-                    vec!["--profile-ms".to_string(), self.profile_ms.to_string()],
+                    root.join("services/asr/nemotron_offline_sidecar.py"),
+                    {
+                        let mut v = vec!["--profile-ms".to_string(), self.profile_ms.to_string()];
+                        push_asr_device_arg(&mut v, &self.asr_device);
+                        v
+                    },
                 ),
                 other => return Err(format!("unknown ASR backend: {other}")),
             };
         let python = self.sidecar_python.clone().unwrap_or_else(|| {
             if self.backend == "nemotron" {
+                if cfg!(target_os = "macos") {
+                    let venv = root.join(".venv-nemotron-mac/bin/python");
+                    if venv.is_file() {
+                        return venv.to_string_lossy().into_owned();
+                    }
+                }
                 let venv = root.join(".venv-nemotron/bin/python");
+                if venv.is_file() {
+                    return venv.to_string_lossy().into_owned();
+                }
+            }
+            if self.backend == "nemotron_offline" {
+                let venv = root.join(".venv-nemotron-mac/bin/python");
                 if venv.is_file() {
                     return venv.to_string_lossy().into_owned();
                 }
@@ -107,7 +144,7 @@ impl Settings {
 
     pub fn validate(&self) -> Result<(), String> {
         match self.backend.as_str() {
-            "mock" | "nemotron" => {}
+            "mock" | "nemotron" | "nemotron_offline" => {}
             other => return Err(format!("unknown ASR backend: {other}")),
         }
         match self.profile_ms {
@@ -118,18 +155,57 @@ impl Settings {
                 ));
             }
         }
+        if let Some(device) = self
+            .asr_device
+            .as_deref()
+            .filter(|device| !device.is_empty())
+        {
+            match self.backend.as_str() {
+                "nemotron_offline" if !matches!(device, "mps" | "cpu") => {
+                    return Err(format!(
+                        "unsupported asr_device {device:?} for nemotron_offline; use mps or cpu"
+                    ));
+                }
+                _ if !matches!(device, "cuda" | "mps" | "cpu") => {
+                    return Err(format!(
+                        "unsupported asr_device {device:?}; use cuda, mps, or cpu"
+                    ));
+                }
+                _ => {}
+            }
+        }
         match self.overlay_backend.as_str() {
-            "auto" | "x11" | "wayland" => Ok(()),
+            "auto" | "x11" | "wayland" | "macos" => Ok(()),
             other => Err(format!(
-                "unsupported overlay_backend {other:?}; use auto, x11, or wayland"
+                "unsupported overlay_backend {other:?}; use auto, x11, wayland, or macos"
             )),
         }
     }
 
-    /// Command and environment for the GTK overlay UI sidecar, which runs as
-    /// a Python module so its package-relative imports resolve.
+    /// Command and environment for the overlay UI sidecar. Linux uses the
+    /// GTK Python module; macOS uses the native Swift NSPanel helper.
     pub fn overlay_command(&self) -> (String, Vec<String>, Vec<(String, String)>) {
         let src = repo_root().join("src");
+        if cfg!(target_os = "macos") && self.overlay_backend == "macos" {
+            let root = repo_root();
+            let binary = root.join("target/release/sunoto-overlay");
+            if binary.is_file() {
+                return (
+                    binary.to_string_lossy().into_owned(),
+                    vec![],
+                    vec![("SUNOTO_OVERLAY_BACKEND".to_string(), "macos".to_string())],
+                );
+            }
+            return (
+                "swift".to_string(),
+                vec![
+                    root.join("services/macos/sunoto-overlay.swift")
+                        .to_string_lossy()
+                        .into_owned(),
+                ],
+                vec![("SUNOTO_OVERLAY_BACKEND".to_string(), "macos".to_string())],
+            );
+        }
         let mut envs = vec![
             ("PYTHONPATH".to_string(), src.to_string_lossy().into_owned()),
             (
@@ -152,6 +228,15 @@ impl Settings {
             vec!["-m".to_string(), "voice_dictation.ui_sidecar".to_string()],
             envs,
         )
+    }
+}
+
+fn push_asr_device_arg(args: &mut Vec<String>, device: &Option<String>) {
+    if let Some(device) = device.as_ref()
+        && !device.is_empty()
+    {
+        args.push("--device".to_string());
+        args.push(device.clone());
     }
 }
 
@@ -187,6 +272,11 @@ fn merge_ld_preload(path: &str) -> String {
 pub fn config_path() -> PathBuf {
     if let Ok(path) = std::env::var("SUNOTO_CONFIG") {
         return PathBuf::from(path);
+    }
+    if cfg!(target_os = "macos") {
+        // macOS convention: ~/Library/Application Support/sunoto/config.json.
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        return PathBuf::from(home).join("Library/Application Support/sunoto/config.json");
     }
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -304,6 +394,89 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_command_supports_nemotron_offline() {
+        let settings = Settings {
+            backend: "nemotron_offline".to_string(),
+            profile_ms: 560,
+            ..Settings::default()
+        };
+        let (_python, args) = settings.sidecar_command().unwrap();
+        assert!(args[0].ends_with("services/asr/nemotron_offline_sidecar.py"));
+        assert_eq!(args[1..], ["--profile-ms".to_string(), "560".to_string()]);
+    }
+
+    #[test]
+    fn sidecar_command_passes_asr_device_to_offline_backend() {
+        let settings = Settings {
+            backend: "nemotron_offline".to_string(),
+            profile_ms: 160,
+            asr_device: Some("cpu".to_string()),
+            ..Settings::default()
+        };
+        let (_python, args) = settings.sidecar_command().unwrap();
+        assert_eq!(
+            args[1..],
+            [
+                "--profile-ms".to_string(),
+                "160".to_string(),
+                "--device".to_string(),
+                "cpu".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sidecar_command_passes_asr_device_to_streaming_backend() {
+        let settings = Settings {
+            backend: "nemotron".to_string(),
+            profile_ms: 80,
+            asr_device: Some("cpu".to_string()),
+            ..Settings::default()
+        };
+        let (_python, args) = settings.sidecar_command().unwrap();
+        assert!(args[0].ends_with("services/asr/nemotron_sidecar.py"));
+        assert_eq!(
+            args[1..],
+            [
+                "--profile-ms".to_string(),
+                "80".to_string(),
+                "--device".to_string(),
+                "cpu".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn validation_accepts_backend_specific_asr_devices() {
+        let cuda = Settings {
+            asr_device: Some("cuda".to_string()),
+            ..Settings::default()
+        };
+        assert!(cuda.validate().is_ok());
+        let cpu = Settings {
+            asr_device: Some("cpu".to_string()),
+            ..Settings::default()
+        };
+        assert!(cpu.validate().is_ok());
+        let mps = Settings {
+            asr_device: Some("mps".to_string()),
+            ..Settings::default()
+        };
+        assert!(mps.validate().is_ok());
+        let unknown = Settings {
+            asr_device: Some("ane".to_string()),
+            ..Settings::default()
+        };
+        assert!(unknown.validate().is_err());
+        let offline_cuda = Settings {
+            backend: "nemotron_offline".to_string(),
+            asr_device: Some("cuda".to_string()),
+            ..Settings::default()
+        };
+        assert!(offline_cuda.validate().is_err());
+    }
+
+    #[test]
     fn overlay_command_runs_the_ui_module_with_pythonpath() {
         let settings = Settings::default();
         assert!(settings.overlay_enabled);
@@ -347,6 +520,36 @@ mod tests {
             ..Settings::default()
         };
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn validation_accepts_macos_overlay_backend() {
+        let settings = Settings {
+            overlay_backend: "macos".to_string(),
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_overlay_backend_uses_native_sidecar() {
+        let settings = Settings {
+            overlay_backend: "macos".to_string(),
+            ..Settings::default()
+        };
+        let (command, args, envs) = settings.overlay_command();
+        assert!(command.ends_with("sunoto-overlay") || command == "swift");
+        if command == "swift" {
+            assert_eq!(args.len(), 1);
+            assert!(args[0].ends_with("services/macos/sunoto-overlay.swift"));
+        } else {
+            assert!(args.is_empty());
+        }
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "SUNOTO_OVERLAY_BACKEND" && value == "macos")
+        );
     }
 
     #[test]

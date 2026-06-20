@@ -91,9 +91,17 @@ dependencies = [
  "serde_json",
  "sunoto-audio",
  "sunoto-core",
+ "sunoto-desktop",
  "sunoto-ipc",
- "sunoto-linux",
  "sunoto-polish",
+]
+
+[[package]]
+name = "sunoto-desktop"
+version = "0.1.0"
+dependencies = [
+ "sunoto-linux",
+ "sunoto-macos",
 ]
 
 [[package]]
@@ -106,6 +114,10 @@ dependencies = [
 
 [[package]]
 name = "sunoto-linux"
+version = "0.1.0"
+
+[[package]]
+name = "sunoto-macos"
 version = "0.1.0"
 
 [[package]]

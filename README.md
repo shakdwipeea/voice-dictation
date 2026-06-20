@@ -13,6 +13,15 @@ X11 is supported directly. Hyprland/Wayland is supported through compositor
 bindings that call the daemon control socket, with insertion via `wl-copy` plus
 a paste shortcut, and direct `wtype` as a fallback.
 
+A macOS port is in progress (see `docs/macos-port-plan.md`): the same daemon
+with CGEventTap hotkeys, CoreAudio capture, CGEvent text insertion, and the
+Nemotron ASR model. The usable macOS real-ASR path is currently
+**whole-utterance RNNT on CPU** (`backend="nemotron_offline"`,
+`asr_device="cpu"`). CPU streaming is selectable for experiments, but live
+testing showed it cannot keep up on this Mac. Status by phase is tracked in
+`scripts/macos-port/phases.md`; verify any phase with
+`scripts/macos-port/verify-phase.sh <N>`.
+
 ## Quickstart
 
 ```bash
@@ -84,7 +93,8 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `shortcut` | `"Ctrl+F1"` | Push-to-talk hold shortcut. |
-| `backend` | `"mock"` | `"nemotron"` for real ASR (needs `.venv-nemotron`). |
+| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"nemotron_offline"` for macOS whole-utterance ASR. |
+| `asr_device` | unset | Streaming defaults to CUDA when unset. On macOS, use `"cpu"` with `nemotron_offline`; MPS and CPU streaming are experimental. |
 | `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). |
 | `microphone` | `"auto"` | PulseAudio source name; auto rejects monitor sources. |
 | `overlay_enabled` | `true` | GTK4 pill overlay; falls back to the X11 bubble if unavailable. |
@@ -121,6 +131,14 @@ docs/                  product plan, phase results, integration plan
 - Deterministic polish: microseconds
 - Zero-edit rate on the scripted corpus: **96% polished vs 28% raw**
 - Sidecar VRAM while streaming: ~3.6 GiB; warm start 16–32 s (optimization pending)
+
+## macOS performance note
+
+Use `backend="nemotron_offline"` with `asr_device="cpu"` on macOS for now.
+The cache-aware streaming sidecar can run on CPU, but live testing showed it
+blocked badly: a 26.6s hold delivered only about 4.6s of audio and still waited
+about 7.4s after release. Sub-second macOS likely needs ONNX/quantization or a
+different smaller model, not PyTorch CPU streaming for this Nemotron model.
 
 ## Troubleshooting
 

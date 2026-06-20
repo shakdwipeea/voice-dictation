@@ -1,0 +1,13 @@
+[package]
+name = "sunoto-desktop"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+# Linux/other targets re-export sunoto-linux (real X11 on Linux, stub
+# elsewhere). macOS re-exports sunoto-macos instead.
+sunoto-linux = { path = "../sunoto-linux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+sunoto-macos = { path = "../sunoto-macos" }

@@ -14,6 +14,7 @@ import nemotron_sidecar  # noqa: E402
 from nemotron_sidecar import (  # noqa: E402
     PROFILE_CONTEXTS,
     SidecarServer,
+    create_parser,
     flush_padding_samples,
     samples_to_float32,
     serve,
@@ -224,6 +225,11 @@ class StreamingMathTest(unittest.TestCase):
         # The protocol layer must stay importable on the system python (no
         # numpy/NeMo) so these tests can run anywhere.
         self.assertTrue(hasattr(nemotron_sidecar, "NemotronEngine"))
+
+    def test_streaming_parser_accepts_cpu_device_for_macos(self):
+        args = create_parser().parse_args(["--profile-ms", "80", "--device", "cpu"])
+        self.assertEqual(args.profile_ms, 80)
+        self.assertEqual(args.device, "cpu")
 
 
 if __name__ == "__main__":

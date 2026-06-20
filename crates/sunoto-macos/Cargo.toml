@@ -1,0 +1,11 @@
+[package]
+name = "sunoto-macos"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+# Phase 2+ will add macOS framework FFI (CoreGraphics, CoreAudio, AppKit,
+# Foundation) and implement HotkeyListener / UiAdapter for CGEventTap,
+# CoreAudio capture, CGEvent insertion, and NSPasteboard. For now this crate
+# is a placeholder so the workspace and facade wiring can be established.

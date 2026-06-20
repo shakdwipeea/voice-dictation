@@ -1,7 +1,7 @@
 # Desktop configuration
 
 This is the short setup reference for running voice-dictation on
-Hyprland/Wayland and X11.
+Hyprland/Wayland, X11, and macOS.
 
 ## Common config
 
@@ -146,6 +146,50 @@ target/release/sunoto-daemon check
 target/release/sunoto-daemon selftest
 ```
 
+## macOS
+
+macOS uses a different config path:
+
+```text
+~/Library/Application Support/sunoto/config.json
+```
+
+Typical macOS real-ASR config:
+
+```json
+{
+  "shortcut": "Ctrl+F1",
+  "backend": "nemotron_offline",
+  "asr_device": "cpu",
+  "overlay_backend": "macos"
+}
+```
+
+`backend = "nemotron_offline"` uses the whole-utterance RNNT sidecar. CPU is the
+current macOS default because it is much more stable than MPS in live short
+dictation. `backend = "nemotron"` with `asr_device = "cpu"` remains selectable
+for experiments, but live testing showed CPU streaming cannot keep up on this
+Mac.
+
+Run the real-speech benchmark:
+
+```bash
+.venv-nemotron-mac/bin/python services/asr/phase0_macos_measure.py \
+  --device cpu \
+  --output build/phase0/macos-real-speech-cpu.json
+```
+
+The benchmark downloads a small LibriSpeech sample from Hugging Face, exports
+16 kHz mono WAVs, and reports latency, real-time factor, and WER for the
+offline transcribe path. Stop the running daemon/sidecar first so a second
+Nemotron instance is not loaded.
+
+macOS requires one-time Privacy & Security permissions:
+
+- Accessibility for CGEvent insertion and hotkeys.
+- Input Monitoring for the global event tap.
+- Microphone for CoreAudio capture.
+
 ## ASR profile
 
 Current default:
@@ -163,7 +207,9 @@ Profiles:
 | `560` | Larger chunks, more latency. |
 | `1120` | Largest chunks, highest latency. |
 
-Use `"backend": "nemotron"` for real ASR. Use `"mock"` only for plumbing tests.
+Use `"backend": "nemotron"` for streaming real ASR on Linux/CUDA,
+`"backend": "nemotron_offline"` for macOS whole-utterance real ASR, and
+`"mock"` only for plumbing tests.
 
 ## Quick troubleshooting
 

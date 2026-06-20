@@ -2,11 +2,15 @@ __pycache__/
 *.py[cod]
 .venv/
 .venv-nemotron/
+.venv-nemotron-mac/
 dist/
 build/
 target/
 *.egg-info/
 .pytest_cache/
+
+# macOS
+.DS_Store
 
 # Project-local cache (Whisper models)
 .cache/

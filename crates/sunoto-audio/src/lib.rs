@@ -7,18 +7,34 @@
 //! every (re)start so a reconnected microphone is picked up.
 
 use std::fmt;
-use std::io::{self, Read};
-use std::process::{Child, ChildStdout, Command, Stdio};
+#[cfg(not(target_os = "macos"))]
+use std::io;
+#[cfg(not(target_os = "macos"))]
+use std::io::Read;
+#[cfg(not(target_os = "macos"))]
+use std::process::ChildStdout;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::Receiver;
+#[cfg(not(target_os = "macos"))]
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::{self, JoinHandle};
+#[cfg(not(target_os = "macos"))]
+use std::thread;
+use std::thread::JoinHandle;
+#[cfg(not(target_os = "macos"))]
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(not(target_os = "macos"))]
 const SAMPLE_RATE_HZ: usize = 16_000;
+#[cfg(not(target_os = "macos"))]
 const BYTES_PER_SAMPLE: usize = 2;
 // stop() must be able to interrupt a pending restart backoff promptly, so
 // backoff sleeps are sliced into chunks no longer than this.
+#[cfg(not(target_os = "macos"))]
 const STOP_POLL_MS: u64 = 25;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +168,7 @@ fn run_pactl(pactl_program: &[String], args: &[&str]) -> Result<String, AudioErr
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn resolve_configured_device(config: &CaptureConfig) -> Result<String, AudioError> {
     if config.device == "auto" {
         resolve_source(&config.pactl_program)
@@ -160,6 +177,7 @@ fn resolve_configured_device(config: &CaptureConfig) -> Result<String, AudioErro
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn spawn_parec(config: &CaptureConfig, device: &str) -> Result<Child, AudioError> {
     let (program, leading) = config
         .parec_program
@@ -221,6 +239,19 @@ impl Drop for CaptureHandle {
 }
 
 pub fn start_capture(config: CaptureConfig) -> Result<CaptureHandle, AudioError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::start_capture_macos(config)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        start_capture_linux(config)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(not(target_os = "macos"))]
+fn start_capture_linux(config: CaptureConfig) -> Result<CaptureHandle, AudioError> {
     if config.frame_ms == 0 {
         return Err(AudioError::Resolve(
             "frame_ms must be at least 1".to_string(),
@@ -246,6 +277,7 @@ pub fn start_capture(config: CaptureConfig) -> Result<CaptureHandle, AudioError>
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn capture_loop(
     config: CaptureConfig,
     first: (Child, String),
@@ -321,6 +353,7 @@ fn capture_loop(
 }
 
 /// Read frame-sized chunks until EOF or error; a short final read is dropped.
+#[cfg(not(target_os = "macos"))]
 fn pump_frames(
     out: &mut ChildStdout,
     frame_bytes: usize,
@@ -353,6 +386,7 @@ fn pump_frames(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn send_event(tx: &Sender<AudioEvent>, stop: &AtomicBool, event: AudioEvent) -> bool {
     if tx.send(event).is_err() {
         // The receiver is gone, so nothing can observe events anymore; treat
@@ -364,6 +398,7 @@ fn send_event(tx: &Sender<AudioEvent>, stop: &AtomicBool, event: AudioEvent) -> 
 }
 
 /// Kill (in case it is still running) and wait the child so no zombie remains.
+#[cfg(not(target_os = "macos"))]
 fn reap(child: Option<Child>) -> String {
     let Some(mut child) = child else {
         return "capture process already reaped".to_string();
@@ -375,6 +410,7 @@ fn reap(child: Option<Child>) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn next_backoff(backoff_ms: &[u64], index: &mut usize) -> u64 {
     let delay = backoff_ms
         .get(*index)
@@ -385,6 +421,7 @@ fn next_backoff(backoff_ms: &[u64], index: &mut usize) -> u64 {
     delay
 }
 
+#[cfg(not(target_os = "macos"))]
 fn sleep_unless_stopped(stop: &AtomicBool, total_ms: u64) {
     let mut remaining_ms = total_ms;
     while remaining_ms > 0 && !stop.load(Ordering::SeqCst) {
@@ -394,6 +431,7 @@ fn sleep_unless_stopped(stop: &AtomicBool, total_ms: u64) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn frame_byte_len(frame_ms: u32) -> usize {
     SAMPLE_RATE_HZ * BYTES_PER_SAMPLE * frame_ms as usize / 1000
 }
@@ -407,17 +445,26 @@ fn lock_child(slot: &Mutex<Option<Child>>) -> MutexGuard<'_, Option<Child>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_os = "macos"))]
     use std::fs;
+    use std::io;
+    #[cfg(not(target_os = "macos"))]
     use std::path::PathBuf;
+    #[cfg(not(target_os = "macos"))]
     use std::sync::atomic::AtomicU64;
+    #[cfg(not(target_os = "macos"))]
+    use std::time::Duration;
+    #[cfg(not(target_os = "macos"))]
     use std::time::Instant;
 
+    #[cfg(not(target_os = "macos"))]
     const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn sh(script: &str) -> Vec<String> {
         vec!["sh".to_string(), "-c".to_string(), script.to_string()]
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn py(script: &str) -> Vec<String> {
         vec!["python3".to_string(), "-c".to_string(), script.to_string()]
     }
@@ -431,6 +478,7 @@ mod tests {
         ))
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn test_config(parec_program: Vec<String>) -> CaptureConfig {
         CaptureConfig {
             device: "test-device".to_string(),
@@ -442,12 +490,14 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn expect_event(events: &Receiver<AudioEvent>) -> AudioEvent {
         events
             .recv_timeout(RECV_TIMEOUT)
             .expect("timed out waiting for audio event")
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn unique_temp_path(tag: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let count = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -528,6 +578,7 @@ mod tests {
         assert_eq!(parse_source_description(listing, "missing"), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn frames_decode_little_endian_in_exact_sizes() {
         // Two 20 ms frames (320 samples each) as a signed ramp; the negative
@@ -557,6 +608,7 @@ mod tests {
         handle.stop();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn partial_trailing_frame_is_dropped_at_eof() {
         // One full frame plus 10 stray bytes that must never become a Frame.
@@ -578,6 +630,7 @@ mod tests {
         handle.stop();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn capture_restarts_after_child_exit() {
         let marker = unique_temp_path("restart");
@@ -609,6 +662,7 @@ mod tests {
         let _ = fs::remove_file(&marker);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn auto_device_is_resolved_with_pactl() {
         let config = CaptureConfig {
@@ -635,6 +689,7 @@ mod tests {
         handle.stop();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn stop_interrupts_an_infinite_stream_promptly() {
         // The fake ignores the appended parec arguments and streams forever;
@@ -650,6 +705,7 @@ mod tests {
         assert!(begin.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn drop_without_stop_interrupts_an_infinite_stream_promptly() {
         let handle = start_capture(test_config(sh("exec cat /dev/zero"))).unwrap();
