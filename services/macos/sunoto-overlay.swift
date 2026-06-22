@@ -14,16 +14,25 @@ private final class PillView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         let bounds = self.bounds
-        NSColor(calibratedWhite: 0.05, alpha: 0.86).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2.0, yRadius: bounds.height / 2.0).fill()
+        let pillWidth: CGFloat = 214
+        let pillHeight: CGFloat = 34
+        let pillRect = NSRect(
+            x: max(0, (bounds.width - pillWidth) / 2.0),
+            y: 0,
+            width: min(pillWidth, bounds.width),
+            height: pillHeight
+        )
 
-        let dotRect = NSRect(x: 14, y: (bounds.height - 10) / 2.0, width: 10, height: 10)
+        NSColor(calibratedWhite: 0.05, alpha: 0.86).setFill()
+        NSBezierPath(roundedRect: pillRect, xRadius: pillRect.height / 2.0, yRadius: pillRect.height / 2.0).fill()
+
+        let dotRect = NSRect(x: pillRect.minX + 14, y: pillRect.minY + (pillRect.height - 10) / 2.0, width: 10, height: 10)
         NSColor(calibratedRed: 0.94, green: 0.26, blue: 0.26, alpha: 1.0).setFill()
         NSBezierPath(ovalIn: dotRect).fill()
 
-        let meterX: CGFloat = 36
+        let meterX = pillRect.minX + 36
         let meterWidth: CGFloat = 150
-        let meterRect = NSRect(x: meterX, y: (bounds.height - 5) / 2.0, width: meterWidth, height: 5)
+        let meterRect = NSRect(x: meterX, y: pillRect.minY + (pillRect.height - 5) / 2.0, width: meterWidth, height: 5)
         NSColor(calibratedWhite: 1.0, alpha: 0.12).setFill()
         NSBezierPath(roundedRect: meterRect, xRadius: 2.5, yRadius: 2.5).fill()
 
@@ -36,11 +45,30 @@ private final class PillView: NSView {
         ).fill()
 
         if !status.isEmpty {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineBreakMode = .byTruncatingTail
             let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor(calibratedWhite: 0.86, alpha: 1.0),
-                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.92, alpha: 1.0),
+                .font: NSFont.systemFont(ofSize: 12.5, weight: .medium),
+                .paragraphStyle: paragraph,
             ]
-            let textRect = NSRect(x: 202, y: 8, width: bounds.width - 218, height: bounds.height - 12)
+            let textSize = (status as NSString).size(withAttributes: attrs)
+            let captionWidth = min(bounds.width, max(112, ceil(textSize.width) + 32))
+            let statusRect = NSRect(
+                x: (bounds.width - captionWidth) / 2.0,
+                y: pillRect.maxY + 7,
+                width: captionWidth,
+                height: 27
+            )
+            let path = NSBezierPath(roundedRect: statusRect, xRadius: 13.5, yRadius: 13.5)
+            NSColor(calibratedWhite: 0.04, alpha: 0.72).setFill()
+            path.fill()
+            NSColor(calibratedWhite: 1.0, alpha: 0.10).setStroke()
+            path.lineWidth = 1.0
+            path.stroke()
+
+            let textRect = statusRect.insetBy(dx: 14, dy: 5.5)
             (status as NSString).draw(in: textRect, withAttributes: attrs)
         }
     }
@@ -124,7 +152,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
 
     private func resizeForStatus() {
         let width: CGFloat = pill.status.isEmpty ? 214 : 420
-        let height: CGFloat = 34
+        let height: CGFloat = pill.status.isEmpty ? 34 : 68
         var frame = panel.frame
         frame.size = NSSize(width: width, height: height)
         panel.setFrame(frame, display: true)

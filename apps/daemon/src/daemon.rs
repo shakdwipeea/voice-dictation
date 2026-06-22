@@ -503,14 +503,20 @@ impl UiFront {
     fn show(&self, kind: BubbleKind, text: &str) {
         if self.overlay_active() {
             self.overlay_send(OverlayRequest::Show);
-            // While recording, the pill's dot and meter say it all; text
-            // only appears for transcribing/partial/error states.
-            let status = if matches!(kind, BubbleKind::Recording) && text == "recording..." {
-                String::new()
+            // While recording, the pill's dot and meter say it all. While
+            // finalizing a streaming session, keep the latest partial visible
+            // instead of replacing it with a generic "transcribing..." label.
+            if matches!(kind, BubbleKind::Recording) && text == "recording..." {
+                self.overlay_send(OverlayRequest::Status {
+                    text: String::new(),
+                });
+            } else if matches!(kind, BubbleKind::Transcribing) && text == "transcribing..." {
+                // Preserve the current partial/caption until the final arrives.
             } else {
-                text.to_string()
-            };
-            self.overlay_send(OverlayRequest::Status { text: status });
+                self.overlay_send(OverlayRequest::Status {
+                    text: text.to_string(),
+                });
+            }
         } else {
             let _ = self
                 .bubble
