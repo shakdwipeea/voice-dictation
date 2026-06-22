@@ -93,10 +93,14 @@ muted; check System Settings → Sound → Input.
 
 ### ASR latency and the transcribe timeout
 
-- The macOS whole-utterance Nemotron backend's latency is dominated by
-  `model.transcribe` (RNNT decoding of real speech), NOT the daemon. Daemon
-  overhead (send + polish + paste) is single-digit ms. Prefer
-  `backend = "nemotron_offline"` with `asr_device = "cpu"` on macOS. The
+- Prefer `backend = "parakeet_mlx_offline"` on macOS. It uses
+  `mlx-community/parakeet-tdt-0.6b-v3` through parakeet-mlx/MLX on Apple GPU
+  (`Device(gpu, 0)` on the M1 Pro benchmark): cached load ~1.35s, warmup
+  ~1.22s, p50 ASR latency ~0.24s on the LibriSpeech sample set. The daemon
+  sidecar hot path avoids temp WAV + ffmpeg by feeding captured PCM directly
+  into `get_logmel()` + `model.generate()`. The older macOS whole-utterance
+  Nemotron backend's latency is dominated by
+  `model.transcribe` (RNNT decoding of real speech), NOT the daemon. The
   streaming CPU path (`backend = "nemotron"`, `asr_device = "cpu"`) is
   selectable but live testing showed ~7.4s turnaround — it cannot keep up.
 - The transcribe watchdog is ADAPTIVE: `final_timeout_ms + recorded_ms *
@@ -106,9 +110,13 @@ muted; check System Settings → Sound → Input.
   a timed-out session still runs to completion on the sidecar.
 - `asr_device` selects the Nemotron Torch device. Streaming `nemotron`
   defaults to CUDA when unset and is intended for Linux/CUDA. Offline
-  `nemotron_offline` accepts `"cpu"` or `"mps"`; use CPU on macOS unless a live
-  benchmark proves otherwise. Switch by setting `asr_device` in config and
-  restarting — no rebuild needed.
+  `nemotron_offline` accepts `"cpu"` or `"mps"`; use CPU if you fall back to
+  Nemotron on macOS. Parakeet-MLX backends ignore `asr_device`; leave it unset
+  and optionally set `asr_model` to override the default checkpoint.
+  `parakeet_mlx_streaming` exists for experimental partials but is not the
+  default: protocol smoke showed partials and a clean final, but slightly worse
+  accuracy than offline on one LibriSpeech clip. Switch backend/model in config
+  and restart — no rebuild needed.
 
 ## Runtime safety
 
@@ -121,8 +129,8 @@ muted; check System Settings → Sound → Input.
   service first, or use the mock backend. The sidecar's VRAM preflight
   (`--min-free-vram-mib`, default 4500) refuses to load into a nearly-full
   GPU; do not disable it to "make a test work".
-- On macOS, prefer `backend = "nemotron_offline"` with `asr_device = "cpu"`.
-  Do not run the macOS benchmark while any Nemotron sidecar is already warm.
+- On macOS, prefer `backend = "parakeet_mlx_offline"` with `asr_device` unset.
+  Do not run the macOS benchmark while any ASR sidecar is already warm.
 - Do not run stress tests such as gpu-burn or FurMark from this repo.
 - The daemon types into whatever window is focused. Never trigger a dictation
   session (real or synthetic Ctrl+F8) without first focusing a disposable

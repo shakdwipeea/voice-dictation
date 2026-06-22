@@ -243,9 +243,11 @@ it's back to a different value, and behavior changed.
   manual `nohup` → the file you redirected to (we use `/tmp/sunoto-daemon.log`
   or `/tmp/sunoto-bare.log`). Do not confuse the two.
 - Verify the running config: `python3 -c "import json;print(json.load(open('$HOME/Library/Application Support/sunoto/config.json'))['backend'])"`
-- macOS recommended: `backend = "nemotron_offline"`, `asr_device = "cpu"`.
-  The streaming `nemotron` backend on CPU measured ~7.4s turnaround in live
-  testing and cannot keep up — do not use it on macOS.
+- macOS recommended: `backend = "parakeet_mlx_offline"` with `asr_device`
+  unset. It uses parakeet-mlx + MLX on Apple GPU/Metal. The older
+  `nemotron_offline` CPU backend still works but is much slower; the streaming
+  `nemotron` backend on CPU measured ~7.4s turnaround in live testing and
+  cannot keep up — do not use it on macOS.
 
 ---
 
@@ -257,7 +259,10 @@ Daemon was just (re)started; Ctrl+F1 does nothing for ~30s, then works.
 
 ### Root cause
 
-The offline Nemotron sidecar takes **16–32s** to warm (torch import + model
+The recommended Parakeet-MLX sidecar is much faster than Nemotron CPU, but it
+still has a short startup warmup while MLX loads the model and runs the first
+transcription. On the M1 Pro benchmark, cached load + warmup was ~2.6s. The
+older offline Nemotron sidecar takes **16–32s** to warm (torch import + model
 load + warmup). During that window, Ctrl+F1 is silently ignored
 (`push-to-talk ignored while ASR sidecar is loading` in the log). This is NOT a
 bug — but it feels like "stopped working" if you don't wait for

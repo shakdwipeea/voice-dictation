@@ -159,19 +159,51 @@ Typical macOS real-ASR config:
 ```json
 {
   "shortcut": "Ctrl+F1",
-  "backend": "nemotron_offline",
-  "asr_device": "cpu",
+  "backend": "parakeet_mlx_offline",
   "overlay_backend": "macos"
 }
 ```
 
-`backend = "nemotron_offline"` uses the whole-utterance RNNT sidecar. CPU is the
-current macOS default because it is much more stable than MPS in live short
-dictation. `backend = "nemotron"` with `asr_device = "cpu"` remains selectable
-for experiments, but live testing showed CPU streaming cannot keep up on this
-Mac.
+`backend = "parakeet_mlx_offline"` uses parakeet-mlx with the benchmark-selected
+`mlx-community/parakeet-tdt-0.6b-v3` model on MLX's Apple GPU/Metal backend.
+Leave `asr_device` unset; MLX selects compute units itself. Normal dictation
+feeds captured PCM directly into `get_logmel()` + `model.generate()`, so temp
+WAVs and ffmpeg are not on the hot path. One-time setup in the existing macOS
+ASR venv:
 
-Run the real-speech benchmark:
+```bash
+.venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx
+# Optional: needed for parakeet-mlx CLI/file benchmarks or chunked transcribe fallback
+brew install ffmpeg
+```
+
+`backend = "parakeet_mlx_streaming"` is available experimentally for live
+partials. It uses parakeet-mlx `transcribe_stream()` directly (no WAV/ffmpeg
+fallback), but the first protocol smoke showed slightly worse accuracy than the
+offline path on one LibriSpeech clip, so tune and verify before using it as the
+default.
+
+`backend = "nemotron_offline"` remains available as the older whole-utterance
+RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU
+streaming remain experimental, and live testing showed CPU streaming cannot keep
+up on this Mac.
+
+`backend = "nemotron_coreml"` is the Apple Neural Engine path for the same
+Nemotron model (see [docs/macos-coreml-bench.md](macos-coreml-bench.md)).
+One-time setup: `bash services/asr/setup_coreml_runtime.sh` (downloads the
+prebuilt FP16 `.mlpackage`s from Hugging Face into
+`build/phase0/nemotron-coreml/fp16/`). CoreML picks ANE+CPU itself, so leave
+`asr_device` unset.
+
+Run the Parakeet-MLX real-speech benchmark:
+
+```bash
+.venv-nemotron-mac/bin/python tools/phase0/parakeet_mlx_measure.py \
+  --limit 5 \
+  --output build/phase0/parakeet-mlx-v3.json
+```
+
+For the older Nemotron CPU benchmark:
 
 ```bash
 .venv-nemotron-mac/bin/python services/asr/phase0_macos_measure.py \
@@ -179,10 +211,10 @@ Run the real-speech benchmark:
   --output build/phase0/macos-real-speech-cpu.json
 ```
 
-The benchmark downloads a small LibriSpeech sample from Hugging Face, exports
-16 kHz mono WAVs, and reports latency, real-time factor, and WER for the
-offline transcribe path. Stop the running daemon/sidecar first so a second
-Nemotron instance is not loaded.
+Both benchmarks download a small LibriSpeech sample from Hugging Face, export
+16 kHz mono WAVs, and report latency, real-time factor, and WER for the offline
+transcribe path. Stop the running daemon/sidecar first so a second ASR model is
+not loaded.
 
 macOS requires one-time Privacy & Security permissions:
 
@@ -208,8 +240,12 @@ Profiles:
 | `1120` | Largest chunks, highest latency. |
 
 Use `"backend": "nemotron"` for streaming real ASR on Linux/CUDA,
-`"backend": "nemotron_offline"` for macOS whole-utterance real ASR, and
-`"mock"` only for plumbing tests.
+`"backend": "parakeet_mlx_offline"` for recommended macOS whole-utterance real
+ASR, `"backend": "parakeet_mlx_streaming"` for experimental macOS Parakeet
+partials, `"backend": "nemotron_offline"` for the older macOS NeMo CPU backend,
+`"backend": "nemotron_coreml"` for the macOS CoreML/ANE backend
+(see [macos-coreml-bench.md](macos-coreml-bench.md)), and `"mock"` only for
+plumbing tests.
 
 ## Quick troubleshooting
 

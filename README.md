@@ -14,11 +14,11 @@ bindings that call the daemon control socket, with insertion via `wl-copy` plus
 a paste shortcut, and direct `wtype` as a fallback.
 
 A macOS port is in progress (see `docs/macos-port-plan.md`): the same daemon
-with CGEventTap hotkeys, CoreAudio capture, CGEvent text insertion, and the
-Nemotron ASR model. The usable macOS real-ASR path is currently
-**whole-utterance RNNT on CPU** (`backend="nemotron_offline"`,
-`asr_device="cpu"`). CPU streaming is selectable for experiments, but live
-testing showed it cannot keep up on this Mac. Status by phase is tracked in
+with CGEventTap hotkeys, CoreAudio capture, CGEvent text insertion, and local
+ASR. The recommended macOS real-ASR path is **Parakeet-MLX on Apple GPU/Metal**
+(`backend="parakeet_mlx_offline"`, model
+`mlx-community/parakeet-tdt-0.6b-v3`). The older Nemotron CPU/CoreML backends
+remain available for comparison. Status by phase is tracked in
 `scripts/macos-port/phases.md`; verify any phase with
 `scripts/macos-port/verify-phase.sh <N>`.
 
@@ -93,8 +93,9 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `shortcut` | `"Ctrl+F1"` | Push-to-talk hold shortcut. |
-| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"nemotron_offline"` for macOS whole-utterance ASR. |
-| `asr_device` | unset | Streaming defaults to CUDA when unset. On macOS, use `"cpu"` with `nemotron_offline`; MPS and CPU streaming are experimental. |
+| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"parakeet_mlx_offline"` for recommended macOS whole-utterance ASR; `"parakeet_mlx_streaming"` for experimental macOS Parakeet partials; `"nemotron_offline"` / `"nemotron_coreml"` for older macOS backends. |
+| `asr_device` | unset | Streaming Nemotron defaults to CUDA when unset. `parakeet_mlx_offline` and `nemotron_coreml` select Apple compute units themselves, so leave this unset for those backends. |
+| `asr_model` | unset | Optional model override for `parakeet_mlx_offline`; unset means `mlx-community/parakeet-tdt-0.6b-v3`. |
 | `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). |
 | `microphone` | `"auto"` | PulseAudio source name; auto rejects monitor sources. |
 | `overlay_enabled` | `true` | GTK4 pill overlay; falls back to the X11 bubble if unavailable. |
@@ -134,11 +135,36 @@ docs/                  product plan, phase results, integration plan
 
 ## macOS performance note
 
-Use `backend="nemotron_offline"` with `asr_device="cpu"` on macOS for now.
-The cache-aware streaming sidecar can run on CPU, but live testing showed it
-blocked badly: a 26.6s hold delivered only about 4.6s of audio and still waited
-about 7.4s after release. Sub-second macOS likely needs ONNX/quantization or a
-different smaller model, not PyTorch CPU streaming for this Nemotron model.
+Use `backend="parakeet_mlx_offline"` on macOS. It runs
+`mlx-community/parakeet-tdt-0.6b-v3` through parakeet-mlx on MLX's Apple GPU
+backend (`Device(gpu, 0)` on the M1 Pro test machine). Normal dictation feeds
+captured PCM directly into parakeet-mlx's low-level `get_logmel()` +
+`model.generate()` API, so temp WAVs and ffmpeg are not on the hot path.
+One-time setup in the existing macOS ASR venv:
+
+```bash
+.venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx
+# Optional: needed for parakeet-mlx CLI/file benchmarks or chunked transcribe fallback
+brew install ffmpeg
+```
+
+M1 Pro Phase 0 result: cached load ~1.35s, warmup ~1.22s, p50 release-to-final
+ASR latency ~0.24s on the LibriSpeech sample set, p50 RTF ~0.024, peak RSS
+~1.6 GiB. A direct-PCM protocol smoke decoded a 4.82s LibriSpeech clip in
+151ms. See `docs/parakeet-mlx-migration-plan.md` for the benchmark details.
+
+`backend="parakeet_mlx_streaming"` is also available experimentally. It uses
+parakeet-mlx `transcribe_stream()` and emits partials while recording, with no
+file-based fallback. A protocol smoke emitted partials and a clean final, but
+accuracy was slightly worse than offline on one LibriSpeech clip, so prefer
+`parakeet_mlx_offline` until live tuning proves the streaming path.
+
+Older macOS backends remain available: `backend="nemotron_offline"` with
+`asr_device="cpu"` (slow PyTorch/NeMo CPU path), and `backend="nemotron_coreml"`
+(Apple Neural Engine path; setup: `bash services/asr/setup_coreml_runtime.sh`).
+The cache-aware Nemotron streaming sidecar can run on CPU, but live testing
+showed it blocked badly: a 26.6s hold delivered only about 4.6s of audio and
+still waited about 7.4s after release.
 
 ## Troubleshooting
 
