@@ -32,7 +32,7 @@ Commands:
 
 Common options:
   --config PATH             settings file (default ~/.config/sunoto/config.json)
-  --backend mock|nemotron|nemotron_offline
+  --backend mock|nemotron|nemotron_offline|parakeet_mlx_offline|parakeet_mlx_streaming
                             override the configured ASR backend
   --overlay-backend auto|x11|wayland|macos
                             override the overlay backend

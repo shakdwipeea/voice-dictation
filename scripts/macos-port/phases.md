@@ -18,6 +18,7 @@ verification: `scripts/macos-port/verify-phase.sh`.
 | 6 overlay UI (NSPanel) | ✅ done | `verify-phase.sh 6` | | native Swift NSPanel overlay sidecar wired via `overlay_backend=macos`; visual screenshot captured |
 | 7 launchd + install-macos.sh | ✅ done (assets) | `verify-phase.sh 7` | | `launchctl load` is an interactive install step |
 | 8 docs | ✅ done | `verify-phase.sh 8` | | plan + phase0 + README macOS section |
+| 9 Parakeet-MLX ASR migration | ✅ done | — | — | `parakeet_mlx_streaming` is the config-init default macOS backend (`profile_ms=560`); `parakeet_mlx_offline` is the stable fallback. NeMo `nemotron_offline` demoted to legacy. See `docs/parakeet-mlx-migration-plan.md` |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started · ⛔ blocked
 

@@ -1,15 +1,22 @@
 # macOS Phase 0 Results — Nemotron macOS ASR latency
 
+> **Superseded.** The macOS real-ASR path has moved to Parakeet-MLX on Apple
+> GPU/Metal — see `docs/parakeet-mlx-migration-plan.md` and
+> `docs/desktop-configuration.md` (default backend `parakeet_mlx_streaming`).
+> This document is retained as the historical Nemotron Phase 0 benchmark and
+> the rationale for why the NeMo CPU/CoreML path was abandoned.
+
 Measurement notes for the macOS port's ASR decision (see
 `docs/macos-port-plan.md` §1). The original Phase 0 benchmark only compared
 whole-utterance `model.transcribe()` on Apple Silicon. Live dictation showed
 that this was the wrong signal for the product latency path.
 
-## Current decision: offline CPU RNNT
+## Historical decision: offline CPU RNNT
 
-Use `backend = "nemotron_offline"` with `asr_device = "cpu"` for the current
-macOS real-ASR path. It is not sub-second, but it is stable and does not block
-the daemon while recording.
+Use `backend = "nemotron_offline"` with `asr_device = "cpu"` for the
+**legacy** macOS real-ASR path (superseded by Parakeet-MLX — see the header
+note). It is not sub-second, but it is stable and does not block the daemon
+while recording.
 
 `backend = "nemotron"` with `asr_device = "cpu"` is supported for experiments,
 but the live daemon test was worse: a 26.6 s hold delivered only 4.6 s of audio

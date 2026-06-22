@@ -23,6 +23,22 @@ flow where possible.
   (Linux). On macOS, see "macOS operations" below — restart is NOT
   `systemctl`; use the commands there.
 
+### Desktop configuration reference
+
+The complete per-platform setup (config file paths, Wayland/Hyprland + X11
+bindings, macOS launch + permissions, ASR backend selection, profile tuning,
+and troubleshooting) lives in
+**[docs/desktop-configuration.md](docs/desktop-configuration.md)**. Read it
+before editing platform-specific config or when a macOS/Linux setup question
+comes up. The quick facts:
+- Linux config: `~/.config/sunoto/config.json`; macOS config:
+  `~/Library/Application Support/sunoto/config.json`.
+- macOS default backend (config init) is `parakeet_mlx_streaming` with
+  `profile_ms=560` and `overlay_backend="macos"`; Linux config init defaults
+  to `mock`.
+- macOS runs the bare binary from a terminal (NOT launchd) so the CGEventTap
+  stays enabled — see the "Starting the application on macOS" section there.
+
 ## macOS operations
 
 The macOS port has repeatedly bitten us with "Ctrl+F1 stopped working"
@@ -113,11 +129,13 @@ muted; check System Settings → Sound → Input.
   `nemotron_offline` accepts `"cpu"` or `"mps"`; use CPU if you fall back to
   Nemotron on macOS. Parakeet-MLX backends ignore `asr_device`; leave it unset
   and optionally set `asr_model` to override the default checkpoint.
-  `parakeet_mlx_streaming` exists for experimental partials but is not the
-  default. It streams partials via `transcribe_stream()` and, by default, uses a
-  direct full-utterance PCM `get_logmel()` + `model.generate()` final to recover
-  offline-like accuracy; protocol smoke recovered `Quilter` where pure streaming
-  had `Coulter`. Switch backend/model in config and restart — no rebuild needed.
+  `parakeet_mlx_streaming` is the **default macOS backend** (config init
+  selects it with `profile_ms=560`). It streams partials via
+  `transcribe_stream()` and, by default, uses a direct full-utterance PCM
+  `get_logmel()` + `model.generate()` final to recover offline-like accuracy;
+  protocol smoke recovered `Quilter` where pure streaming had `Coulter`.
+  `parakeet_mlx_offline` is the stable whole-utterance fallback (no partials).
+  Switch backend/model in config and restart — no rebuild needed.
 
 ## Runtime safety
 

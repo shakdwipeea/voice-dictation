@@ -243,8 +243,10 @@ it's back to a different value, and behavior changed.
   manual `nohup` → the file you redirected to (we use `/tmp/sunoto-daemon.log`
   or `/tmp/sunoto-bare.log`). Do not confuse the two.
 - Verify the running config: `python3 -c "import json;print(json.load(open('$HOME/Library/Application Support/sunoto/config.json'))['backend'])"`
-- macOS recommended: `backend = "parakeet_mlx_offline"` with `asr_device`
-  unset. It uses parakeet-mlx + MLX on Apple GPU/Metal. The older
+- macOS recommended: `backend = "parakeet_mlx_streaming"` with `asr_device`
+  unset (it is the config-init default on macOS). It uses parakeet-mlx + MLX on
+  Apple GPU/Metal and streams live partials, then a direct-PCM final. The stable
+  no-partials alternative is `parakeet_mlx_offline`. The older
   `nemotron_offline` CPU backend still works but is much slower; the streaming
   `nemotron` backend on CPU measured ~7.4s turnaround in live testing and
   cannot keep up — do not use it on macOS.

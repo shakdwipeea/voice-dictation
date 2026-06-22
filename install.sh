@@ -73,7 +73,7 @@ else
     "$DAEMON_BIN" config init >/dev/null
     ok "config created: $CONFIG_PATH"
 fi
-note "key fields: backend (mock|nemotron), shortcut (default Ctrl+F1), overlay_enabled"
+note "key fields: backend (mock|nemotron on Linux; parakeet_mlx_streaming default on macOS), shortcut (default Ctrl+F1), overlay_enabled"
 
 # ---- systemd --user unit ----
 bold "== systemd --user unit =="

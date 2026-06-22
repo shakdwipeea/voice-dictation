@@ -143,8 +143,8 @@ is better on this sample.
    `~/Library/Application Support/sunoto/config.json`, restart the bare binary,
    confirm `ASR sidecar ready`, dictate, verify transcript + paste.
 9. Update `docs/macos-recurring-issues.md` section 6 + AGENTS.md device notes:
-   parakeet_mlx_offline is now the recommended macOS backend if the benchmark
-   holds.
+   `parakeet_mlx_offline` is the stable macOS whole-utterance backend (the
+   default moved to `parakeet_mlx_streaming` in Phase 2).
 
 ### Phase 2 -- Streaming partials via `transcribe_stream` (implemented, default macOS backend)
 1. Added `services/asr/parakeet_mlx_streaming_sidecar.py` with a hybrid
@@ -173,9 +173,9 @@ is better on this sample.
    4.82s audio. Live dictation is the remaining verification step.
 
 ### Phase 3 -- Cleanup
-1. If parakeet-mlx wins decisively on macOS, demote `nemotron_offline` to
-   "legacy/available" in docs; keep Linux `nemotron` streaming code (Linux still
-   uses the CUDA streaming backend).
+1. `parakeet_mlx_streaming` is now the default macOS backend (config init);
+   `nemotron_offline` is demoted to "legacy/available" in docs. Linux `nemotron`
+   streaming code is kept (Linux still uses the CUDA streaming backend).
 2. Update `install.sh`/`README.md`/`docs/macos-port-plan.md` for the MLX
    dependency path. Normal dictation needs `parakeet-mlx`; `ffmpeg` is only
    needed for parakeet-mlx CLI/file benchmarks or the optional chunked

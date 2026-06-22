@@ -1,19 +1,34 @@
 # Sunoto macOS Port Plan
 
+> **ASR superseded.** The macOS real-ASR path described below used the NeMo
+> Nemotron model on CPU/MPS. It has since moved to **Parakeet-MLX on Apple
+> GPU/Metal** (`parakeet_mlx_streaming` is the config-init default) — see
+> `docs/parakeet-mlx-migration-plan.md` and `docs/desktop-configuration.md`.
+> The CoreAudio, CGEventTap, CGEvent insertion, NSPasteboard, and launchd
+> infrastructure in this plan remains accurate and is the source of truth for
+> those platform adapters.
+
 Goal: bring the local-first voice dictation daemon to macOS, reusing the
-existing pipeline and the **existing ASR model** (`nvidia/nemotron-speech-
-streaming-en-0.6b`). The current macOS real-ASR path is **whole-utterance RNNT
-on CPU** (`backend = "nemotron_offline"`, `asr_device = "cpu"`). CPU streaming
-is supported for experiments but proved too slow on this Mac.
+existing pipeline. The macOS real-ASR path is now **Parakeet-MLX streaming on
+Apple GPU/Metal** (`backend = "parakeet_mlx_streaming"`, default
+`profile_ms=560`). The original NeMo whole-utterance CPU path
+(`backend = "nemotron_offline"`, `asr_device = "cpu"`) remains available as a
+legacy fallback; CPU streaming (`backend = "nemotron"`) proved too slow on
+this Mac.
 
 This is a port, not a rewrite. The Linux path stays the source of truth; macOS
 is added behind the same interfaces, gated by `cfg(target_os = "macos")`.
 
 ## 1. ASR decision
 
-- **Model:** `nvidia/nemotron-speech-streaming-en-0.6b` — unchanged.
-- **Default:** `backend = "nemotron_offline"` with `asr_device = "cpu"` on
-  macOS.
+> The ASR backend decision below is historical (NeMo Nemotron). The current
+> macOS default is Parakeet-MLX streaming — see the header note and
+> `docs/parakeet-mlx-migration-plan.md`.
+
+- **Model:** `nvidia/nemotron-speech-streaming-en-0.6b` — the original NeMo
+  path (legacy).
+- **Legacy default:** `backend = "nemotron_offline"` with `asr_device = "cpu"`
+  on macOS (superseded by `parakeet_mlx_streaming`).
 - **Experimental:** `backend = "nemotron"` with `asr_device = "cpu"` is wired
   but not recommended; live testing showed severe backpressure.
 - **Comparison only:** `asr_device = "mps"` may be tested with the offline
