@@ -54,7 +54,7 @@ class StreamingParakeetMlxEngine:
         model_name: str = DEFAULT_MODEL,
         precision: str = "bf16",
         cache_dir: str | None = None,
-        chunk_ms: int = 320,
+        chunk_ms: int = 560,
         flush_ms: int = 0,
         min_final_ms: int = 160,
         left_context: int = 256,
@@ -350,14 +350,14 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile-ms",
         type=int,
-        default=160,
+        default=560,
         choices=sorted(PROFILE_CONTEXTS),
-        help="accepted for daemon config parity; Parakeet streaming uses --chunk-ms/context flags",
+        help="accepted for daemon config parity; macOS default is 560ms",
     )
     parser.add_argument(
         "--chunk-ms",
         type=_positive_int,
-        default=320,
+        default=560,
         help="audio accumulated before each transcriber.add_audio() call",
     )
     parser.add_argument(

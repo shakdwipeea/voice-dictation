@@ -159,17 +159,21 @@ Typical macOS real-ASR config:
 ```json
 {
   "shortcut": "Ctrl+F1",
-  "backend": "parakeet_mlx_offline",
+  "backend": "parakeet_mlx_streaming",
+  "profile_ms": 560,
   "overlay_backend": "macos"
 }
 ```
 
-`backend = "parakeet_mlx_offline"` uses parakeet-mlx with the benchmark-selected
-`mlx-community/parakeet-tdt-0.6b-v3` model on MLX's Apple GPU/Metal backend.
-Leave `asr_device` unset; MLX selects compute units itself. Normal dictation
-feeds captured PCM directly into `get_logmel()` + `model.generate()`, so temp
-WAVs and ffmpeg are not on the hot path. One-time setup in the existing macOS
-ASR venv:
+`backend = "parakeet_mlx_streaming"` is the default macOS backend. It uses
+parakeet-mlx `transcribe_stream()` for live partials while recording, then runs
+the final transcript from the full buffered utterance through the same direct
+PCM `get_logmel()` + `model.generate()` path as the offline backend. There is
+no WAV/ffmpeg/file-based fallback. The default chunk is 560ms
+(`profile_ms = 560`): a larger chunk gives more accurate streaming partials at
+the cost of slightly slower partial cadence. Leave `asr_device` unset; MLX
+selects Apple GPU/Metal compute units itself. One-time setup in the existing
+macOS ASR venv:
 
 ```bash
 .venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx
@@ -177,12 +181,11 @@ ASR venv:
 brew install ffmpeg
 ```
 
-`backend = "parakeet_mlx_streaming"` is available experimentally for live
-partials. It uses parakeet-mlx `transcribe_stream()` while recording, then uses
-the full buffered utterance for a direct PCM `get_logmel()` + `model.generate()`
-final on release. There is no WAV/ffmpeg/file fallback. A protocol smoke
-recovered the offline-quality final on the LibriSpeech clip that pure streaming
-misheard, but live dictation should still be tuned before making it the default.
+`backend = "parakeet_mlx_offline"` is the stable whole-utterance alternative:
+same parakeet-mlx `mlx-community/parakeet-tdt-0.6b-v3` model and direct PCM
+`get_logmel()` + `model.generate()` path, but no streaming partials (the overlay
+stays minimal until the final result arrives). Use it if streaming partials are
+unreliable or you only care about the final transcript.
 
 `backend = "nemotron_offline"` remains available as the older whole-utterance
 RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU
@@ -216,6 +219,54 @@ macOS requires one-time Privacy & Security permissions:
 - Input Monitoring for the global event tap.
 - Microphone for CoreAudio capture.
 
+### Starting the application on macOS
+
+Build the release binary and the native overlay:
+
+```bash
+cargo build --release
+swiftc services/macos/sunoto-overlay.swift -o target/release/sunoto-overlay
+```
+
+Make sure your config uses the default macOS backend:
+
+```bash
+target/release/sunoto-daemon config init
+target/release/sunoto-daemon config show
+```
+
+Run the daemon from a terminal (NOT via launchd) so it inherits the GUI/TCC
+context and the CGEventTap stays enabled:
+
+```bash
+nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &
+```
+
+Wait for `ASR sidecar ready` (~16–32s warmup while parakeet-mlx loads), then
+hold Ctrl+F1, speak, and release — clean text is pasted at the focused cursor.
+
+Watch live logs:
+
+```bash
+tail -f /tmp/sunoto-bare.log
+```
+
+Stop the daemon:
+
+```bash
+pkill -f 'target/release/sunoto-daemon run'
+```
+
+Auto-start at login (launchd) is also available, but note the hotkey tap can be
+disabled by TCC under launchd because it has no responsible GUI process. For
+reliable dictation prefer the terminal-launched bare binary above. See
+[docs/macos-recurring-issues.md](macos-recurring-issues.md) for full detail.
+
+```bash
+bash scripts/macos-port/install-macos.sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.earendil-works.sunoto.plist
+```
+
 ## ASR profile
 
 Current default:
@@ -224,20 +275,27 @@ Current default:
 { "profile_ms": 160 }
 ```
 
+On macOS the default is `560` (larger chunks, more accurate streaming partials):
+
+```json
+{ "profile_ms": 560 }
+```
+
 Profiles:
 
 | Profile | Notes |
 | --- | --- |
 | `80` | Lowest latency. |
-| `160` | Balanced default. |
-| `560` | Larger chunks, more latency. |
+| `160` | Balanced default (Linux). |
+| `560` | macOS default; larger chunks, more accurate partials. |
 | `1120` | Largest chunks, highest latency. |
 
 Use `"backend": "nemotron"` for streaming real ASR on Linux/CUDA,
-`"backend": "parakeet_mlx_offline"` for recommended macOS whole-utterance real
-ASR, `"backend": "parakeet_mlx_streaming"` for experimental macOS Parakeet
-partials, `"backend": "nemotron_offline"` for the older macOS NeMo CPU backend,
-and `"mock"` only for plumbing tests.
+`"backend": "parakeet_mlx_streaming"` for the default macOS streaming Parakeet
+backend (live partials + direct PCM final), `"backend": "parakeet_mlx_offline"`
+for the stable macOS whole-utterance Parakeet backend (no partials),
+`"backend": "nemotron_offline"` for the older macOS NeMo CPU backend, and
+`"mock"` only for plumbing tests.
 
 ## Quick troubleshooting
 

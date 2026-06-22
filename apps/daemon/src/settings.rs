@@ -5,6 +5,26 @@ use sunoto_polish::PolishConfig;
 
 const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v3";
 
+fn default_backend() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "parakeet_mlx_streaming"
+    } else {
+        "mock"
+    }
+}
+
+fn default_profile_ms() -> u16 {
+    if cfg!(target_os = "macos") { 560 } else { 160 }
+}
+
+fn default_overlay_backend() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "auto"
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -12,8 +32,8 @@ pub struct Settings {
     pub shortcut: String,
     /// PulseAudio source name, or "auto" for the first physical microphone.
     pub microphone: String,
-    /// "mock", "nemotron" (cache-aware RNNT streaming), or
-    /// "nemotron_offline" (whole-utterance).
+    /// ASR backend. Linux config init defaults to "mock"; macOS config init
+    /// defaults to "parakeet_mlx_streaming".
     pub backend: String,
     /// Streaming profile: 80, 160, 560, or 1120 ms.
     pub profile_ms: u16,
@@ -61,8 +81,8 @@ impl Default for Settings {
         Self {
             shortcut: "Ctrl+F1".to_string(),
             microphone: "auto".to_string(),
-            backend: "mock".to_string(),
-            profile_ms: 160,
+            backend: default_backend().to_string(),
+            profile_ms: default_profile_ms(),
             preroll_ms: 300,
             final_timeout_ms: 8000,
             final_timeout_rtf: 3.0,
@@ -72,7 +92,7 @@ impl Default for Settings {
             asr_model: None,
             allow_enter_and_tab: false,
             overlay_enabled: true,
-            overlay_backend: "auto".to_string(),
+            overlay_backend: default_overlay_backend().to_string(),
             polish_enabled: true,
             polish: PolishConfig::default(),
         }
@@ -409,7 +429,7 @@ mod tests {
         std::fs::write(&path, "{\"profile_ms\": 560}").unwrap();
         let partial = Settings::load(&path).unwrap();
         assert_eq!(partial.profile_ms, 560);
-        assert_eq!(partial.backend, "mock");
+        assert_eq!(partial.backend, default_backend());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -428,8 +448,21 @@ mod tests {
     fn sidecar_command_selects_backend_defaults() {
         let mut settings = Settings::default();
         let (python, args) = settings.sidecar_command().unwrap();
-        assert_eq!(python, "python3");
-        assert!(args[0].ends_with("services/asr/mock_sidecar.py"));
+        if cfg!(target_os = "macos") {
+            assert!(args[0].ends_with("services/asr/parakeet_mlx_streaming_sidecar.py"));
+            assert_eq!(
+                args[1..],
+                [
+                    "--profile-ms".to_string(),
+                    "560".to_string(),
+                    "--model".to_string(),
+                    DEFAULT_PARAKEET_MLX_MODEL.to_string(),
+                ]
+            );
+        } else {
+            assert_eq!(python, "python3");
+            assert!(args[0].ends_with("services/asr/mock_sidecar.py"));
+        }
         settings.backend = "nemotron".to_string();
         settings.profile_ms = 80;
         let (_python, args) = settings.sidecar_command().unwrap();
@@ -565,16 +598,19 @@ mod tests {
     #[test]
     fn validation_accepts_backend_specific_asr_devices() {
         let cuda = Settings {
+            backend: "nemotron".to_string(),
             asr_device: Some("cuda".to_string()),
             ..Settings::default()
         };
         assert!(cuda.validate().is_ok());
         let cpu = Settings {
+            backend: "nemotron".to_string(),
             asr_device: Some("cpu".to_string()),
             ..Settings::default()
         };
         assert!(cpu.validate().is_ok());
         let mps = Settings {
+            backend: "nemotron".to_string(),
             asr_device: Some("mps".to_string()),
             ..Settings::default()
         };
@@ -594,7 +630,10 @@ mod tests {
 
     #[test]
     fn overlay_command_runs_the_ui_module_with_pythonpath() {
-        let settings = Settings::default();
+        let settings = Settings {
+            overlay_backend: "auto".to_string(),
+            ..Settings::default()
+        };
         assert!(settings.overlay_enabled);
         let (python, args, envs) = settings.overlay_command();
         assert_eq!(python, "python3");

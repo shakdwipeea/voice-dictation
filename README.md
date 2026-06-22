@@ -15,10 +15,11 @@ a paste shortcut, and direct `wtype` as a fallback.
 
 A macOS port is in progress (see `docs/macos-port-plan.md`): the same daemon
 with CGEventTap hotkeys, CoreAudio capture, CGEvent text insertion, and local
-ASR. The recommended macOS real-ASR path is **Parakeet-MLX on Apple GPU/Metal**
-(`backend="parakeet_mlx_offline"`, model
-`mlx-community/parakeet-tdt-0.6b-v3`). The older Nemotron CPU/CoreML backends
-remain available for comparison. Status by phase is tracked in
+ASR. The default macOS real-ASR path is **Parakeet-MLX streaming on Apple
+GPU/Metal** (`backend="parakeet_mlx_streaming"`, model
+`mlx-community/parakeet-tdt-0.6b-v3`, `profile_ms=560`). The stable
+whole-utterance `parakeet_mlx_offline` backend and the older Nemotron CPU
+backend remain available for comparison. Status by phase is tracked in
 `scripts/macos-port/phases.md`; verify any phase with
 `scripts/macos-port/verify-phase.sh <N>`.
 
@@ -93,10 +94,10 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `shortcut` | `"Ctrl+F1"` | Push-to-talk hold shortcut. |
-| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"parakeet_mlx_offline"` for recommended macOS whole-utterance ASR; `"parakeet_mlx_streaming"` for experimental macOS Parakeet partials; `"nemotron_offline"` for the older macOS NeMo CPU backend. |
+| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"parakeet_mlx_streaming"` for the default macOS Parakeet streaming backend (live partials + direct PCM final); `"parakeet_mlx_offline"` for the stable macOS whole-utterance backend; `"nemotron_offline"` for the older macOS NeMo CPU backend. macOS config init defaults to `parakeet_mlx_streaming`. |
 | `asr_device` | unset | Streaming Nemotron defaults to CUDA when unset. `parakeet_mlx_offline` and `parakeet_mlx_streaming` select Apple compute units themselves, so leave this unset for those backends. |
 | `asr_model` | unset | Optional model override for Parakeet-MLX backends; unset means `mlx-community/parakeet-tdt-0.6b-v3`. |
-| `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). |
+| `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). macOS config init defaults to `560`. |
 | `microphone` | `"auto"` | PulseAudio source name; auto rejects monitor sources. |
 | `overlay_enabled` | `true` | GTK4 pill overlay; falls back to the X11 bubble if unavailable. |
 | `allow_enter_and_tab` | `false` | Keep control characters out of terminals unless you opt in. |
@@ -135,12 +136,14 @@ docs/                  product plan, phase results, integration plan
 
 ## macOS performance note
 
-Use `backend="parakeet_mlx_offline"` on macOS. It runs
+Use `backend="parakeet_mlx_streaming"` on macOS (the default). It runs
 `mlx-community/parakeet-tdt-0.6b-v3` through parakeet-mlx on MLX's Apple GPU
-backend (`Device(gpu, 0)` on the M1 Pro test machine). Normal dictation feeds
-captured PCM directly into parakeet-mlx's low-level `get_logmel()` +
-`model.generate()` API, so temp WAVs and ffmpeg are not on the hot path.
-One-time setup in the existing macOS ASR venv:
+backend (`Device(gpu, 0)` on the M1 Pro test machine) and streams live partials
+while recording via `transcribe_stream()`, then runs the final transcript from
+the full buffered utterance through parakeet-mlx's low-level `get_logmel()` +
+`model.generate()` API. Normal dictation feeds captured PCM directly into that
+path, so temp WAVs and ffmpeg are not on the hot path. The default chunk is
+`profile_ms=560`. One-time setup in the existing macOS ASR venv:
 
 ```bash
 .venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx
@@ -153,13 +156,11 @@ ASR latency ~0.24s on the LibriSpeech sample set, p50 RTF ~0.024, peak RSS
 ~1.6 GiB. A direct-PCM protocol smoke decoded a 4.82s LibriSpeech clip in
 151ms. See `docs/parakeet-mlx-migration-plan.md` for the benchmark details.
 
-`backend="parakeet_mlx_streaming"` is also available experimentally. It uses
-parakeet-mlx `transcribe_stream()` for partials while recording, then runs the
-final transcript from the full buffered utterance through the same direct PCM
-`get_logmel()` + `model.generate()` path as the offline backend. There is still
-no temp WAV/ffmpeg/file-based fallback. A protocol smoke emitted 9 partials and
-recovered the offline-quality final (`Quilter`, not the streaming partial's
-`Coulter`) with ~247ms final decode on a 4.82s LibriSpeech clip.
+`backend="parakeet_mlx_offline"` is the stable whole-utterance alternative
+(no streaming partials; the overlay stays minimal until the final result). A
+protocol smoke emitted 9 partials for the streaming backend and recovered the
+offline-quality final (`Quilter`, not the streaming partial's `Coulter`) with
+~247ms final decode on a 4.82s LibriSpeech clip.
 
 The older macOS NeMo backend remains available as `backend="nemotron_offline"`
 with `asr_device="cpu"` (slow PyTorch/NeMo CPU path). The cache-aware Nemotron

@@ -146,7 +146,7 @@ is better on this sample.
    parakeet_mlx_offline is now the recommended macOS backend if the benchmark
    holds.
 
-### Phase 2 -- Streaming partials via `transcribe_stream` (implemented, experimental)
+### Phase 2 -- Streaming partials via `transcribe_stream` (implemented, default macOS backend)
 1. Added `services/asr/parakeet_mlx_streaming_sidecar.py` with a hybrid
    streaming engine: `start()` opens a `model.transcribe_stream()` context;
    `accept_audio()` buffers daemon frames into configurable chunks, calls
@@ -157,18 +157,20 @@ is better on this sample.
    no file-based `model.transcribe(path)` fallback.
 2. Wired `backend="parakeet_mlx_streaming"` in `settings.rs`, with `asr_model`
    override support and `asr_device` rejected (MLX selects compute units).
+   This is now the default macOS backend (config init selects it with
+   `profile_ms=560`).
 3. Exposed tuning knobs in the sidecar CLI: `--chunk-ms`, `--flush-ms`,
    `--min-final-ms`, `--left-context`, `--right-context`, `--depth`,
    `--keep-original-attention`, and `--final-mode direct|streaming`. Defaults:
-   chunk 320ms, direct final, no silence flush, drop streaming residual tails
-   below 160ms after at least one chunk. The no-flush default is intentional: a
-   real smoke test showed current parakeet-mlx can emit pathological repeated
-   `<unk>` output when decoding tiny residual chunks or trailing silence.
+   chunk 560ms (matches the macOS default `profile_ms`), direct final, no
+   silence flush, drop streaming residual tails below 160ms after at least one
+   chunk. The no-flush default is intentional: a real smoke test showed current
+   parakeet-mlx can emit pathological repeated `<unk>` output when decoding tiny
+   residual chunks or trailing silence.
 4. Tests pass. Real protocol smoke on the cached LibriSpeech clip emitted
    9 partials and the direct final recovered the offline-quality transcript
    (`Quilter`, not pure streaming's `Coulter`) with ~247ms final decode on
-   4.82s audio. Treat this backend as experimental until live dictation and
-   tuning prove it is worth making the default.
+   4.82s audio. Live dictation is the remaining verification step.
 
 ### Phase 3 -- Cleanup
 1. If parakeet-mlx wins decisively on macOS, demote `nemotron_offline` to
