@@ -93,9 +93,9 @@ capture + preroll    (Nemotron cache-aware     (fillers, corrections,   insertio
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `shortcut` | `"Ctrl+F1"` | Push-to-talk hold shortcut. |
-| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"parakeet_mlx_offline"` for recommended macOS whole-utterance ASR; `"parakeet_mlx_streaming"` for experimental macOS Parakeet partials; `"nemotron_offline"` / `"nemotron_coreml"` for older macOS backends. |
-| `asr_device` | unset | Streaming Nemotron defaults to CUDA when unset. `parakeet_mlx_offline` and `nemotron_coreml` select Apple compute units themselves, so leave this unset for those backends. |
-| `asr_model` | unset | Optional model override for `parakeet_mlx_offline`; unset means `mlx-community/parakeet-tdt-0.6b-v3`. |
+| `backend` | `"mock"` | `"nemotron"` for Linux/CUDA streaming ASR; `"parakeet_mlx_offline"` for recommended macOS whole-utterance ASR; `"parakeet_mlx_streaming"` for experimental macOS Parakeet partials; `"nemotron_offline"` for the older macOS NeMo CPU backend. |
+| `asr_device` | unset | Streaming Nemotron defaults to CUDA when unset. `parakeet_mlx_offline` and `parakeet_mlx_streaming` select Apple compute units themselves, so leave this unset for those backends. |
+| `asr_model` | unset | Optional model override for Parakeet-MLX backends; unset means `mlx-community/parakeet-tdt-0.6b-v3`. |
 | `profile_ms` | `160` | Streaming chunk: 80 (fastest) / 160 / 560 / 1120 (most accurate). |
 | `microphone` | `"auto"` | PulseAudio source name; auto rejects monitor sources. |
 | `overlay_enabled` | `true` | GTK4 pill overlay; falls back to the X11 bubble if unavailable. |
@@ -161,12 +161,11 @@ no temp WAV/ffmpeg/file-based fallback. A protocol smoke emitted 9 partials and
 recovered the offline-quality final (`Quilter`, not the streaming partial's
 `Coulter`) with ~247ms final decode on a 4.82s LibriSpeech clip.
 
-Older macOS backends remain available: `backend="nemotron_offline"` with
-`asr_device="cpu"` (slow PyTorch/NeMo CPU path), and `backend="nemotron_coreml"`
-(Apple Neural Engine path; setup: `bash services/asr/setup_coreml_runtime.sh`).
-The cache-aware Nemotron streaming sidecar can run on CPU, but live testing
-showed it blocked badly: a 26.6s hold delivered only about 4.6s of audio and
-still waited about 7.4s after release.
+The older macOS NeMo backend remains available as `backend="nemotron_offline"`
+with `asr_device="cpu"` (slow PyTorch/NeMo CPU path). The cache-aware Nemotron
+streaming sidecar can run on CPU, but live testing showed it blocked badly: a
+26.6s hold delivered only about 4.6s of audio and still waited about 7.4s after
+release.
 
 ## Troubleshooting
 

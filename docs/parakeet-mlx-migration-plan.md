@@ -125,9 +125,9 @@ is better on this sample.
    - Add `"parakeet_mlx_offline"` arm to `sidecar_command()` ->
      `services/asr/parakeet_mlx_offline_sidecar.py`.
    - Add to the backend-validation `match`.
-   - `asr_device`: reuse the existing `Option<String>` but treat it as
-     optional/hint-style; MLX selects units itself (mirror how `nemotron_coreml`
-     rejects `asr_device`). Document this.
+   - `asr_device`: reuse the existing `Option<String>` but reject it for
+     Parakeet-MLX backends because MLX selects compute units itself. Document
+     this.
    - New optional `asr_model` field (string, default
      `mlx-community/parakeet-tdt-0.6b-v3`) so the model is config-switchable
      without code edits; plumb it to the script's `--model`.
@@ -137,7 +137,7 @@ is better on this sample.
      mirroring `test_nemotron_offline_sidecar.py`. The float32->i16 invariant test
      must pass identically.
    - New `settings.rs` unit tests: `sidecar_command_supports_parakeet_mlx_offline`
-     (mirrors the nemotron_offline/coreml tests).
+     (mirrors the existing backend-selection tests).
 7. `make test` + `cargo clippy --workspace -- -D warnings` + `cargo test --workspace`.
 8. Manual end-to-end on macOS: set `backend="parakeet_mlx_offline"` in
    `~/Library/Application Support/sunoto/config.json`, restart the bare binary,
@@ -171,9 +171,9 @@ is better on this sample.
    tuning prove it is worth making the default.
 
 ### Phase 3 -- Cleanup
-1. If parakeet-mlx wins decisively on macOS, demote `nemotron_offline`/
-   `nemotron_coreml` to "legacy/available" in docs; keep code (Linux still uses
-   streaming Nemotron).
+1. If parakeet-mlx wins decisively on macOS, demote `nemotron_offline` to
+   "legacy/available" in docs; keep Linux `nemotron` streaming code (Linux still
+   uses the CUDA streaming backend).
 2. Update `install.sh`/`README.md`/`docs/macos-port-plan.md` for the MLX
    dependency path. Normal dictation needs `parakeet-mlx`; `ffmpeg` is only
    needed for parakeet-mlx CLI/file benchmarks or the optional chunked

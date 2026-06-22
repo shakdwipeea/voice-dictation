@@ -189,13 +189,6 @@ RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU
 streaming remain experimental, and live testing showed CPU streaming cannot keep
 up on this Mac.
 
-`backend = "nemotron_coreml"` is the Apple Neural Engine path for the same
-Nemotron model (see [docs/macos-coreml-bench.md](macos-coreml-bench.md)).
-One-time setup: `bash services/asr/setup_coreml_runtime.sh` (downloads the
-prebuilt FP16 `.mlpackage`s from Hugging Face into
-`build/phase0/nemotron-coreml/fp16/`). CoreML picks ANE+CPU itself, so leave
-`asr_device` unset.
-
 Run the Parakeet-MLX real-speech benchmark:
 
 ```bash
@@ -244,9 +237,7 @@ Use `"backend": "nemotron"` for streaming real ASR on Linux/CUDA,
 `"backend": "parakeet_mlx_offline"` for recommended macOS whole-utterance real
 ASR, `"backend": "parakeet_mlx_streaming"` for experimental macOS Parakeet
 partials, `"backend": "nemotron_offline"` for the older macOS NeMo CPU backend,
-`"backend": "nemotron_coreml"` for the macOS CoreML/ANE backend
-(see [macos-coreml-bench.md](macos-coreml-bench.md)), and `"mock"` only for
-plumbing tests.
+and `"mock"` only for plumbing tests.
 
 ## Quick troubleshooting
 

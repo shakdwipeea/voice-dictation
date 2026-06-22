@@ -36,18 +36,13 @@ pub struct Settings {
     pub sidecar_script: Option<String>,
     /// ASR device override for Nemotron backends. Streaming "nemotron"
     /// defaults to CUDA when unset; macOS should set "cpu" for streaming RNNT.
-    /// Offline "nemotron_offline" accepts "mps" or "cpu". CoreML and
-    /// Parakeet-MLX backends ignore this — their runtimes select compute units.
+    /// Offline "nemotron_offline" accepts "mps" or "cpu". Parakeet-MLX
+    /// backends ignore this — MLX selects compute units.
     pub asr_device: Option<String>,
     /// Optional ASR model override for backends that expose a --model flag.
     /// Currently used by Parakeet-MLX backends; unset means the benchmark-
     /// selected v3 MLX checkpoint.
     pub asr_model: Option<String>,
-    /// Directory holding encoder.mlpackage, decoder.mlpackage, and
-    /// metadata.json for the "nemotron_coreml" backend. Populated by
-    /// services/asr/setup_coreml_runtime.sh from the pre-built FP16 models
-    /// on Hugging Face (danielbodart/nemotron-speech-600m-coreml).
-    pub coreml_model_dir: String,
     /// Injecting Enter/Tab into a focused terminal can execute commands, so
     /// both are replaced with spaces unless explicitly allowed.
     pub allow_enter_and_tab: bool,
@@ -75,7 +70,6 @@ impl Default for Settings {
             sidecar_script: None,
             asr_device: None,
             asr_model: None,
-            coreml_model_dir: "build/phase0/nemotron-coreml/fp16".to_string(),
             allow_enter_and_tab: false,
             overlay_enabled: true,
             overlay_backend: "auto".to_string(),
@@ -124,16 +118,7 @@ impl Settings {
                         v
                     },
                 ),
-                "nemotron_coreml" => (
-                    "python3",
-                    root.join("services/asr/nemotron_coreml_sidecar.py"),
-                    {
-                        let mut v = vec!["--profile-ms".to_string(), self.profile_ms.to_string()];
-                        v.push("--model-dir".to_string());
-                        v.push(resolve_path(&root, &self.coreml_model_dir));
-                        v
-                    },
-                ),
+
                 "parakeet_mlx_offline" => (
                     "python3",
                     root.join("services/asr/parakeet_mlx_offline_sidecar.py"),
@@ -160,7 +145,6 @@ impl Settings {
                 }
             }
             if self.backend == "nemotron_offline"
-                || self.backend == "nemotron_coreml"
                 || self.backend == "parakeet_mlx_offline"
                 || self.backend == "parakeet_mlx_streaming"
             {
@@ -197,7 +181,6 @@ impl Settings {
             "mock"
             | "nemotron"
             | "nemotron_offline"
-            | "nemotron_coreml"
             | "parakeet_mlx_offline"
             | "parakeet_mlx_streaming" => {}
             other => return Err(format!("unknown ASR backend: {other}")),
@@ -221,9 +204,9 @@ impl Settings {
                         "unsupported asr_device {device:?} for nemotron_offline; use mps or cpu"
                     ));
                 }
-                // CoreML picks ANE+CPU itself; Parakeet-MLX uses MLX's default
-                // Apple GPU/CPU selection. Neither has a torch device concept.
-                "nemotron_coreml" | "parakeet_mlx_offline" | "parakeet_mlx_streaming" => {
+                // Parakeet-MLX uses MLX's default Apple GPU/CPU selection.
+                // It has no torch device concept.
+                "parakeet_mlx_offline" | "parakeet_mlx_streaming" => {
                     return Err(format!(
                         "asr_device {device:?} is not supported for {}; unset asr_device",
                         self.backend
@@ -301,26 +284,6 @@ fn push_asr_device_arg(args: &mut Vec<String>, device: &Option<String>) {
         args.push("--device".to_string());
         args.push(device.clone());
     }
-}
-
-/// Resolve a config path. Absolute or user-prefixed paths are returned as-is
-/// (the leading `~` is expanded). Other paths are joined under `repo_root()`
-/// so settings can stay relative in config files (e.g.
-/// `build/phase0/nemotron-coreml/fp16`) and still work when the daemon is
-/// launched from a different cwd.
-fn resolve_path(repo_root: &Path, value: &str) -> String {
-    if Path::new(value).is_absolute() {
-        return value.to_string();
-    }
-    if let Some(stripped) = value.strip_prefix('~')
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return Path::new(&home)
-            .join(stripped.trim_start_matches('/'))
-            .to_string_lossy()
-            .into_owned();
-    }
-    repo_root.join(value).to_string_lossy().into_owned()
 }
 
 fn gtk4_layer_shell_preload() -> Option<String> {
@@ -489,26 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_command_supports_nemotron_coreml() {
-        let settings = Settings {
-            backend: "nemotron_coreml".to_string(),
-            profile_ms: 160,
-            coreml_model_dir: "build/phase0/nemotron-coreml/fp16".to_string(),
-            ..Settings::default()
-        };
-        let (_python, args) = settings.sidecar_command().unwrap();
-        assert!(args[0].ends_with("services/asr/nemotron_coreml_sidecar.py"));
-        assert_eq!(
-            &args[1..3],
-            &["--profile-ms".to_string(), "160".to_string()]
-        );
-        assert_eq!(args[3], "--model-dir");
-        // resolve_path joins a relative path under the repo root, so the
-        // trailing segments must match the configured dir.
-        assert!(args[4].ends_with("nemotron-coreml/fp16"));
-    }
-
-    #[test]
     fn sidecar_command_supports_parakeet_mlx_offline_default_model() {
         let settings = Settings {
             backend: "parakeet_mlx_offline".to_string(),
@@ -559,32 +502,6 @@ mod tests {
             let (_python, args) = settings.sidecar_command().unwrap();
             assert_eq!(args.last().unwrap(), "mlx-community/parakeet-tdt-0.6b-v2");
         }
-    }
-
-    #[test]
-    fn sidecar_command_resolves_absolute_coreml_model_dir() {
-        let settings = Settings {
-            backend: "nemotron_coreml".to_string(),
-            coreml_model_dir: "/opt/sunoto/coreml/fp16".to_string(),
-            ..Settings::default()
-        };
-        let (_python, args) = settings.sidecar_command().unwrap();
-        assert_eq!(args.last().unwrap(), "/opt/sunoto/coreml/fp16");
-    }
-
-    #[test]
-    fn validation_rejects_asr_device_for_coreml_backend() {
-        let with_device = Settings {
-            backend: "nemotron_coreml".to_string(),
-            asr_device: Some("cpu".to_string()),
-            ..Settings::default()
-        };
-        assert!(with_device.validate().is_err());
-        let without = Settings {
-            backend: "nemotron_coreml".to_string(),
-            ..Settings::default()
-        };
-        assert!(without.validate().is_ok());
     }
 
     #[test]
