@@ -5,7 +5,11 @@ This backend uses parakeet-mlx's real-time ``transcribe_stream`` API. Unlike the
 offline Parakeet backend, it does not write temp WAVs and it does not call the
 file-based ``model.transcribe(path)`` path. Audio arrives from the daemon as
 16 kHz mono i16 PCM, SidecarServer converts it to float32 in [-1, 1], and this
-engine feeds buffered chunks directly to ``transcriber.add_audio()``.
+engine feeds buffered chunks directly to ``transcriber.add_audio()``. On
+``finish_session`` the default final transcript is generated from the full
+buffered utterance via parakeet-mlx's low-level ``get_logmel()`` +
+``model.generate()`` API. That keeps streaming partials but restores offline-like
+final accuracy without temp WAVs or ffmpeg.
 
 Protocol behavior:
   - ready on startup after model load + warmup,
@@ -15,8 +19,8 @@ Protocol behavior:
   - error on failure.
 
 The stable production fallback remains the separate ``parakeet_mlx_offline``
-backend; this streaming backend is intentionally pure streaming so we can tune
-and evaluate it independently.
+backend. This backend is pure in-memory MLX: streaming partials plus direct PCM
+final, no file-based speech generation path.
 """
 
 from __future__ import annotations
@@ -57,10 +61,12 @@ class StreamingParakeetMlxEngine:
         right_context: int = 256,
         depth: int = 1,
         keep_original_attention: bool = False,
+        final_mode: str = "direct",
     ) -> None:
         self.model = None
         self._mx = None
         self._dtype = None
+        self._get_logmel = None
         self.precision = precision
         self.chunk_samples = max(1, SAMPLE_RATE * chunk_ms // 1000)
         self.flush_samples = max(0, SAMPLE_RATE * flush_ms // 1000)
@@ -68,11 +74,15 @@ class StreamingParakeetMlxEngine:
         self.context_size = (left_context, right_context)
         self.depth = depth
         self.keep_original_attention = keep_original_attention
+        if final_mode not in {"direct", "streaming"}:
+            raise ValueError("final_mode must be 'direct' or 'streaming'")
+        self.final_mode = final_mode
 
         self._stream_cm = None
         self._transcriber = None
         self._pending: list[float] = []
         self._pending_len = 0
+        self._all_audio: list[float] = []
         self._last_text = ""
         self._last_good_text = ""
         self._seen_audio = False
@@ -87,8 +97,10 @@ class StreamingParakeetMlxEngine:
         log("importing MLX + parakeet_mlx streaming ...")
         import mlx.core as mx  # noqa: delayed; Apple Silicon runtime dependency
         from parakeet_mlx import from_pretrained  # noqa: delayed; optional in tests
+        from parakeet_mlx.audio import get_logmel  # noqa: delayed; no ffmpeg
 
         self._mx = mx
+        self._get_logmel = get_logmel
         if precision == "fp32":
             self._dtype = mx.float32
         elif precision == "bf16":
@@ -115,7 +127,8 @@ class StreamingParakeetMlxEngine:
             f"flush={self.flush_samples / SAMPLE_RATE:.3f}s, "
             f"min_final={self.min_final_samples / SAMPLE_RATE:.3f}s, "
             f"context={self.context_size}, depth={self.depth}, "
-            f"keep_original_attention={self.keep_original_attention}"
+            f"keep_original_attention={self.keep_original_attention}, "
+            f"final_mode={self.final_mode}"
         )
 
         warm_started = time.perf_counter()
@@ -146,6 +159,7 @@ class StreamingParakeetMlxEngine:
         self.cancel()
         self._pending = []
         self._pending_len = 0
+        self._all_audio = []
         self._last_text = ""
         self._last_good_text = ""
         self._seen_audio = False
@@ -188,7 +202,14 @@ class StreamingParakeetMlxEngine:
                     self._pending_len = 0
             if self.flush_samples > 0:
                 self._add_audio_to_stream([0.0] * self.flush_samples, reason="flush")
-            text = self._current_text()
+            streaming_text = self._current_text()
+            if self.final_mode == "direct":
+                text = self._transcribe_direct_pcm(self._all_audio)
+                if self._is_degenerate(text):
+                    log("finish: direct final text was degenerate; using streaming fallback")
+                    text = streaming_text
+            else:
+                text = streaming_text
             if self._is_degenerate(text) and self._last_good_text:
                 log("finish: final stream text was degenerate; using last good partial")
                 text = self._last_good_text
@@ -201,6 +222,7 @@ class StreamingParakeetMlxEngine:
             self._close_stream()
             self._pending = []
             self._pending_len = 0
+            self._all_audio = []
             self._last_text = ""
             self._last_good_text = ""
             self._seen_audio = False
@@ -210,6 +232,7 @@ class StreamingParakeetMlxEngine:
         self._close_stream()
         self._pending = []
         self._pending_len = 0
+        self._all_audio = []
         self._last_text = ""
         self._last_good_text = ""
         self._seen_audio = False
@@ -241,6 +264,7 @@ class StreamingParakeetMlxEngine:
         values = [float(sample) for sample in samples]
         self._pending.extend(values)
         self._pending_len += len(values)
+        self._all_audio.extend(values)
 
     def _take_pending(self, count: int) -> list[float]:
         chunk = self._pending[:count]
@@ -266,6 +290,33 @@ class StreamingParakeetMlxEngine:
                 f"text_chars={len(text)}"
             )
         return text
+
+    def _transcribe_direct_pcm(self, samples: list[float]) -> str:
+        if self.model is None or self._mx is None or self._get_logmel is None:
+            raise RuntimeError("Parakeet-MLX model is not loaded")
+        if not samples:
+            return ""
+        t0 = time.perf_counter()
+        audio = self._mx.array(samples, dtype=self._mx.float32)
+        t_audio = time.perf_counter() - t0
+
+        t_mel0 = time.perf_counter()
+        mel = self._get_logmel(audio, self.model.preprocessor_config)
+        t_mel = time.perf_counter() - t_mel0
+
+        t_gen0 = time.perf_counter()
+        results = self.model.generate(mel)
+        t_generate = time.perf_counter() - t_gen0
+        log(
+            f"direct final: audio_array {t_audio*1000:.0f}ms, "
+            f"logmel {t_mel*1000:.0f}ms, decode {t_generate*1000:.0f}ms, "
+            f"total {(time.perf_counter() - t0)*1000:.0f}ms"
+        )
+        if not results:
+            return ""
+        result = results[0]
+        text = getattr(result, "text", result)
+        return text if isinstance(text, str) else ""
 
     def _current_text(self) -> str:
         result = self._transcriber.result if self._transcriber is not None else None
@@ -329,6 +380,12 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="keep full attention during streaming; default switches to local attention",
     )
+    parser.add_argument(
+        "--final-mode",
+        choices=("direct", "streaming"),
+        default="direct",
+        help="direct = full-utterance get_logmel+generate final (default); streaming = final from transcribe_stream state",
+    )
     return parser
 
 
@@ -352,6 +409,7 @@ def main(argv=None) -> int:
         right_context=args.right_context,
         depth=args.depth,
         keep_original_attention=args.keep_original_attention,
+        final_mode=args.final_mode,
     )
     server = SidecarServer(engine)
     return serve(server, sys.stdin, protocol_out)

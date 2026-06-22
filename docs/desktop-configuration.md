@@ -178,10 +178,11 @@ brew install ffmpeg
 ```
 
 `backend = "parakeet_mlx_streaming"` is available experimentally for live
-partials. It uses parakeet-mlx `transcribe_stream()` directly (no WAV/ffmpeg
-fallback), but the first protocol smoke showed slightly worse accuracy than the
-offline path on one LibriSpeech clip, so tune and verify before using it as the
-default.
+partials. It uses parakeet-mlx `transcribe_stream()` while recording, then uses
+the full buffered utterance for a direct PCM `get_logmel()` + `model.generate()`
+final on release. There is no WAV/ffmpeg/file fallback. A protocol smoke
+recovered the offline-quality final on the LibriSpeech clip that pure streaming
+misheard, but live dictation should still be tuned before making it the default.
 
 `backend = "nemotron_offline"` remains available as the older whole-utterance
 RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU

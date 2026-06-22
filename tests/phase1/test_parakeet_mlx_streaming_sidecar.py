@@ -23,10 +23,11 @@ from parakeet_mlx_streaming_sidecar import (  # noqa: E402
 class _FakeStreamingEngine(StreamingParakeetMlxEngine):
     """Exercise StreamingParakeetMlxEngine's buffering/protocol without MLX."""
 
-    def __init__(self, texts=None, chunk_samples=4, flush_samples=0) -> None:
+    def __init__(self, texts=None, chunk_samples=4, flush_samples=0, final_mode="direct") -> None:
         self.model = object()
         self._mx = object()
         self._dtype = object()
+        self._get_logmel = object()
         self.precision = "bf16"
         self.chunk_samples = chunk_samples
         self.flush_samples = flush_samples
@@ -34,10 +35,12 @@ class _FakeStreamingEngine(StreamingParakeetMlxEngine):
         self.context_size = (256, 256)
         self.depth = 1
         self.keep_original_attention = False
+        self.final_mode = final_mode
         self._stream_cm = None
         self._transcriber = None
         self._pending = []
         self._pending_len = 0
+        self._all_audio = []
         self._last_text = ""
         self._last_good_text = ""
         self._seen_audio = False
@@ -47,6 +50,7 @@ class _FakeStreamingEngine(StreamingParakeetMlxEngine):
         self.open_count = 0
         self.close_count = 0
         self.added_chunks: list[tuple[str, list[float]]] = []
+        self.direct_calls: list[list[float]] = []
 
     def _open_stream(self) -> None:
         self.open_count += 1
@@ -63,6 +67,10 @@ class _FakeStreamingEngine(StreamingParakeetMlxEngine):
         self.added_chunks.append((reason, list(samples)))
         if self.texts:
             self.current = self.texts.pop(0)
+        return self.current
+
+    def _transcribe_direct_pcm(self, samples: list[float]) -> str:
+        self.direct_calls.append(list(samples))
         return self.current
 
     def _current_text(self) -> str:
@@ -83,6 +91,7 @@ class StreamingEngineTest(unittest.TestCase):
         self.assertEqual(engine.accept_audio([5 / 32768.0] * 4), ["hello"])
         self.assertEqual([reason for reason, _chunk in engine.added_chunks], ["partial", "partial"])
         self.assertEqual(engine.finish(), "hello")
+        self.assertEqual(engine.direct_calls, [[1 / 32768.0, 2 / 32768.0, 3 / 32768.0, 4 / 32768.0] + [5 / 32768.0] * 4])
         self.assertEqual(engine.open_count, 1)
         self.assertEqual(engine.close_count, 1)
 
@@ -106,6 +115,7 @@ class StreamingEngineTest(unittest.TestCase):
         engine.accept_audio([2 / 32768.0])
         self.assertEqual(engine.finish(), "partial")
         self.assertEqual(engine.added_chunks, [("partial", [1 / 32768.0] * 4)])
+        self.assertEqual(engine.direct_calls, [[1 / 32768.0] * 4 + [2 / 32768.0]])
 
     def test_cancel_closes_stream_and_drops_pending_audio(self):
         engine = _FakeStreamingEngine(chunk_samples=10)
@@ -114,6 +124,7 @@ class StreamingEngineTest(unittest.TestCase):
         engine.cancel()
         self.assertEqual(engine.close_count, 1)
         self.assertEqual(engine._pending_len, 0)
+        self.assertEqual(engine._all_audio, [])
         self.assertEqual(engine.added_chunks, [])
 
     def test_empty_session_finishes_empty_string_without_chunks(self):
@@ -184,6 +195,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(args.right_context, 256)
         self.assertEqual(args.depth, 1)
         self.assertFalse(args.keep_original_attention)
+        self.assertEqual(args.final_mode, "direct")
 
     def test_tuning_flags_are_overridable(self):
         args = create_parser().parse_args(
@@ -207,6 +219,8 @@ class CliTest(unittest.TestCase):
                 "--depth",
                 "2",
                 "--keep-original-attention",
+                "--final-mode",
+                "streaming",
             ]
         )
         self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v2")
@@ -219,6 +233,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(args.right_context, 64)
         self.assertEqual(args.depth, 2)
         self.assertTrue(args.keep_original_attention)
+        self.assertEqual(args.final_mode, "streaming")
 
     def test_module_imports_without_parakeet_mlx(self):
         self.assertTrue(hasattr(parakeet_mlx_streaming_sidecar, "StreamingParakeetMlxEngine"))

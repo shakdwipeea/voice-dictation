@@ -114,9 +114,10 @@ muted; check System Settings → Sound → Input.
   Nemotron on macOS. Parakeet-MLX backends ignore `asr_device`; leave it unset
   and optionally set `asr_model` to override the default checkpoint.
   `parakeet_mlx_streaming` exists for experimental partials but is not the
-  default: protocol smoke showed partials and a clean final, but slightly worse
-  accuracy than offline on one LibriSpeech clip. Switch backend/model in config
-  and restart — no rebuild needed.
+  default. It streams partials via `transcribe_stream()` and, by default, uses a
+  direct full-utterance PCM `get_logmel()` + `model.generate()` final to recover
+  offline-like accuracy; protocol smoke recovered `Quilter` where pure streaming
+  had `Coulter`. Switch backend/model in config and restart — no rebuild needed.
 
 ## Runtime safety
 

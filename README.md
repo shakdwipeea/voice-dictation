@@ -154,10 +154,12 @@ ASR latency ~0.24s on the LibriSpeech sample set, p50 RTF ~0.024, peak RSS
 151ms. See `docs/parakeet-mlx-migration-plan.md` for the benchmark details.
 
 `backend="parakeet_mlx_streaming"` is also available experimentally. It uses
-parakeet-mlx `transcribe_stream()` and emits partials while recording, with no
-file-based fallback. A protocol smoke emitted partials and a clean final, but
-accuracy was slightly worse than offline on one LibriSpeech clip, so prefer
-`parakeet_mlx_offline` until live tuning proves the streaming path.
+parakeet-mlx `transcribe_stream()` for partials while recording, then runs the
+final transcript from the full buffered utterance through the same direct PCM
+`get_logmel()` + `model.generate()` path as the offline backend. There is still
+no temp WAV/ffmpeg/file-based fallback. A protocol smoke emitted 9 partials and
+recovered the offline-quality final (`Quilter`, not the streaming partial's
+`Coulter`) with ~247ms final decode on a 4.82s LibriSpeech clip.
 
 Older macOS backends remain available: `backend="nemotron_offline"` with
 `asr_device="cpu"` (slow PyTorch/NeMo CPU path), and `backend="nemotron_coreml"`

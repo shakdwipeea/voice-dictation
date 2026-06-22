@@ -147,25 +147,28 @@ is better on this sample.
    holds.
 
 ### Phase 2 -- Streaming partials via `transcribe_stream` (implemented, experimental)
-1. Added `services/asr/parakeet_mlx_streaming_sidecar.py` with a genuine
+1. Added `services/asr/parakeet_mlx_streaming_sidecar.py` with a hybrid
    streaming engine: `start()` opens a `model.transcribe_stream()` context;
    `accept_audio()` buffers daemon frames into configurable chunks, calls
    `add_audio()`, and emits `partial` protocol events when `transcriber.result`
-   changes. This backend is pure streaming: no temp WAV, no ffmpeg, no
-   file-based `model.transcribe(path)` fallback.
+   changes. On `finish_session`, the default `--final-mode direct` transcribes
+   the full buffered utterance via direct PCM `get_logmel()` + `model.generate()`
+   for offline-like final accuracy. There is still no temp WAV, no ffmpeg, and
+   no file-based `model.transcribe(path)` fallback.
 2. Wired `backend="parakeet_mlx_streaming"` in `settings.rs`, with `asr_model`
    override support and `asr_device` rejected (MLX selects compute units).
 3. Exposed tuning knobs in the sidecar CLI: `--chunk-ms`, `--flush-ms`,
-   `--min-final-ms`, `--left-context`, `--right-context`, `--depth`, and
-   `--keep-original-attention`. Defaults: chunk 320ms, no silence flush, drop
-   final residual tails below 160ms after at least one chunk. The no-flush
-   default is intentional: a real smoke test showed current parakeet-mlx can
-   emit pathological repeated `<unk>` output when decoding tiny residual chunks
-   or trailing silence.
-4. Tests pass, and a real protocol smoke on the cached LibriSpeech clip emitted
-   9 partials plus a non-degenerate final. Accuracy was slightly worse than
-   offline on that clip (`Coulter` vs `Quilter`), so treat this backend as
-   experimental until live dictation and tuning prove it is worth using.
+   `--min-final-ms`, `--left-context`, `--right-context`, `--depth`,
+   `--keep-original-attention`, and `--final-mode direct|streaming`. Defaults:
+   chunk 320ms, direct final, no silence flush, drop streaming residual tails
+   below 160ms after at least one chunk. The no-flush default is intentional: a
+   real smoke test showed current parakeet-mlx can emit pathological repeated
+   `<unk>` output when decoding tiny residual chunks or trailing silence.
+4. Tests pass. Real protocol smoke on the cached LibriSpeech clip emitted
+   9 partials and the direct final recovered the offline-quality transcript
+   (`Quilter`, not pure streaming's `Coulter`) with ~247ms final decode on
+   4.82s audio. Treat this backend as experimental until live dictation and
+   tuning prove it is worth making the default.
 
 ### Phase 3 -- Cleanup
 1. If parakeet-mlx wins decisively on macOS, demote `nemotron_offline`/
