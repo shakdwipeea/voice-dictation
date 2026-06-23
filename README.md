@@ -13,6 +13,10 @@ X11 is supported directly. Hyprland/Wayland is supported through compositor
 bindings that call the daemon control socket, with insertion via `wl-copy` plus
 a paste shortcut, and direct `wtype` as a fallback.
 
+## Demo
+
+[Watch a 48-second demo video](docs/assets/sunoto-demo.mp4).
+
 A macOS port is in progress (see `docs/macos-port-plan.md`): the same daemon
 with CGEventTap hotkeys, CoreAudio capture, CGEvent text insertion, and local
 ASR. The default macOS real-ASR path is **Parakeet-MLX streaming on Apple
