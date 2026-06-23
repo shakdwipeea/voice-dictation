@@ -36,6 +36,8 @@ const BYTES_PER_SAMPLE: usize = 2;
 // backoff sleeps are sliced into chunks no longer than this.
 #[cfg(not(target_os = "macos"))]
 const STOP_POLL_MS: u64 = 25;
+#[cfg(not(target_os = "macos"))]
+const SOURCE_RECHECK_MS: u32 = 1_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureConfig {
@@ -318,20 +320,35 @@ fn capture_loop(
             &tx,
             stop,
             AudioEvent::Started {
-                device,
+                device: device.clone(),
                 description,
             },
         ) {
             break;
         }
         let read_result = match stdout.as_mut() {
-            Some(out) => pump_frames(out, frame_bytes, &tx, stop, &mut backoff_index),
+            Some(out) => pump_frames(
+                out,
+                frame_bytes,
+                &tx,
+                stop,
+                &mut backoff_index,
+                &config,
+                &device,
+            ),
             None => Err(io::Error::other("parec stdout was not captured")),
         };
         drop(stdout);
         let exit_reason = reap(lock_child(slot).take());
+        let restart_delay_ms = match &read_result {
+            Ok(PumpOutcome::SourceChanged(_)) => 0,
+            _ => next_backoff(&config.restart_backoff_ms, &mut backoff_index),
+        };
         let reason = match read_result {
-            Ok(()) => exit_reason,
+            Ok(PumpOutcome::Ended) => exit_reason,
+            Ok(PumpOutcome::SourceChanged(new_device)) => {
+                format!("audio source changed from {device} to {new_device}; {exit_reason}")
+            }
             Err(error) => format!("read error: {error}; {exit_reason}"),
         };
         if !send_event(&tx, stop, AudioEvent::Stopped { reason }) {
@@ -340,10 +357,7 @@ fn capture_loop(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        sleep_unless_stopped(
-            stop,
-            next_backoff(&config.restart_backoff_ms, &mut backoff_index),
-        );
+        sleep_unless_stopped(stop, restart_delay_ms);
     }
     // Never leak a child: reap whatever is still tracked.
     if let Some((child, _)) = pending.take() {
@@ -352,7 +366,15 @@ fn capture_loop(
     reap(lock_child(slot).take());
 }
 
-/// Read frame-sized chunks until EOF or error; a short final read is dropped.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PumpOutcome {
+    Ended,
+    SourceChanged(String),
+}
+
+/// Read frame-sized chunks until EOF, source switch, or error; a short final
+/// read is dropped.
 #[cfg(not(target_os = "macos"))]
 fn pump_frames(
     out: &mut ChildStdout,
@@ -360,9 +382,13 @@ fn pump_frames(
     tx: &Sender<AudioEvent>,
     stop: &AtomicBool,
     backoff_index: &mut usize,
-) -> io::Result<()> {
+    config: &CaptureConfig,
+    current_device: &str,
+) -> io::Result<PumpOutcome> {
     let mut buf = vec![0u8; frame_bytes];
     let mut delivered = false;
+    let recheck_every = source_recheck_frames(config.frame_ms);
+    let mut frames_until_recheck = recheck_every;
     loop {
         match out.read_exact(&mut buf) {
             Ok(()) => {
@@ -377,12 +403,37 @@ fn pump_frames(
                     .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
                     .collect();
                 if !send_event(tx, stop, AudioEvent::Frame(frame)) {
-                    return Ok(());
+                    return Ok(PumpOutcome::Ended);
+                }
+                frames_until_recheck = frames_until_recheck.saturating_sub(1);
+                if frames_until_recheck == 0 {
+                    frames_until_recheck = recheck_every;
+                    if let Some(new_device) = changed_auto_source(config, current_device) {
+                        return Ok(PumpOutcome::SourceChanged(new_device));
+                    }
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                return Ok(PumpOutcome::Ended);
+            }
             Err(error) => return Err(error),
         }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn source_recheck_frames(frame_ms: u32) -> usize {
+    SOURCE_RECHECK_MS.div_ceil(frame_ms).max(1) as usize
+}
+
+#[cfg(not(target_os = "macos"))]
+fn changed_auto_source(config: &CaptureConfig, current_device: &str) -> Option<String> {
+    if config.device != "auto" {
+        return None;
+    }
+    match resolve_configured_device(config) {
+        Ok(device) if device != current_device => Some(device),
+        _ => None,
     }
 }
 
@@ -449,7 +500,7 @@ mod tests {
     use std::fs;
     use std::io;
     #[cfg(not(target_os = "macos"))]
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     #[cfg(not(target_os = "macos"))]
     use std::sync::atomic::AtomicU64;
     #[cfg(not(target_os = "macos"))]
@@ -475,6 +526,20 @@ mod tests {
         sh(&format!(
             "if [ \"$0\" = get-default-source ]; then printf '%s' '{default_source}'; \
              else printf '%s' '{listing}'; fi"
+        ))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn fake_switching_pactl(marker: &Path, first: &str, second: &str) -> Vec<String> {
+        let marker = marker.to_string_lossy();
+        sh(&format!(
+            "p={marker:?}\n\
+             if [ \"$0\" = get-default-source ]; then\n\
+               if [ -e \"$p\" ]; then printf '%s\\n' {second:?}; \
+               else : > \"$p\"; printf '%s\\n' {first:?}; fi\n\
+             else\n\
+               printf '0\\t%s\\tPipeWire\\n1\\t%s\\tPipeWire\\n' {first:?} {second:?}\n\
+             fi"
         ))
     }
 
@@ -687,6 +752,53 @@ mod tests {
             AudioEvent::Frame(_)
         ));
         handle.stop();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn auto_capture_switches_when_default_source_changes() {
+        let marker = unique_temp_path("source-switch");
+        let _ = fs::remove_file(&marker);
+        let config = CaptureConfig {
+            device: "auto".to_string(),
+            // The fake stream is infinite; the capture loop should stop it as
+            // soon as the periodic auto-source check sees the new default.
+            parec_program: sh("exec cat /dev/zero"),
+            pactl_program: fake_switching_pactl(&marker, "first-mic", "second-mic"),
+            restart_backoff_ms: vec![10],
+            ..CaptureConfig::default()
+        };
+        let handle = start_capture(config).unwrap();
+        assert_eq!(
+            expect_event(handle.events()),
+            AudioEvent::Started {
+                device: "first-mic".to_string(),
+                description: None,
+            }
+        );
+
+        let mut saw_source_switch = false;
+        for _ in 0..200 {
+            match expect_event(handle.events()) {
+                AudioEvent::Frame(_) => {}
+                AudioEvent::Stopped { reason } => {
+                    assert!(reason.contains("audio source changed from first-mic to second-mic"));
+                    saw_source_switch = true;
+                    break;
+                }
+                event => panic!("unexpected event while waiting for source switch: {event:?}"),
+            }
+        }
+        assert!(saw_source_switch);
+        assert_eq!(
+            expect_event(handle.events()),
+            AudioEvent::Started {
+                device: "second-mic".to_string(),
+                description: None,
+            }
+        );
+        handle.stop();
+        let _ = fs::remove_file(&marker);
     }
 
     #[cfg(target_os = "linux")]

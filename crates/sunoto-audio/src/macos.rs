@@ -27,9 +27,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{AudioError, AudioEvent, CaptureConfig, CaptureHandle};
+
+const DEVICE_RECHECK: Duration = Duration::from_secs(1);
 
 // ----- FourCC helpers --------------------------------------------------------
 
@@ -170,12 +172,10 @@ struct CoreAudioCapture {
     device: AudioObjectID,
     proc_id: AudioDeviceIOProcID,
     state: Arc<Mutex<CaptureState>>,
-    stop: Arc<AtomicBool>,
 }
 
 impl Drop for CoreAudioCapture {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
         unsafe {
             AudioDeviceStop(self.device, self.proc_id);
             AudioDeviceDestroyIOProcID(self.device, self.proc_id);
@@ -218,6 +218,24 @@ fn default_input_device() -> Result<AudioObjectID, AudioError> {
     // Fallback: enumerate all devices, pick the first with input streams.
     let dev = first_device_with_input()?;
     Ok(dev)
+}
+
+fn configured_input_device(config: &CaptureConfig) -> Result<AudioObjectID, AudioError> {
+    if config.device == "auto" {
+        return default_input_device();
+    }
+    let raw = config
+        .device
+        .strip_prefix("coreaudio:")
+        .unwrap_or(&config.device);
+    let device = raw
+        .parse::<AudioObjectID>()
+        .map_err(|_| AudioError::Resolve(format!("invalid CoreAudio device id: {raw}")))?;
+    if device != 0 && device_has_input_streams(device) {
+        Ok(device)
+    } else {
+        Err(AudioError::NoMicrophone)
+    }
 }
 
 fn device_has_input_streams(device: AudioObjectID) -> bool {
@@ -501,6 +519,79 @@ fn accumulate_and_emit(state: &mut CaptureState, samples: Vec<i16>) {
     }
 }
 
+fn start_device_capture(
+    device: AudioObjectID,
+    frame_ms: u32,
+    tx: Sender<AudioEvent>,
+) -> Result<CoreAudioCapture, AudioError> {
+    let in_format = device_input_format(device)?;
+
+    // The IO proc down-mixes to mono before conversion; the converter runs in
+    // Rust (float/int decode + linear-interpolation resample to 16 kHz).
+    let mut src_format = in_format;
+    if src_format.mChannelsPerFrame > 1 {
+        src_format.mChannelsPerFrame = 1;
+        let bpp = src_format.mBytesPerPacket / src_format.mFramesPerPacket.max(1);
+        src_format.mBytesPerFrame = bpp;
+        src_format.mBytesPerPacket = bpp * src_format.mFramesPerPacket.max(1);
+    }
+    let _ = target_format(); // target shape is handled in Rust convert_chunk
+
+    let frame_samples = (16000 * frame_ms as usize) / 1000;
+    let state = Arc::new(Mutex::new(CaptureState {
+        tx,
+        accum: Vec::new(),
+        frame_samples,
+        src_format,
+    }));
+    let state_ptr = Arc::as_ptr(&state) as *mut c_void;
+
+    let mut proc_id_slot: std::mem::MaybeUninit<AudioDeviceIOProcID> =
+        std::mem::MaybeUninit::uninit();
+    let status =
+        unsafe { AudioDeviceCreateIOProcID(device, io_proc, state_ptr, proc_id_slot.as_mut_ptr()) };
+    if status != 0 {
+        return Err(AudioError::Resolve(format!(
+            "AudioDeviceCreateIOProcID failed ({status})"
+        )));
+    }
+    let proc_id = unsafe { proc_id_slot.assume_init() };
+    let status = unsafe { AudioDeviceStart(device, proc_id) };
+    if status != 0 {
+        unsafe {
+            AudioDeviceDestroyIOProcID(device, proc_id);
+        }
+        return Err(AudioError::Resolve(format!(
+            "AudioDeviceStart failed ({status})"
+        )));
+    }
+
+    Ok(CoreAudioCapture {
+        device,
+        proc_id,
+        state,
+    })
+}
+
+fn send_started(tx: &Sender<AudioEvent>, device: AudioObjectID) -> bool {
+    tx.send(AudioEvent::Started {
+        device: format!("coreaudio:{device}"),
+        description: Some("CoreAudio default input".to_string()),
+    })
+    .is_ok()
+}
+
+fn sleep_unless_stopped(stop: &AtomicBool, delay: Duration) {
+    let deadline = Instant::now() + delay;
+    while !stop.load(Ordering::SeqCst) {
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(50)));
+    }
+}
+
 unsafe extern "C" fn io_proc(
     _device: AudioObjectID,
     _now: *const AudioTimeStamp,
@@ -537,73 +628,76 @@ pub fn start_capture_macos(config: CaptureConfig) -> Result<CaptureHandle, Audio
             "frame_ms must be at least 1".to_string(),
         ));
     }
-    let device = default_input_device()?;
-    let in_format = device_input_format(device)?;
-
-    // The IO proc down-mixes to mono before conversion; the converter runs in
-    // Rust (float/int decode + linear-interpolation resample to 16 kHz).
-    let mut src_format = in_format;
-    if src_format.mChannelsPerFrame > 1 {
-        src_format.mChannelsPerFrame = 1;
-        let bpp = src_format.mBytesPerPacket / src_format.mFramesPerPacket.max(1);
-        src_format.mBytesPerFrame = bpp;
-        src_format.mBytesPerPacket = bpp * src_format.mFramesPerPacket.max(1);
-    }
-    let _ = target_format(); // target shape is handled in Rust convert_chunk
-
-    let frame_samples = (16000 * config.frame_ms as usize) / 1000;
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(CaptureState {
-        tx,
-        accum: Vec::new(),
-        frame_samples,
-        src_format,
-    }));
-    let state_ptr = Arc::as_ptr(&state) as *mut c_void;
-
-    let mut proc_id_slot: std::mem::MaybeUninit<AudioDeviceIOProcID> =
-        std::mem::MaybeUninit::uninit();
-    let status =
-        unsafe { AudioDeviceCreateIOProcID(device, io_proc, state_ptr, proc_id_slot.as_mut_ptr()) };
-    if status != 0 {
-        return Err(AudioError::Resolve(format!(
-            "AudioDeviceCreateIOProcID failed ({status})"
-        )));
-    }
-    let proc_id = unsafe { proc_id_slot.assume_init() };
-    let status = unsafe { AudioDeviceStart(device, proc_id) };
-    if status != 0 {
-        unsafe {
-            AudioDeviceDestroyIOProcID(device, proc_id);
-        }
-        return Err(AudioError::Resolve(format!(
-            "AudioDeviceStart failed ({status})"
-        )));
-    }
-
-    let _ = state.lock().ok().and_then(|g| {
-        g.tx.send(AudioEvent::Started {
-            device: format!("coreaudio:{device}"),
-            description: Some("CoreAudio default input".to_string()),
-        })
-        .ok()
-    });
-
-    let capture = CoreAudioCapture {
-        device,
-        proc_id,
-        state,
-        stop: Arc::clone(&stop),
-    };
+    let mut device = configured_input_device(&config)?;
+    let capture = start_device_capture(device, config.frame_ms, tx.clone())?;
+    let _ = send_started(&tx, device);
 
     // The capture thread owns the CoreAudioCapture; when CaptureHandle's stop
-    // is set, the thread drops it (tearing down CoreAudio) and exits.
+    // is set, the thread drops it (tearing down CoreAudio) and exits. For
+    // "auto", it also follows the system default input if the user connects or
+    // selects another mic after startup.
     let stop_for_thread = Arc::clone(&stop);
     let thread = thread::spawn(move || {
-        let _capture = capture;
+        let mut capture = Some(capture);
+        let mut next_recheck = Instant::now() + DEVICE_RECHECK;
+        let mut backoff_index = 0usize;
         while !stop_for_thread.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(50));
+            if config.device != "auto" || Instant::now() < next_recheck {
+                continue;
+            }
+            next_recheck = Instant::now() + DEVICE_RECHECK;
+            let Ok(next_device) = default_input_device() else {
+                continue;
+            };
+            if next_device == device {
+                continue;
+            }
+
+            drop(capture.take());
+            if tx
+                .send(AudioEvent::Stopped {
+                    reason: format!(
+                        "CoreAudio input device changed from coreaudio:{device} to coreaudio:{next_device}"
+                    ),
+                })
+                .is_err()
+            {
+                break;
+            }
+
+            loop {
+                if stop_for_thread.load(Ordering::SeqCst) {
+                    break;
+                }
+                match start_device_capture(next_device, config.frame_ms, tx.clone()) {
+                    Ok(new_capture) => {
+                        device = next_device;
+                        capture = Some(new_capture);
+                        backoff_index = 0;
+                        let _ = send_started(&tx, device);
+                        break;
+                    }
+                    Err(error) => {
+                        let _ = tx.send(AudioEvent::Stopped {
+                            reason: format!(
+                                "CoreAudio capture unavailable after input switch: {error}"
+                            ),
+                        });
+                        let delay = config
+                            .restart_backoff_ms
+                            .get(backoff_index)
+                            .or_else(|| config.restart_backoff_ms.last())
+                            .copied()
+                            .unwrap_or(1000);
+                        backoff_index = (backoff_index + 1)
+                            .min(config.restart_backoff_ms.len().saturating_sub(1));
+                        sleep_unless_stopped(&stop_for_thread, Duration::from_millis(delay));
+                    }
+                }
+            }
         }
         // CoreAudioCapture drops here -> AudioDeviceStop + DestroyIOProcID.
     });
