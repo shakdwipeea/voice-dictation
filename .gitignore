@@ -29,3 +29,5 @@ tests/corpus/phase2-recorded/
 .idea/
 .vscode/
 *.swp
+__pycache__/
+.venv-llmbench/

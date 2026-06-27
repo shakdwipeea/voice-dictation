@@ -1,0 +1,60 @@
+{"id":"restart-01","category":"bare_restart","input":"Hello, how are you sorry sorry whats up?","expected":"whats up?"}
+{"id":"restart-02","category":"bare_restart","input":"I went to the store, no wait, I went to the park.","expected":"I went to the park."}
+{"id":"restart-03","category":"bare_restart","input":"The meeting is at three, actually four.","expected":"The meeting is at four."}
+{"id":"restart-04","category":"bare_restart","input":"Call John, I mean, call Sarah.","expected":"Call Sarah."}
+{"id":"restart-05","category":"bare_restart","input":"Please send the report to, no, to accounting.","expected":"Please send the report to accounting."}
+{"id":"restart-06","category":"bare_restart","input":"I think the answer is, wait no, the answer is forty-two.","expected":"The answer is forty-two."}
+{"id":"restart-07","category":"bare_restart","input":"Tomorrow we will, actually, today we will ship it.","expected":"Today we will ship it."}
+{"id":"restart-08","category":"bare_restart","input":"The password is hunter2, sorry, the password is correcthorse.","expected":"The password is correcthorse."}
+{"id":"restart-09","category":"bare_restart","input":"Book a flight to London, no wait, to Paris.","expected":"Book a flight to Paris."}
+{"id":"restart-10","category":"bare_restart","input":"Set a timer for five, actually ten minutes.","expected":"Set a timer for ten minutes."}
+{"id":"repetition-01","category":"repetition","input":"I I think we should go.","expected":"I think we should go."}
+{"id":"repetition-02","category":"repetition","input":"The the weather is nice today.","expected":"The weather is nice today."}
+{"id":"repetition-03","category":"repetition","input":"We we we need more time.","expected":"We need more time."}
+{"id":"repetition-04","category":"repetition","input":"Can can you hear me?","expected":"Can you hear me?"}
+{"id":"repetition-05","category":"repetition","input":"It is it is my fault.","expected":"It is my fault."}
+{"id":"repetition-06","category":"repetition","input":"I am I am not sure about that.","expected":"I am not sure about that."}
+{"id":"filler-01","category":"filler","input":"Um, I went to the store.","expected":"I went to the store."}
+{"id":"filler-02","category":"filler","input":"Uh, what time is it?","expected":"What time is it?"}
+{"id":"filler-03","category":"filler","input":"So, uh, the report is due Friday.","expected":"The report is due Friday."}
+{"id":"filler-04","category":"filler","input":"I, uh, think it is fine.","expected":"I think it is fine."}
+{"id":"filler-05","category":"filler","input":"Well, um, let me see.","expected":"Let me see."}
+{"id":"filler-06","category":"filler","input":"Right, so, er, the build is green.","expected":"The build is green."}
+{"id":"filler-07","category":"filler","input":"Hmm, maybe we should refactor that.","expected":"Maybe we should refactor that."}
+{"id":"filler-08","category":"filler","input":"Uh, um, can you repeat that?","expected":"Can you repeat that?"}
+{"id":"partial-01","category":"false_start","input":"I want to, let me get the file.","expected":"Let me get the file."}
+{"id":"partial-02","category":"false_start","input":"The reason is, actually never mind, it works now.","expected":"It works now."}
+{"id":"partial-03","category":"false_start","input":"Could you, I will do it myself.","expected":"I will do it myself."}
+{"id":"partial-04","category":"false_start","input":"Let us, no, I will just email it.","expected":"I will just email it."}
+{"id":"partial-05","category":"false_start","input":"We should probably, you know what, never mind.","expected":"Never mind."}
+{"id":"mixed-01","category":"mixed","input":"Um, so, the the meeting, I mean, the call is at noon.","expected":"The call is at noon."}
+{"id":"mixed-02","category":"mixed","input":"I I went, no wait, uh, I will go tomorrow.","expected":"I will go tomorrow."}
+{"id":"mixed-03","category":"mixed","input":"Uh, can you, sorry, could you send that again?","expected":"Could you send that again?"}
+{"id":"mixed-04","category":"mixed","input":"So, um, the the bug, actually, the issue is fixed.","expected":"The issue is fixed."}
+{"id":"mixed-05","category":"mixed","input":"Well, I I think, no, I know it is broken.","expected":"I know it is broken."}
+{"id":"preserve-01","category":"preserve_facts","input":"My account number is four seven two, um, four seven two nine three one.","expected":"My account number is four seven two nine three one."}
+{"id":"preserve-02","category":"preserve_facts","input":"The order total is fifty, no, fifty-three dollars and twelve cents.","expected":"The order total is fifty-three dollars and twelve cents."}
+{"id":"preserve-03","category":"preserve_facts","input":"Her email is jane, no, janet dot smith at example dot com.","expected":"Her email is janet dot smith at example dot com."}
+{"id":"preserve-04","category":"preserve_facts","input":"The IP address is one nine two, uh, one nine two dot one six eight dot one dot one.","expected":"The IP address is one nine two dot one six eight dot one dot one."}
+{"id":"preserve-05","category":"preserve_facts","input":"His name is, um, Alejandro Gonzalez.","expected":"His name is Alejandro Gonzalez."}
+{"id":"preserve-06","category":"preserve_facts","input":"The code is print, uh, print hello world.","expected":"The code is print hello world."}
+{"id":"preserve-07","category":"preserve_facts","input":"I was born in, er, nineteen eighty-nine.","expected":"I was born in nineteen eighty-nine."}
+{"id":"preserve-08","category":"preserve_facts","input":"The serial number is X Q, no, X Q Z zero zero one.","expected":"The serial number is X Q Z zero zero one."}
+{"id":"scratch-01","category":"explicit_cancel","input":"Send that email. Scratch that. Send the report instead.","expected":"Send the report instead."}
+{"id":"scratch-02","category":"explicit_cancel","input":"Delete the file. Strike that. Move the file instead.","expected":"Move the file instead."}
+{"id":"scratch-03","category":"explicit_cancel","input":"Book a table for six. Scratch that. Book for four.","expected":"Book for four."}
+{"id":"compound-01","category":"compound","input":"Hello, hello, can you hear me? Yes, um, I can hear you.","expected":"Can you hear me? Yes, I can hear you."}
+{"id":"compound-02","category":"compound","input":"So, I I, no wait, let me start over. Hi, I am Alex.","expected":"Hi, I am Alex."}
+{"id":"compound-03","category":"compound","input":"Uh, the the, actually, the deadline is Friday.","expected":"The deadline is Friday."}
+{"id":"compound-04","category":"compound","input":"Um, well, we we should, I mean, we must deploy today.","expected":"We must deploy today."}
+{"id":"compound-05","category":"compound","input":"Right, so, I I think, no, I am sure it is done.","expected":"I am sure it is done."}
+{"id":"tricky-01","category":"should_not_overedit","input":"I am sorry for the delay.","expected":"I am sorry for the delay."}
+{"id":"tricky-02","category":"should_not_overedit","input":"Well, I mean it when I say thank you.","expected":"I mean it when I say thank you."}
+{"id":"tricky-03","category":"should_not_overedit","input":"No, that is not what I said.","expected":"No, that is not what I said."}
+{"id":"tricky-04","category":"should_not_overedit","input":"Actually, I agree with you.","expected":"Actually, I agree with you."}
+{"id":"tricky-05","category":"should_not_overedit","input":"Wait, are you sure?","expected":"Wait, are you sure?"}
+{"id":"tricky-06","category":"should_not_overedit","input":"I, uh, apologize. I mean it.","expected":"I apologize. I mean it."}
+{"id":"tricky-07","category":"should_not_overedit","input":"So, you know, it is what it is.","expected":"It is what it is."}
+{"id":"long-01","category":"long_utterance","input":"Um, so, I was thinking, I I want to, no wait, let me explain. We should refactor the auth module because, uh, the the current one, actually, the current one leaks tokens and we need to fix it before Friday.","expected":"We should refactor the auth module because the current one leaks tokens and we need to fix it before Friday."}
+{"id":"long-02","category":"long_utterance","input":"Right, so, the the customer, um, what was it, oh, the customer wants a refund for order four seven three two because, no wait, because it arrived broken and, uh, they want it by, they want it resolved by Monday.","expected":"The customer wants a refund for order four seven three two because it arrived broken and they want it resolved by Monday."}
+{"id":"long-03","category":"long_utterance","input":"I I think, no, I know the fix is to, let me see, to add a retry, um, a retry with backoff to the HTTP client so, uh, transient failures do not crash the worker.","expected":"The fix is to add a retry with backoff to the HTTP client so transient failures do not crash the worker."}
