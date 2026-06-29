@@ -249,10 +249,7 @@ impl HotkeyListener {
                         ticks_since_check = 0;
                         let enabled = ffi::CGEventTapIsEnabled(tap_for_thread);
                         if !diag_logged_enabled {
-                            eprintln!(
-                                "[hotkey-diag] tap is_enabled={} (created ok)",
-                                enabled
-                            );
+                            eprintln!("[hotkey-diag] tap is_enabled={} (created ok)", enabled);
                             diag_logged_enabled = true;
                         }
                         if enabled == 0 {

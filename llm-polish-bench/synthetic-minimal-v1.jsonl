@@ -1,0 +1,32 @@
+{"id":"clean-001","category":"clean_noop","input":"How are we doing?","expected":"How are we doing?","expected_mode":"UNCHANGED"}
+{"id":"clean-002","category":"clean_noop","input":"Do you think it's a good idea?","expected":"Do you think it's a good idea?","expected_mode":"UNCHANGED"}
+{"id":"clean-003","category":"clean_noop","input":"The responses are currently really slow.","expected":"The responses are currently really slow.","expected_mode":"UNCHANGED"}
+{"id":"clean-004","category":"clean_noop","input":"This is a good implementation, but we will need something else as well.","expected":"This is a good implementation, but we will need something else as well.","expected_mode":"UNCHANGED"}
+{"id":"clean-005","category":"clean_noop","input":"I think we should create a small synthetic dataset and test how our model works.","expected":"I think we should create a small synthetic dataset and test how our model works.","expected_mode":"UNCHANGED"}
+{"id":"clean-006","category":"clean_noop","input":"Check the logs of our current process and try to find out if there are any issues.","expected":"Check the logs of our current process and try to find out if there are any issues.","expected_mode":"UNCHANGED"}
+{"id":"clean-007","category":"clean_noop","input":"We can do the tuning, but we also need to solve the latency issue.","expected":"We can do the tuning, but we also need to solve the latency issue.","expected_mode":"UNCHANGED"}
+{"id":"clean-008","category":"clean_noop","input":"When you run the experiment, use the current architecture so the latency is realistic.","expected":"When you run the experiment, use the current architecture so the latency is realistic.","expected_mode":"UNCHANGED"}
+{"id":"clean-009","category":"preserve_negation","input":"No, that is not what I said.","expected":"No, that is not what I said.","expected_mode":"UNCHANGED"}
+{"id":"clean-010","category":"preserve_negation","input":"I am not sure we should change that yet.","expected":"I am not sure we should change that yet.","expected_mode":"UNCHANGED"}
+{"id":"clean-011","category":"preserve_marker_words","input":"Actually, I agree with you.","expected":"Actually, I agree with you.","expected_mode":"UNCHANGED"}
+{"id":"clean-012","category":"preserve_marker_words","input":"Wait, are you sure?","expected":"Wait, are you sure?","expected_mode":"UNCHANGED"}
+{"id":"clean-013","category":"preserve_facts","input":"Her email is janet dot smith at example dot com.","expected":"Her email is janet dot smith at example dot com.","expected_mode":"UNCHANGED"}
+{"id":"clean-014","category":"preserve_facts","input":"The account number is four seven two nine three one.","expected":"The account number is four seven two nine three one.","expected_mode":"UNCHANGED"}
+{"id":"clean-015","category":"preserve_code","input":"The code is print hello world.","expected":"The code is print hello world.","expected_mode":"UNCHANGED"}
+{"id":"clean-016","category":"preserve_url","input":"Open example dot com in the browser.","expected":"Open example dot com in the browser.","expected_mode":"UNCHANGED"}
+{"id":"edit-001","category":"filler","input":"Um, I think we should create a small synthetic dataset.","expected":"I think we should create a small synthetic dataset.","expected_mode":"EDITED"}
+{"id":"edit-002","category":"filler","input":"Check the logs and tell me uh how the current model is doing.","expected":"Check the logs and tell me how the current model is doing.","expected_mode":"EDITED"}
+{"id":"edit-003","category":"repetition","input":"I I think we should test it now.","expected":"I think we should test it now.","expected_mode":"EDITED"}
+{"id":"edit-004","category":"repetition","input":"The the current model is too slow.","expected":"The current model is too slow.","expected_mode":"EDITED"}
+{"id":"edit-005","category":"restart","input":"The meeting is at three, actually four.","expected":"The meeting is at four.","expected_mode":"EDITED"}
+{"id":"edit-006","category":"restart","input":"Call John, I mean, call Sarah.","expected":"Call Sarah.","expected_mode":"EDITED"}
+{"id":"edit-007","category":"restart","input":"Book a flight to London, no wait, to Paris.","expected":"Book a flight to Paris.","expected_mode":"EDITED"}
+{"id":"edit-008","category":"restart","input":"Please open settings, no wait, open the dashboard.","expected":"Please open the dashboard.","expected_mode":"EDITED"}
+{"id":"edit-009","category":"false_start","input":"I want to, let me get the file.","expected":"Let me get the file.","expected_mode":"EDITED"}
+{"id":"edit-010","category":"false_start","input":"Could you, I will do it myself.","expected":"I will do it myself.","expected_mode":"EDITED"}
+{"id":"edit-011","category":"mixed","input":"Um, so, the the meeting, I mean, the call is at noon.","expected":"The call is at noon.","expected_mode":"EDITED"}
+{"id":"edit-012","category":"mixed","input":"I I went, no wait, uh, I will go tomorrow.","expected":"I will go tomorrow.","expected_mode":"EDITED"}
+{"id":"edit-013","category":"preserve_facts_edit","input":"Her email is jane, no, janet dot smith at example dot com.","expected":"Her email is janet dot smith at example dot com.","expected_mode":"EDITED"}
+{"id":"edit-014","category":"preserve_facts_edit","input":"My account number is four seven two, um, four seven two nine three one.","expected":"My account number is four seven two nine three one.","expected_mode":"EDITED"}
+{"id":"edit-015","category":"live_asrish","input":"Currently it looks like our implementation has been pretty good. But I'm not sure with how much data like how will it do?","expected":"Currently it looks like our implementation has been pretty good. But I'm not sure how it will do with more data.","expected_mode":"EDITED"}
+{"id":"edit-016","category":"live_asrish","input":"I think we should create a small synthetic dataset and test our model how it works.","expected":"I think we should create a small synthetic dataset and test how our model works.","expected_mode":"EDITED"}

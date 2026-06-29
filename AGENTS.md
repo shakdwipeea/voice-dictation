@@ -6,6 +6,64 @@ sidecars provide ASR (NeMo Nemotron), and platform UI helpers provide the
 overlay. Keep changes small, practical, and verified against the real daemon
 flow where possible.
 
+## Architecture
+
+```
+                            [hotkey / Ctrl+F1]
+                                     |
+                                     v
+   +-------------------------------------------------------------+
+   |  sunoto-daemon (Rust single event loop, apps/daemon)        |
+   |                                                             |
+   |  capture  -> ring buffer (PCM f32)                          |
+   |     |          |                                            |
+   |     |          |   on release: flush -> ASR sidecar          |
+   |     |          v                                            |
+   |     |   +-------------------------+   partials (NDJSON)       |
+   |     |   | ASR sidecar (Python)    | ----------------------+   |
+   |     |   |  - parakeet_mlx_* (macOS)|                      |   |
+   |     |   |  - nemotron / _offline  |                      v   |
+   |     |   |     (Linux/CUDA)        |              +-----------+ |
+   |     |   +-------------------------+              | overlay   | |
+   |     |             | final transcript (NDJSON)     | (pill+    | |
+   |     |             v                                | meter,    | |
+   |     |   deterministic polish (sunoto-polish)       | bounded   | |
+   |     |   resolve_corrections / fillers / normalize  | channel)  | |
+   |     |             |                                +-----------+ |
+   |     |             v                                              |
+   |     |   LLM polish sidecar (Python, llama.cpp) <-(opt-in)         |
+   |     |   merges mid-utterance self-corrections ONLY               |
+   |     |   keepalive thread warms Metal/CUDA prefill every ~1s       |
+   |     |             | polished text                                 |
+   |     v             v                                              |
+   |  insert: paste first (pbcopy+x, XTEST), fallback to typing       |
+   +-------------------------------------------------------------+
+                                     |
+                                     v
+                         focused app receives text
+```
+
+Key invariants:
+- **One Rust event loop** owns capture, hotkey, sidecar IPC, and insertion.
+  Platform specifics live in `sunoto-linux` / `sunoto-macos`; typed NDJSON
+  protocols in `sunoto-ipc`; pure text transforms in `sunoto-polish`.
+- **Sidecars are Python**, spoken to over stdin/stdout NDJSON. ASR runs
+  during recording (streaming partials + a blocking `finish()`). The LLM
+  polish sidecar runs only after the final transcript (opt-in, default off).
+- **Overlay writes never block the latency path** — they go through a
+  bounded-channel writer thread.
+- **LLM polish keepalive**: a background thread in the polish sidecar fires a
+  tiny prefill+decode ping every ~1s (`SUNOTO_LLM_POLISH_KEEPALIVE_S`, 0=off)
+  to keep the GPU prefill path warm during idle/ASR. A shared `threading.Lock`
+  serializes all llama.cpp calls (llama.cpp is not thread-safe); the keepalive
+  thread uses a non-blocking trylock and skips when a real polish is in
+  flight. This defeats the ASR↔LLM GPU cold-ramp on Metal (macOS); on
+  Linux/CUDA it is the same code path and stays on harmlessly — disable via
+  `llm_polish_keepalive_secs: 0` if profiling shows it is unneeded there.
+- **ASR↔LLM GPU note**: on macOS both ASR (MLX) and LLM (Metal) share one
+  unified-memory GPU and contend. On Linux the ASR backend is Nemotron/CUDA;
+  the LLM uses llama.cpp-CUDA. The keepalive is platform-neutral.
+
 ## Project workflow
 
 - Rust: `cargo test --workspace --offline` and

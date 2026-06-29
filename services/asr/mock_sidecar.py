@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -21,7 +22,10 @@ def emit(event: dict[str, object]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--final-text", default="Sunoto Phase 1 insertion works.")
+    parser.add_argument(
+        "--final-text",
+        default=os.environ.get("SUNOTO_MOCK_FINAL_TEXT", "Sunoto Phase 1 insertion works."),
+    )
     parser.add_argument(
         "--partial-every-chunks",
         type=int,
