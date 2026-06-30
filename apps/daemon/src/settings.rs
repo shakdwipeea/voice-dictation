@@ -138,6 +138,17 @@ pub struct Settings {
     /// reliably fire during a short recording's final-generate window; 0
     /// disables. Override at runtime with `SUNOTO_LLM_POLISH_KEEPALIVE_S`.
     pub llm_polish_keepalive_secs: f64,
+    /// Progressive LLM-polish insertion (default off). When on, the sidecar
+    /// streams decoded tokens as `polish_chunk` deltas and the daemon types
+    /// them into the focused window as they arrive (CGEvent keypresses, the
+    /// existing typing path), overlapping decode with paste so the user sees
+    /// the first character at TTFT instead of after the whole completion.
+    /// Only the `constrained_one_call` mode streams; OK (clean) transcripts
+    /// take the unchanged single-paste fast path. See
+    /// docs/llm-polish-streaming-plan.md for the trade-offs (typing may be
+    /// dropped by apps that ignore CGEvent keypresses; on such failure the
+    /// daemon keeps the typed text and logs a warning).
+    pub llm_polish_stream_insert: bool,
     pub polish: PolishConfig,
 }
 
@@ -167,6 +178,7 @@ impl Default for Settings {
             llm_polish_mode: DEFAULT_LLM_POLISH_MODE.to_string(),
             llm_polish_timeout_ms: 10_000,
             llm_polish_keepalive_secs: 1.0,
+            llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
         }
     }
@@ -317,6 +329,9 @@ impl Settings {
             "SUNOTO_LLM_POLISH_KEEPALIVE_S".to_string(),
             format!("{}", self.llm_polish_keepalive_secs),
         ));
+        if self.llm_polish_stream_insert {
+            envs.push(("SUNOTO_LLM_POLISH_STREAM".to_string(), "1".to_string()));
+        }
         (python, vec![script], envs)
     }
 
@@ -391,6 +406,12 @@ impl Settings {
         {
             return Err(format!(
                 "unknown llm_polish_mode {:?}; use constrained_one_call, one_pass_minimal, or two_step",
+                self.llm_polish_mode
+            ));
+        }
+        if self.llm_polish_stream_insert && self.llm_polish_mode != "constrained_one_call" {
+            return Err(format!(
+                "llm_polish_stream_insert is on but llm_polish_mode is {:?}; streaming is only implemented for constrained_one_call",
                 self.llm_polish_mode
             ));
         }
@@ -655,6 +676,41 @@ mod tests {
             .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODE")
             .map(|(_, value)| value.as_str());
         assert_eq!(mode_env, Some("constrained_one_call"));
+        // Streaming insert defaults off; the env var is only pushed when on.
+        assert!(!settings.llm_polish_stream_insert);
+        assert!(!envs
+            .iter()
+            .any(|(key, _)| key == "SUNOTO_LLM_POLISH_STREAM"));
+    }
+
+    #[test]
+    fn llm_polish_stream_insert_pushes_env_when_on() {
+        let settings = Settings {
+            llm_polish_stream_insert: true,
+            ..Settings::default()
+        };
+        let (_python, _args, envs) = settings.llm_polish_command();
+        assert_eq!(
+            envs.iter()
+                .find(|(key, _)| key == "SUNOTO_LLM_POLISH_STREAM")
+                .map(|(_, value)| value.as_str()),
+            Some("1")
+        );
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_stream_insert_with_non_constrained_mode() {
+        let settings = Settings {
+            llm_polish_mode: "one_pass_minimal".to_string(),
+            llm_polish_stream_insert: true,
+            ..Settings::default()
+        };
+        let error = settings.validate().unwrap_err();
+        assert!(
+            error.contains("streaming is only implemented for constrained_one_call"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -707,6 +763,8 @@ mod tests {
         let loaded = Settings::load(&path).unwrap();
         assert_eq!(loaded.llm_polish_model, "phi4_mini");
         assert_eq!(loaded.llm_polish_mode, "constrained_one_call");
+        // Streaming default survives a config without the field.
+        assert!(!loaded.llm_polish_stream_insert);
         assert!(loaded.validate().is_ok());
         let _ = std::fs::remove_file(&path);
     }

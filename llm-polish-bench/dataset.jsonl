@@ -58,3 +58,27 @@
 {"id":"long-01","category":"long_utterance","input":"Um, so, I was thinking, I I want to, no wait, let me explain. We should refactor the auth module because, uh, the the current one, actually, the current one leaks tokens and we need to fix it before Friday.","expected":"We should refactor the auth module because the current one leaks tokens and we need to fix it before Friday."}
 {"id":"long-02","category":"long_utterance","input":"Right, so, the the customer, um, what was it, oh, the customer wants a refund for order four seven three two because, no wait, because it arrived broken and, uh, they want it by, they want it resolved by Monday.","expected":"The customer wants a refund for order four seven three two because it arrived broken and they want it resolved by Monday."}
 {"id":"long-03","category":"long_utterance","input":"I I think, no, I know the fix is to, let me see, to add a retry, um, a retry with backoff to the HTTP client so, uh, transient failures do not crash the worker.","expected":"The fix is to add a retry with backoff to the HTTP client so transient failures do not crash the worker."}
+{"id": "contrast-19", "category": "contrast_coherence", "input": "I would rather use a library than write it from scratch.", "expected": "I would rather use a library than write it from scratch."}
+{"id": "contrast-20", "category": "contrast_coherence", "input": "We deploy on Fridays as opposed to Mondays.", "expected": "We deploy on Fridays as opposed to Mondays."}
+{"id": "contrast-21", "category": "contrast_coherence", "input": "It is not a bug, it is a feature.", "expected": "It is not a bug, it is a feature."}
+{"id": "contrast-22", "category": "contrast_coherence", "input": "He likes tea, she likes coffee.", "expected": "He likes tea, she likes coffee."}
+{"id": "contrast-23", "category": "contrast_coherence", "input": "I tried, but I could not finish in time, so I asked for help.", "expected": "I tried, but I could not finish in time, so I asked for help."}
+{"id": "contrast-24", "category": "contrast_coherence", "input": "The fix works on Linux but not on macOS yet.", "expected": "The fix works on Linux but not on macOS yet."}
+{"id": "contrast-25", "category": "contrast_coherence", "input": "She did not call back, however I left a voicemail.", "expected": "She did not call back, however I left a voicemail."}
+{"id": "contrast-26", "category": "contrast_coherence", "input": "You can configure it in code, or you can set environment variables.", "expected": "You can configure it in code, or you can set environment variables."}
+{"id": "contrast-27", "category": "contrast_coherence", "input": "Uh, the fix works on Linux but not on macOS yet.", "expected": "The fix works on Linux but not on macOS yet."}
+{"id": "contrast-28", "category": "contrast_coherence", "input": "Um, she did not call back, however I left a voicemail.", "expected": "She did not call back, however I left a voicemail."}
+{"id": "rp-01", "category": "restart_preserve_verbatim", "input": "why dont you push my chnags sorry sorry why dont you commit my chnages first", "expected": "why dont you commit my chnages first"}
+{"id": "rp-02", "category": "restart_preserve_verbatim", "input": "rename the funtion no wait rename the fucntion run test", "expected": "rename the fucntion run test"}
+{"id": "rp-03", "category": "restart_preserve_verbatim", "input": "send it to bob at emial dot com no wait bob at email dot com", "expected": "send it to bob at email dot com"}
+{"id": "rp-04", "category": "restart_preserve_verbatim", "input": "the addres is one two three main street sorry the address is one two three main street", "expected": "the address is one two three main street"}
+{"id": "rp-05", "category": "restart_preserve_verbatim", "input": "deploy to prod sorry sorry deploy to staging", "expected": "deploy to staging"}
+{"id": "rp-06", "category": "restart_preserve_verbatim", "input": "i meen no i mean tomorrow", "expected": "i mean tomorrow"}
+{"id": "rp-07", "category": "restart_preserve_verbatim", "input": "fix the bufg no wait fix the buffer overflow", "expected": "fix the buffer overflow"}
+{"id": "rp-08", "category": "restart_preserve_verbatim", "input": "call the funciton no call the function init", "expected": "call the function init"}
+{"id": "pv-01", "category": "preserve_verbatim", "input": "i think the respnose is wrong", "expected": "i think the respnose is wrong"}
+{"id": "pv-02", "category": "preserve_verbatim", "input": "its not wrking yet", "expected": "its not wrking yet"}
+{"id": "pv-03", "category": "preserve_verbatim", "input": "thx that worked", "expected": "thx that worked"}
+{"id": "pv-04", "category": "preserve_verbatim", "input": "idk maybe later", "expected": "idk maybe later"}
+{"id": "pv-05", "category": "preserve_verbatim", "input": "pls review my pr", "expected": "pls review my pr"}
+{"id": "pv-06", "category": "preserve_verbatim", "input": "gonna push now", "expected": "gonna push now"}

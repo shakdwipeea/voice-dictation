@@ -428,6 +428,17 @@ choice, not a portability issue.
 
 ## 11. Open follow-ups
 
+- **Streaming decode + progressive insertion (in progress).** A new
+  `llm_polish_stream_insert` setting (default **off**) drives a streaming
+  `constrained_one_call` path: the sidecar emits `polish_chunk` deltas as
+  tokens decode, the daemon types them into the focused window as they arrive
+  (overlapping decode with paste), and a per-call **TTFT** (time-to-first-token)
+  is logged in the timing breakdown. The OK (clean) fast path is unchanged
+  (one atomic paste). Only the `constrained_one_call` mode streams. Full
+  design + trade-offs (typing-vs-paste reliability, content-loss guard
+  after-stream edge) in
+  **[docs/llm-polish-streaming-plan.md](llm-polish-streaming-plan.md)**.
+  Promotion to default-on is gated behind a live 25-session validation run.
 - **Task-specific finetune of Phi-4-mini** on the merge-only contract — the
   noted future direction. Phi-4-mini Q5 can't reliably separate "false start"
   from "subject-verb disagreement"; mild grammar edits are accepted as a

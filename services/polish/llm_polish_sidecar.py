@@ -77,6 +77,17 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def stream_enabled() -> bool:
+    """True when the daemon wants streamed decode + progressive insertion.
+
+    Set by the daemon via SUNOTO_LLM_POLISH_STREAM=1 only when the
+    `llm_polish_stream_insert` setting is on (and constrained_one_call mode,
+    the only mode that streams). When off, the sidecar uses the original
+    non-streaming completion path.
+    """
+    return env_bool("SUNOTO_LLM_POLISH_STREAM", False)
+
+
 def llama_runtime_config() -> dict[str, object]:
     return {
         "n_gpu_layers": env_int("SUNOTO_LLM_POLISH_GPU_LAYERS", -1),
@@ -415,23 +426,36 @@ def completion_payload(llm: Llama, transcript: str, label: str) -> dict[str, obj
     return payload
 
 
-def constrained_payload(llm: Llama, transcript: str, label: str) -> dict[str, object]:
+def constrained_payload(
+    llm: Llama,
+    transcript: str,
+    label: str,
+    system_prompt: str | None = None,
+    few_shot: tuple[tuple[str, str], ...] | None = None,
+) -> dict[str, object]:
     started = time.time()
     max_tokens = constrained_max_tokens(transcript)
     begin_cache_request(llm)
     reset_llama_timings(llm)
     response = run_chat_completion(
         llm,
-        constrained_messages_for(transcript),
+        constrained_messages_for(transcript, system_prompt, few_shot),
         max_tokens,
         grammar=constrained_output_grammar(),
     )
     perf = llama_timings(llm)
     raw = response["choices"][0]["message"].get("content") or ""
     text, decision_label, malformed = clean_constrained_output(raw, transcript)
-    # LLM is authoritative; only fall back to the raw transcript when the model
-    # emitted nothing. No deterministic content/digit/negation validator.
-    if not text.strip():
+    # Fail closed: if the model did not follow the OK/EDIT contract at all (e.g. it
+    # emitted a chatbot refusal like "the transcript is incomplete, please provide
+    # the full sentence"), NEVER paste its unstructured reply — fall back to the
+    # raw transcript verbatim (treat as OK). This is a structural format-conformance
+    # guarantee, not a content-drop heuristic; the chatbot reply is never valid
+    # polish output.
+    if malformed:
+        log(f"{label}: malformed OK/EDIT output, failing closed to raw transcript")
+        text = transcript
+    elif not text.strip():
         text = transcript
     elif text != transcript and drops_content_unsafely(transcript, text):
         log(f"{label}: content-loss guard fired, falling back to raw transcript")
@@ -578,7 +602,239 @@ def two_step_payload(llm: Llama, transcript: str, label: str) -> dict[str, objec
     return payload
 
 
-def polish_payload(llm: Llama, transcript: str, label: str) -> dict[str, object]:
+class _PrefixState:
+    """Strips the constrained-mode `EDIT: ` / `EDIT:\n` prefix and detects the
+    `OK` fast path from a raw token stream.
+
+    The constrained prompt emits exactly `OK` (no edit) or
+    `EDIT: <merged text>`. While streaming, the prefix may split across deltas;
+    this state machine buffers until the prefix is disambiguated, then forwards
+    every subsequent delta as cleaned content.
+
+    feed(delta) -> (cleaned_delta_or_None, decision_or_None, done_bool)
+        - decision is None until OK or EDIT is decided.
+        - decision == "OK": the text is clean; the caller should stop streaming
+          and emit NO polish_chunk events (the daemon pastes the deterministic
+          output via the normal path).
+        - decision == "EDIT": prefix consumed; cleaned_delta is the part of this
+          delta after `EDIT: ` (may be None if this delta was entirely prefix).
+        - done is True when the prompt finished OK (caller breaks).
+    """
+
+    PREFIX_VARIANTS = ("EDIT:",)
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._decided: str | None = None
+        self._prefix_done = False
+
+    def feed(self, delta: str) -> tuple[str | None, str | None, bool]:
+        # OK fast path: once decided, we ignore further deltas.
+        if self._decided == "OK":
+            return None, "OK", False
+        if self._decided == "EDIT":
+            if delta:
+                return delta, "EDIT", False
+            return None, "EDIT", False
+
+        # Not yet decided: accumulate until we can tell OK vs EDIT.
+        self._buf += delta
+        stripped = self._buf.strip()
+        # `OK` is exactly OK (maybe with trailing punctuation/whitespace).
+        # Be careful: "OK" is a prefix of nothing legitimate here.
+        if stripped.upper().startswith("OK"):
+            # Only commit to OK if OK is the full first token (followed by
+            # punctuation/whitespace/end). The constrained grammar guarantees
+            # the whole output is `OK` when clean, so the first content is OK.
+            self._decided = "OK"
+            return None, "OK", True
+        # Look for an EDIT variant at the start (case-insensitive), allowing
+        # the prefix to span deltas.
+        upper = self._buf.lstrip().upper()
+        for variant in self.PREFIX_VARIANTS:
+            if upper.startswith(variant):
+                rest = self._buf.lstrip()[len(variant):]
+                # Consume the separator after `EDIT:` (space or newline) once.
+                rest = rest.lstrip(" \n")
+                self._decided = "EDIT"
+                self._prefix_done = True
+                cleaned = rest if rest else None
+                return cleaned, "EDIT", False
+        # Still ambiguous: keep buffering. To avoid buffering forever on a
+        # malformed first token, flush once we can rule out OK/EDIT prefix.
+        # In practice the grammar forces one of the two prefix shapes within
+        # the first one or two deltas.
+        return None, None, False
+
+
+def run_chat_completion_stream(
+    llm: Llama,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    grammar: object | None = None,
+):
+    """Streaming `create_chat_completion`. Returns a generator of chunk dicts.
+
+    Each chunk is shaped like OpenAI's streaming response:
+    `{"choices": [{"delta": {"content": "..."}}], ...}`. We set `stream=True`
+    so llama.cpp yields tokens as they decode; the sidecar relays cleaned
+    deltas to the daemon as `polish_chunk` events for progressive insertion.
+    """
+    kwargs: dict[str, object] = {
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": float(os.environ.get("SUNOTO_LLM_POLISH_TEMPERATURE", "0.1")),
+        "top_k": int(os.environ.get("SUNOTO_LLM_POLISH_TOP_K", "50")),
+        "top_p": float(os.environ.get("SUNOTO_LLM_POLISH_TOP_P", "0.95")),
+        "repeat_penalty": float(os.environ.get("SUNOTO_LLM_POLISH_REPEAT_PENALTY", "1.05")),
+        "stream": True,
+    }
+    if grammar is not None:
+        kwargs["grammar"] = grammar
+    return llm.create_chat_completion(**kwargs)
+
+
+def constrained_payload_streaming(
+    llm: Llama,
+    transcript: str,
+    label: str,
+    session_id: int | None = None,
+    system_prompt: str | None = None,
+    few_shot: tuple[tuple[str, str], ...] | None = None,
+) -> dict[str, object]:
+    """Streaming variant of `constrained_payload`.
+
+    Emits `polish_chunk` events (with `ttft_ms` on the first chunk) as tokens
+    decode, so the daemon can paste them progressively. The terminal
+    `polished` payload mirrors `constrained_payload` and adds `ttft_ms`,
+    `streamed`, `stream_chunks`.
+
+    The OK fast path emits ZERO chunks (the daemon pastes the deterministic
+    output via the normal path); only EDIT transcripts stream.
+    """
+    started = time.time()
+    max_tokens = constrained_max_tokens(transcript)
+    begin_cache_request(llm)
+    reset_llama_timings(llm)
+    ttft_started = started
+    ttft_ms: int | None = None
+    raw_acc: list[str] = []
+    sequence = 0
+    prefix = _PrefixState()
+    streamed_total = 0  # chars forwarded as cleaned deltas
+    finish_reason: str | None = None
+
+    chunks = run_chat_completion_stream(
+        llm,
+        constrained_messages_for(transcript, system_prompt, few_shot),
+        max_tokens,
+        grammar=constrained_output_grammar(),
+    )
+    for chunk in chunks:
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        delta_content = (choices[0].get("delta") or {}).get("content") or ""
+        chunk_finish = choices[0].get("finish_reason")
+        if chunk_finish:
+            finish_reason = chunk_finish
+        if not delta_content:
+            continue
+        if ttft_ms is None:
+            ttft_ms = round((time.time() - ttft_started) * 1000)
+        raw_acc.append(delta_content)
+        cleaned, decision, done = prefix.feed(delta_content)
+        if decision == "OK":
+            # Clean transcript: stop streaming, no chunks emitted.
+            break
+        if cleaned:
+            sequence += 1
+            streamed_total += len(cleaned)
+            chunk_event: dict[str, object] = {
+                "type": "polish_chunk",
+                "session_id": session_id if session_id is not None else 0,
+                "sequence": sequence,
+                "delta": cleaned,
+            }
+            if sequence == 1 and ttft_ms is not None:
+                chunk_event["ttft_ms"] = ttft_ms
+            emit(chunk_event)
+        if done:
+            break
+
+    raw = "".join(raw_acc)
+    perf = llama_timings(llm)
+    text, decision_label, malformed = clean_constrained_output(raw, transcript)
+    guard_reverted = False
+    # Fail closed on malformed output (see constrained_payload): never paste a
+    # chatbot refusal. A malformed output never matched the EDIT: prefix, so no
+    # chunks were streamed; falling back to the transcript is consistent.
+    if malformed:
+        log(f"{label}: malformed OK/EDIT output, failing closed to raw transcript")
+        text = transcript
+    elif not text.strip():
+        text = transcript
+    elif text != transcript and drops_content_unsafely(transcript, text):
+        log(f"{label}: content-loss guard fired, falling back to raw transcript")
+        text = transcript
+        guard_reverted = True
+    # `streamed` is True only when we actually streamed cleaned content AND the
+    # final cleaned text is what we forwarded (i.e. no guard revert / malformed).
+    streamed = (
+        decision_label == "EDIT"
+        and not malformed
+        and not guard_reverted
+        and sequence > 0
+    )
+    final = bool(streamed)
+    payload: dict[str, object] = {
+        "text": text,
+        "raw_output": raw.strip(),
+        "latency_ms": round((time.time() - started) * 1000),
+        "output_mode": "constrained_one_call",
+        "polish_mode": "constrained_one_call",
+        "input_chars": len(transcript),
+        "input_words": len(word_tokens(transcript)),
+        "max_tokens": max_tokens,
+        "finish_reason": finish_reason or "stop",
+        "raw_chars": len(raw),
+        "cleaned_chars": len(text),
+        "decision_label": "UNCHANGED" if decision_label == "OK" else decision_label,
+        "decision_malformed": malformed,
+        "rewrite_called": decision_label == "EDIT",
+        "ttft_ms": ttft_ms,
+        "streamed": final,
+        "stream_chunks": sequence,
+        **usage_payload({}),
+        **cache_diagnostics(llm),
+        "llama_perf": perf,
+    }
+    log_completion(label, payload)
+    log_timings(label, perf)
+    if final:
+        log(
+            f"{label}: streamed {sequence} chunks, {streamed_total} chars, "
+            f"ttft={ttft_ms}ms"
+        )
+    else:
+        log(f"{label}: not streamed (decision={decision_label}) ttft={ttft_ms}ms")
+    return payload
+
+
+def polish_payload(
+    llm: Llama,
+    transcript: str,
+    label: str,
+    session_id: int | None = None,
+) -> dict[str, object]:
+    if (
+        polish_mode() == "constrained_one_call"
+        and stream_enabled()
+        and session_id is not None
+    ):
+        return constrained_payload_streaming(
+            llm, transcript, label, session_id=session_id
+        )
     if polish_mode() == "constrained_one_call":
         return constrained_payload(llm, transcript, label)
     if polish_mode() == "two_step":
@@ -694,7 +950,9 @@ def polish(llm: Llama, session_id: int, transcript: str) -> None:
     # when this acquires will have released first; the bounded wait is at most
     # the remaining keepalive wall time.
     with _llm_lock:
-        payload = polish_payload(llm, transcript, f"polish session={session_id}")
+        payload = polish_payload(
+            llm, transcript, f"polish session={session_id}", session_id=session_id
+        )
     emit(
         {
             "type": "polished",

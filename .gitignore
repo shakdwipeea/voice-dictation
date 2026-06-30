@@ -31,3 +31,5 @@ tests/corpus/phase2-recorded/
 *.swp
 __pycache__/
 .venv-llmbench/
+.venv-llm-polish-mac/
+llm-polish-bench/out/

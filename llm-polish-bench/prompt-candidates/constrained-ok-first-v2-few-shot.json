@@ -1,0 +1,22 @@
+[
+  [
+    "The account number is four seven two nine three one.",
+    "OK"
+  ],
+  [
+    "The code is print hello world.",
+    "OK"
+  ],
+  [
+    "Actually, I agree with you.",
+    "OK"
+  ],
+  [
+    "Please open settings, no wait, open the dashboard.",
+    "EDIT: Please open the dashboard."
+  ],
+  [
+    "Her email is jane, no, janet dot smith at example dot com.",
+    "EDIT: Her email is janet dot smith at example dot com."
+  ]
+]

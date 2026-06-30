@@ -65,6 +65,14 @@ pub struct LlmPolishDiagnostics {
     pub decision: Option<LlmPolishCallDiagnostics>,
     pub rewrite: Option<LlmPolishCallDiagnostics>,
     pub llama_perf: Option<LlamaPerf>,
+    /// Time-to-first-token (ms) — wall time from the streaming completion
+    /// call start to the first non-empty content delta. `None` when streaming
+    /// was not used for this call (batch path or OK fast path).
+    pub ttft_ms: Option<u64>,
+    /// Whether the sidecar streamed `polish_chunk` deltas for this call.
+    pub streamed: Option<bool>,
+    /// Number of `polish_chunk` deltas emitted for this call.
+    pub stream_chunks: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -213,6 +221,19 @@ enum LlmPolishEvent {
         rewrite: Option<LlmPolishCallDiagnostics>,
         #[serde(default)]
         llama_perf: Option<LlamaPerf>,
+        #[serde(default)]
+        ttft_ms: Option<u64>,
+        #[serde(default)]
+        streamed: Option<bool>,
+        #[serde(default)]
+        stream_chunks: Option<u64>,
+    },
+    PolishChunk {
+        session_id: u64,
+        sequence: u64,
+        delta: String,
+        #[serde(default)]
+        ttft_ms: Option<u64>,
     },
     Warmed {
         latency_ms: u64,
@@ -351,6 +372,26 @@ impl LlmPolishClient {
         input: &str,
         timeout_ms: u64,
     ) -> Result<LlmPolishOutcome, String> {
+        self.polish_stream(session_id, input, timeout_ms, |_: &str| {})
+    }
+
+    /// Like `polish`, but invokes `on_chunk(delta)` for each `polish_chunk`
+    /// event the sidecar emits (streaming decode). The callback runs on the
+    /// caller's thread, synchronously, as chunks arrive over the sidecar's
+    /// stdout reader thread; the call still returns only after the terminal
+    /// `polished` event. `on_chunk` must be cheap (the lock on the reader
+    /// channel is held across it); the daemon forwards the delta to the UI
+    /// thread via a non-blocking channel send.
+    pub fn polish_stream<F>(
+        &mut self,
+        session_id: u64,
+        input: &str,
+        timeout_ms: u64,
+        mut on_chunk: F,
+    ) -> Result<LlmPolishOutcome, String>
+    where
+        F: FnMut(&str),
+    {
         self.send(&LlmPolishRequest::Polish {
             session_id,
             text: input,
@@ -359,6 +400,27 @@ impl LlmPolishClient {
         loop {
             match self.recv(timeout)? {
                 LlmPolishMessage::Event(event) => match *event {
+                    LlmPolishEvent::PolishChunk {
+                        session_id: response_session,
+                        sequence,
+                        delta,
+                        ttft_ms,
+                    } if response_session == session_id => {
+                        if sequence == 1
+                            && let Some(ms) = ttft_ms
+                        {
+                            crate::logging::info(&format!(
+                                "LLM polish session {session_id}: ttft {ms}ms"
+                            ));
+                        }
+                        on_chunk(&delta);
+                    }
+                    LlmPolishEvent::PolishChunk { session_id: response_session, .. } => {
+                        // Stale chunk from an earlier timed-out session.
+                        crate::logging::warn(&format!(
+                            "ignored stale LLM polish chunk for session {response_session}"
+                        ));
+                    }
                     LlmPolishEvent::Polished {
                         session_id: response_session,
                         text,
@@ -387,6 +449,9 @@ impl LlmPolishClient {
                         decision,
                         rewrite,
                         llama_perf,
+                        ttft_ms,
+                        streamed,
+                        stream_chunks,
                     } if response_session == session_id => {
                         let text = text.trim().to_string();
                         if text.is_empty() {
@@ -420,6 +485,9 @@ impl LlmPolishClient {
                                 decision,
                                 rewrite,
                                 llama_perf,
+                                ttft_ms,
+                                streamed,
+                                stream_chunks,
                             },
                         });
                     }
@@ -515,6 +583,14 @@ impl LlmPolishClient {
                     } => {
                         crate::logging::warn(&format!(
                             "duplicate LLM polish ready event during warmup: {backend}, load {load_ms}ms, warmup {warmup_ms}ms"
+                        ));
+                    }
+                    LlmPolishEvent::PolishChunk { session_id, .. } => {
+                        // Streaming chunks are not produced during warmup
+                        // (warmup uses the non-streaming completion path);
+                        // ignore any stray one defensively.
+                        crate::logging::warn(&format!(
+                            "ignored unexpected LLM polish chunk during warmup (session {session_id})"
                         ));
                     }
                 },
@@ -655,6 +731,72 @@ mod tests {
                 assert_eq!(rewrite_called, Some(true));
                 assert_eq!(decision.and_then(|call| call.completion_tokens), Some(1));
                 assert_eq!(rewrite.and_then(|call| call.latency_ms), Some(220));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_polish_chunk_with_ttft_on_first_sequence() {
+        let first = serde_json::from_str::<LlmPolishEvent>(
+            r#"{"type":"polish_chunk","session_id":5,"sequence":1,"delta":"Please ","ttft_ms":187}"#,
+        )
+        .expect("first chunk parses");
+        match first {
+            LlmPolishEvent::PolishChunk {
+                session_id,
+                sequence,
+                delta,
+                ttft_ms,
+            } => {
+                assert_eq!(session_id, 5);
+                assert_eq!(sequence, 1);
+                assert_eq!(delta, "Please ");
+                assert_eq!(ttft_ms, Some(187));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        // Subsequent chunks omit ttft_ms (defaults to None).
+        let later = serde_json::from_str::<LlmPolishEvent>(
+            r#"{"type":"polish_chunk","session_id":5,"sequence":2,"delta":"send"}"#,
+        )
+        .expect("later chunk parses");
+        match later {
+            LlmPolishEvent::PolishChunk { ttft_ms, .. } => {
+                assert_eq!(ttft_ms, None);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn polished_event_carries_streaming_diagnostics() {
+        let event = serde_json::from_str::<LlmPolishEvent>(
+            r#"{
+                "type":"polished",
+                "session_id":5,
+                "text":"Please send this to Priya tomorrow.",
+                "latency_ms":412,
+                "ttft_ms":183,
+                "streamed":true,
+                "stream_chunks":7
+            }"#,
+        )
+        .expect("polished event parses");
+        match event {
+            LlmPolishEvent::Polished {
+                ttft_ms,
+                streamed,
+                stream_chunks,
+                latency_ms,
+                text,
+                ..
+            } => {
+                assert_eq!(text, "Please send this to Priya tomorrow.");
+                assert_eq!(latency_ms, 412);
+                assert_eq!(ttft_ms, Some(183));
+                assert_eq!(streamed, Some(true));
+                assert_eq!(stream_chunks, Some(7));
             }
             other => panic!("unexpected event: {other:?}"),
         }

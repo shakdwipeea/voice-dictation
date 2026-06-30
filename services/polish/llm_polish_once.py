@@ -41,6 +41,13 @@ MINIMAL_SYSTEM_PROMPT = (
 
 CONSTRAINED_SYSTEM_PROMPT = (
     "You merge disfluent speech in dictation transcripts. You change NOTHING else.\n\n"
+    "The input is ALWAYS a complete, final transcript from the ASR engine — it is "
+    "never a question to you, never an incomplete or partial sentence, and never a "
+    "request for clarification. Short fragments are valid utterances and may be clean; "
+    "for example 'in our config' or 'OK' is already clean (output OK). Never ask for "
+    "more context, never refuse, never explain, never say the text is incomplete or "
+    "ask for the full sentence. Always output exactly OK or EDIT: <text>. No chat, "
+    "no questions, no narration.\n\n"
     "A disfluency REQUIRES redundant or superseded speech: the speaker said the same "
     "thing more than once, or started a phrase, abandoned it, and re-spoke it. The "
     "kinds are: redundant repetitions ('the the', 'and also and also'), false starts "
@@ -57,6 +64,15 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "words like 'him', 'her', 'the', 'at'. Merge a repetition by collapsing the "
     "duplicates to one. For a restart (an abandoned clause then a re-spoken clause), "
     "drop the superseded earlier clause and keep the restart.\n\n"
+    "A restart means the speaker ABANDONED an attempt and RE-SPOKE THE SAME "
+    "intent. If two clauses say DIFFERENT things, that is not a restart — it is "
+    "a coherent sentence and you keep BOTH clauses. Contrastive connectors like "
+    "'but', 'but now', 'however', 'instead', 'on the other hand', 'whereas' "
+    "join two distinct statements; they are NOT correction cues and do NOT "
+    "authorize dropping either clause. 'I was doing X, but now I want Y' states "
+    "two different facts (what I was doing, what I now want) — output OK, keep "
+    "both. Only when the later clause re-expresses the abandoned earlier intent "
+    "(same request reworded) is it a restart.\n\n"
     "CRITICAL: when editing, leave EVERY other aspect EXACTLY as spoken. Do NOT fix "
     "grammar, tense, agreement, word order, punctuation, capitalization (including "
     "lowercase days/names like 'friday', 'bob'), word choice, or style, and do NOT "
@@ -141,6 +157,17 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
     # 'Actually' opening the utterance is emphasis, not a correction.
     (
         "Actually, the build passed on the first try this morning.",
+        "OK",
+    ),
+    # Contrast ('but now') joining two DIFFERENT statements: NOT a restart.
+    # Both clauses are kept verbatim. A restart RE-SPEAKS the same intent.
+    (
+        "I was working on this, but now I want you to work on that.",
+        "OK",
+    ),
+    # Two distinct facts joined by 'instead': keep both.
+    (
+        "We tried the cache first, instead we ended up rewriting the loop.",
         "OK",
     ),
     # A lone 'also' / adverb appearing once is NOT a redundancy -> OK.
@@ -384,9 +411,13 @@ def constrained_repair_few_shot() -> tuple[tuple[str, str], ...]:
         return CONSTRAINED_REPAIR_FEW_SHOT
 
 
-def constrained_messages_for(transcript: str) -> list[dict[str, str]]:
-    messages = [{"role": "system", "content": constrained_system_prompt()}]
-    for input_text, output_text in constrained_repair_few_shot():
+def constrained_messages_for(
+    transcript: str,
+    system_prompt: str | None = None,
+    few_shot: tuple[tuple[str, str], ...] | None = None,
+) -> list[dict[str, str]]:
+    messages = [{"role": "system", "content": system_prompt or constrained_system_prompt()}]
+    for input_text, output_text in (few_shot if few_shot is not None else constrained_repair_few_shot()):
         messages.append({"role": "user", "content": f"Clean this transcript:\n{input_text}"})
         messages.append({"role": "assistant", "content": output_text})
     messages.append({"role": "user", "content": f"Clean this transcript:\n{transcript}"})
