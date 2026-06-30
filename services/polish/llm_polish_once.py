@@ -55,22 +55,8 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "When you see a disfluency: delete ONLY the superseded (earlier) attempt and its "
     "cue, keep the later attempt and every other word VERBATIM, including small "
     "words like 'him', 'her', 'the', 'at'. Merge a repetition by collapsing the "
-    "duplicates to one.\n\n"
-    "Most corrections are LOCAL: a cue like 'sorry'/'actually'/'i mean' mid-sentence "
-    "corrects just the SHORT phrase right before it — the speaker re-words ONE "
-    "small part and continues. Drop only that corrected phrase and the cue; keep "
-    "every word before and after, including the topic/opening clause. Example: "
-    "'keep that as the default and push the changes, sorry, commit the changes first' "
-    "-> drop only 'push the changes' and 'sorry', keep 'keep that as the default ...' "
-    "and the rest verbatim.\n\n"
-    "A RESTART is different and rarer: the speaker abandons the WHOLE utterance AND "
-    "re-opens it — the speech AFTER the cue RESTATES the request's topic or repeats "
-    "its opening words (e.g. 'Can you check if the build is healthy? Sorry, can you "
-    "check if the build is green yet?' re-opens with 'Can you check if the build'). "
-    "Only for a true restart do you drop the ENTIRE earlier clause and keep only the "
-    "restart. If the speech after the cue does NOT re-open the request, it is a local "
-    "correction — do NOT drop the earlier clause. Do NOT keep both as separate "
-    "sentences.\n\n"
+    "duplicates to one. For a restart (an abandoned clause then a re-spoken clause), "
+    "drop the superseded earlier clause and keep the restart.\n\n"
     "CRITICAL: when editing, leave EVERY other aspect EXACTLY as spoken. Do NOT fix "
     "grammar, tense, agreement, word order, punctuation, capitalization (including "
     "lowercase days/names like 'friday', 'bob'), word choice, or style, and do NOT "
@@ -199,24 +185,9 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
         "EDIT: Meet her at the library tomorrow.",
     ),
     # --- Restart cue: drop the superseded earlier clause, keep the restart. ---
-    # Here 'send it to alice' re-opens with 'send', so it IS a restart.
     (
         "Send the file to bob. Sorry, send it to alice instead.",
         "EDIT: Send it to alice instead.",
-    ),
-    # Partial-overlap restart: two attempts share the framing but differ in the
-    # tail. The earlier attempt is STILL superseded even though it is reworded
-    # rather than near-duplicate — drop it entirely, keep only the restart.
-    (
-        "Can you check if the build is healthy? Sorry, can you check if the build is green yet?",
-        "EDIT: Can you check if the build is green yet?",
-    ),
-    # LOCAL correction with 'sorry': the cue corrects only the short phrase
-    # right before it ('push the changes' -> 'commit the changes first'). The
-    # topic clause 'whatever config we are using' is NOT abandoned — keep it.
-    (
-        "Now, whatever config we are using, keep that as the default and push the changes, sorry, um, commit the changes first.",
-        "EDIT: Now, whatever config we are using, keep that as the default and commit the changes first.",
     ),
 )
 
