@@ -55,11 +55,22 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "When you see a disfluency: delete ONLY the superseded (earlier) attempt and its "
     "cue, keep the later attempt and every other word VERBATIM, including small "
     "words like 'him', 'her', 'the', 'at'. Merge a repetition by collapsing the "
-    "duplicates to one. For a restart — an earlier clause is abandoned (often "
-    "after 'sorry'/'actually' or a repeated opening) and the SAME request is then "
-    "re-spoken, even reworded or with a different tail — drop the ENTIRE earlier "
-    "clause and keep only the restart. Do NOT keep both as separate sentences: the "
-    "earlier attempt is superseded even when its wording differs from the restart.\n\n"
+    "duplicates to one.\n\n"
+    "Most corrections are LOCAL: a cue like 'sorry'/'actually'/'i mean' mid-sentence "
+    "corrects just the SHORT phrase right before it — the speaker re-words ONE "
+    "small part and continues. Drop only that corrected phrase and the cue; keep "
+    "every word before and after, including the topic/opening clause. Example: "
+    "'keep that as the default and push the changes, sorry, commit the changes first' "
+    "-> drop only 'push the changes' and 'sorry', keep 'keep that as the default ...' "
+    "and the rest verbatim.\n\n"
+    "A RESTART is different and rarer: the speaker abandons the WHOLE utterance AND "
+    "re-opens it — the speech AFTER the cue RESTATES the request's topic or repeats "
+    "its opening words (e.g. 'Can you check if the build is healthy? Sorry, can you "
+    "check if the build is green yet?' re-opens with 'Can you check if the build'). "
+    "Only for a true restart do you drop the ENTIRE earlier clause and keep only the "
+    "restart. If the speech after the cue does NOT re-open the request, it is a local "
+    "correction — do NOT drop the earlier clause. Do NOT keep both as separate "
+    "sentences.\n\n"
     "CRITICAL: when editing, leave EVERY other aspect EXACTLY as spoken. Do NOT fix "
     "grammar, tense, agreement, word order, punctuation, capitalization (including "
     "lowercase days/names like 'friday', 'bob'), word choice, or style, and do NOT "
@@ -188,6 +199,7 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
         "EDIT: Meet her at the library tomorrow.",
     ),
     # --- Restart cue: drop the superseded earlier clause, keep the restart. ---
+    # Here 'send it to alice' re-opens with 'send', so it IS a restart.
     (
         "Send the file to bob. Sorry, send it to alice instead.",
         "EDIT: Send it to alice instead.",
@@ -198,6 +210,13 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
     (
         "Can you check if the build is healthy? Sorry, can you check if the build is green yet?",
         "EDIT: Can you check if the build is green yet?",
+    ),
+    # LOCAL correction with 'sorry': the cue corrects only the short phrase
+    # right before it ('push the changes' -> 'commit the changes first'). The
+    # topic clause 'whatever config we are using' is NOT abandoned — keep it.
+    (
+        "Now, whatever config we are using, keep that as the default and push the changes, sorry, um, commit the changes first.",
+        "EDIT: Now, whatever config we are using, keep that as the default and commit the changes first.",
     ),
 )
 
@@ -423,6 +442,56 @@ def rewrite_messages_for(transcript: str) -> list[dict[str, str]]:
 
 def word_tokens(text: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", text.lower())
+
+
+# --- Narrow content-loss guard -------------------------------------------
+# The guard is intentionally MINIMAL and conservative: it never rejects
+# legitimate merges. It only fires when the LLM drops many (>=3) UNIQUE
+# significant content words that have NO counterpart in the retained text —
+# i.e. the actual topic of the utterance evaporated rather than being
+# re-stated by a restart. A true restart re-opens the request, so its
+# superseded words either are re-stated (and absent from the set difference)
+# or are few (an entity swap, a single superseded phrase). Dropping 3+
+# uncounterparted content words is unsafe even when a correction cue like
+# 'sorry'/'actually' is present: a cue authorizes dropping the superseded
+# CLAUSE, not the topic.
+_CONTENT_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "and", "or", "but", "if", "of", "to", "in", "on", "at",
+        "for", "as", "is", "are", "was", "were", "be", "been", "being", "that",
+        "this", "these", "those", "it", "its", "we", "you", "i", "he", "she",
+        "they", "me", "him", "her", "them", "us", "my", "your", "his", "their",
+        "our", "with", "from", "by", "do", "does", "did", "have", "has", "had",
+        "will", "would", "can", "could", "should", "may", "might", "must",
+        "not", "yes", "um", "uh", "er", "ah", "like", "just", "so", "now",
+    }
+)
+_CORRECTION_CUES = frozenset(
+    {
+        "actually", "sorry", "wait", "scratch", "strike", "rather",
+        "rephrase", "never", "mind", "mean",
+    }
+)
+
+
+def significant_content_words(text: str) -> list[str]:
+    words = word_tokens(text)
+    return [w for w in words if w not in _CONTENT_STOPWORDS and len(w) > 1]
+
+
+def drops_content_unsafely(raw: str, output: str) -> bool:
+    """True only when a restart-style edit drops the utterance's actual topic.
+
+    Counts UNIQUE significant content words present in `raw` but absent in
+    `output`, excluding correction cues themselves. A drop is unsafe only when
+    >=3 such uncounterparted words vanish — i.e. the edit discarded real topic
+    content rather than collapsing a restated restart or swapping an entity.
+    """
+    raw_sig = set(significant_content_words(raw))
+    out_sig = set(significant_content_words(output))
+    dropped = raw_sig - out_sig
+    dropped_content = {w for w in dropped if w not in _CORRECTION_CUES}
+    return len(dropped_content) >= 3
 
 
 def dynamic_tokens(text: str, mode: str | None = None) -> int:

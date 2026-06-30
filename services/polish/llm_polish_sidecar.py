@@ -42,6 +42,7 @@ from llm_polish_once import (
     output_mode,
     parse_decision_output,
     polish_mode,
+    drops_content_unsafely,
     rewrite_messages_for,
     word_tokens,
 )
@@ -390,6 +391,9 @@ def completion_payload(llm: Llama, transcript: str, label: str) -> dict[str, obj
     # validator (too brittle on real speech, blocked legitimate merges).
     if not text.strip():
         text = transcript
+    elif text != transcript and drops_content_unsafely(transcript, text):
+        log(f"{label}: content-loss guard fired, falling back to raw transcript")
+        text = transcript
     usage = response.get("usage") or {}
     payload = {
         "text": text,
@@ -428,6 +432,9 @@ def constrained_payload(llm: Llama, transcript: str, label: str) -> dict[str, ob
     # LLM is authoritative; only fall back to the raw transcript when the model
     # emitted nothing. No deterministic content/digit/negation validator.
     if not text.strip():
+        text = transcript
+    elif text != transcript and drops_content_unsafely(transcript, text):
+        log(f"{label}: content-loss guard fired, falling back to raw transcript")
         text = transcript
     payload: dict[str, object] = {
         "text": text,
@@ -493,6 +500,9 @@ def rewrite_payload(llm: Llama, transcript: str, label: str) -> dict[str, object
     raw = response["choices"][0]["message"].get("content") or ""
     text = clean_model_output(raw, transcript, "full")
     if not text.strip():
+        text = transcript
+    elif text != transcript and drops_content_unsafely(transcript, text):
+        log(f"{label}: content-loss guard fired, falling back to raw transcript")
         text = transcript
     payload: dict[str, object] = {
         "text": text,

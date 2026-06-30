@@ -338,6 +338,52 @@ class LlmPolishWarmupTests(unittest.TestCase):
             self.assertTrue(event["rewrite_called"])
             self.assertNotIn("validation_rejected", event)
 
+    def test_content_loss_guard_falls_back_to_raw_on_topic_drop(self):
+        # The LLM dropped the utterance's actual topic ('configuration / using /
+        # police') treating a local 'sorry' correction as a full restart. The
+        # narrow guard catches 3+ uncounterparted content words and reverts.
+        with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):
+            transcript = (
+                "Now, whatever configuration we are using for the LM police, "
+                "keep that as the default version and push the changes, sorry, um, "
+                "commit the changes first."
+            )
+            dropped = (
+                "Keep that as the default version and push the changes, "
+                "commit the changes first."
+            )
+            llm = FakeLlama(f"EDIT: {dropped}")
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                llm_polish_sidecar.polish(llm, 19, transcript)
+
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["text"], transcript)
+            self.assertEqual(event["decision_label"], "EDIT")
+            self.assertTrue(event["rewrite_called"])
+
+    def test_content_loss_guard_allows_legit_restart_merge(self):
+        # A true restart re-states the retained request: the dropped words are
+        # few / re-stated, so the guard (>=3 uncounterparted content words)
+        # does NOT fire and the LLM's merge is kept.
+        with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):
+            transcript = (
+                "Can you check if we are doing a good task? Sorry, sorry, can you "
+                "check if Check the logs and tell me if we are doing good?"
+            )
+            merged = (
+                "Can you check if Check the logs and tell me if we are doing good?"
+            )
+            llm = FakeLlama(f"EDIT: {merged}")
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                llm_polish_sidecar.polish(llm, 20, transcript)
+
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(event["text"], merged)
+
     def test_constrained_one_call_malformed_output_is_reported(self):
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):
             llm = FakeLlama("Maybe this is clean.")
