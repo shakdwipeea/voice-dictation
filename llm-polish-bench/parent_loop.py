@@ -13,6 +13,7 @@ in tmux (session: parent-agent).
 from __future__ import annotations
 import json, os, re, subprocess, sys, time
 from pathlib import Path
+import parent_agent as pa
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "llm-polish-bench" / "out" / "parented-loop"
@@ -179,7 +180,7 @@ def main():
     out = OUT
     out.mkdir(parents=True, exist_ok=True)
     seen_round = 0
-    print(f"[parent-agent] watching {out} (poll={POLL_SECS}s, codex/gpt-5.5 decisions)", flush=True)
+    print(f"[parent-agent] watching {out} (poll={POLL_SECS}s, pi -p headless decisions)", flush=True)
     while True:
         state = read_json(out / "state.json")
         if not state:
@@ -191,8 +192,23 @@ def main():
             last = read_json(out / f"round{rnd:04d}.json") if rnd else None
             prompt = build_prompt(state, last, review)
             t0 = time.time()
-            print(f"\n[parent-agent] round {rnd} complete (review={'yes' if review else 'no'}); consulting gpt-5.5...", flush=True)
-            dec = codex_decide(prompt)
+            print(f"\n[parent-agent] round {rnd} complete (review={'yes' if review else 'no'}); consulting pi -p...", flush=True)
+            # map state -> parent_agent.parent_review(history, best, current, baseline)
+            history = state.get("history", []) or []
+            ba = state.get("best_adjudication") or {}
+            best = None
+            if history:
+                last_h = history[-1]
+                best = {"round": last_h.get("round"),
+                        "quality_score": state.get("best_quality"),
+                        "violations": (len([v for v in ba.get("per_row", []) if v.get("content_preserved") == "no" and v.get("severity") in ("major", "critical")]) if ba else None),
+                        "exact_pct": last_h.get("exact_pct"),
+                        "p50": last_h.get("p50"),
+                        "sp_words": last_h.get("sp_words"),
+                        "fs_n": last_h.get("fs_n"),
+                        "verdict": ba.get("verdict") if ba else last_h.get("verdict")}
+            current = best or history[-1] if history else None
+            dec, raw = pa.parent_review(history, best, current, state.get("baseline"))
             dt = time.time() - t0
             if dec:
                 # write directive.json atomically; Lane A will consume it
@@ -210,7 +226,7 @@ def main():
                           f"Staying alive to confirm Lane A exits; will idle.", flush=True)
                     # keep watching; if Lane A actually stops, we see no new rounds. stay up.
             else:
-                print(f"[parent-agent] codex returned no directive after {dt:.1f}s; "
+                print(f"[parent-agent] pi returned no directive after {dt:.1f}s ({str(raw)[:120]}); "
                       f"will retry on next poll", flush=True)
         time.sleep(POLL_SECS)
 

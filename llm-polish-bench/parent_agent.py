@@ -63,28 +63,57 @@ def build_parent_context(history, best, current, baseline) -> str:
     return "\n".join(lines)
 
 def _parse_fenced_json(text: str) -> dict | None:
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if not m:
-        m = re.search(r"(^\{.*\})$", text.strip(), re.DOTALL | re.MULTILINE)
-    if not m:
+    # balanced-brace extraction (non-greedy regex truncates at first }); handles
+    # both fenced ```json blocks and bare JSON objects.
+    blocks = list(re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL))
+    cand = blocks[-1].group(1).strip() if blocks else text.strip()
+    i = cand.find("{")
+    if i < 0:
         return None
-    try:
-        return json.loads(m.group(1))
-    except Exception:
-        return None
+    depth = 0; in_str = False; esc = False; out = []
+    for ch in cand[i:]:
+        out.append(ch)
+        if in_str:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == '"': in_str = False
+            continue
+        if ch == '"': in_str = True
+        elif ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads("".join(out))
+                except Exception:
+                    return None
+    return None
 
 DEFAULTS = []  # use pi's configured provider/model (neuralwatt/glm-5.2/high)
+
+import time as _time
 
 def parent_review(history, best, current, baseline, timeout: int = 360) -> tuple[dict | None, str]:
     """Invoke `pi -p` headless. Returns (directive_dict_or_None, raw_stdout)."""
     ctx = build_parent_context(history, best, current, baseline)
     prompt = PARENT_SYSTEM + "\n\n" + ctx + "\n\nOutput ONLY a single fenced ```json block."
-    try:
-        proc = subprocess.run(
-            ["pi", "-p", "--no-tools", "--no-session", *DEFAULTS],
-            input=prompt, capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "TIMEOUT"
-    out = proc.stdout
-    return _parse_fenced_json(out), out
+    last_err = ""
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(
+                ["pi", "-p", "--no-tools", "--no-session", *DEFAULTS],
+                input=prompt, capture_output=True, text=True, timeout=timeout,
+            )
+            out = proc.stdout
+            parsed = _parse_fenced_json(out)
+            if parsed and parsed.get("decision") in ("continue", "change_strategy", "promote_and_stop", "stop"):
+                return parsed, out
+            last_err = f"no valid decision in pi output (head={out[:200]})"
+        except subprocess.TimeoutExpired:
+            last_err = "pi -p timeout"
+        except KeyboardInterrupt:
+            last_err = "pi -p interrupted by SIGINT (attach-peek); retry"
+        except Exception as e:
+            last_err = f"pi -p error: {str(e)[:160]}"
+        _time.sleep(2 ** attempt)
+    return None, last_err

@@ -48,13 +48,14 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "more context, never refuse, never explain, never say the text is incomplete or "
     "ask for the full sentence. Always output exactly OK or EDIT: <text>. No chat, "
     "no questions, no narration.\n\n"
-    "A disfluency REQUIRES redundant or superseded speech: the speaker said the same "
-    "thing more than once, or started a phrase, abandoned it, and re-spoke it. The "
-    "kinds are: redundant repetitions ('the the', 'and also and also'), false starts "
-    "(an abandoned beginning that is then re-spoken), and retraction cues mid-utterance "
-    "such as 'actually', 'i mean', 'no wait', 'sorry', 'or rather', 'let me "
-    "rephrase', 'scratch that', 'never mind'. Judge disfluency by this STRUCTURE — "
-    "redundancy/abandonment — NOT by whether a cue word is present.\n\n"
+    "A disfluency REQUIRES redundant or superseded speech, OR pure speech padding. "
+    "The kinds are: redundant repetitions ('the the', 'and also and also'), false "
+    "starts (an abandoned beginning that is then re-spoken), retraction cues "
+    "mid-utterance such as 'actually', 'i mean', 'no wait', 'sorry', 'or rather', "
+    "'let me rephrase', 'scratch that', 'never mind', AND speech fillers ('um', "
+    "'uh', 'er', 'hmm', 'well', 'so', 'right', 'you know') that pad the utterance "
+    "without adding meaning. Judge disfluency by this STRUCTURE — "
+    "redundancy/abandonment/padding — NOT by whether a cue word is present.\n\n"
     "If there is NO such redundancy, the text is CLEAN, even if it has grammar, "
     "tense, agreement, capitalization, or word-order errors: output OK. A wrong verb "
     "form ('he send'), a lowercase name or day ('bob', 'friday'), a missing or extra "
@@ -79,11 +80,15 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "add or remove punctuation or restructure clauses. Your edit is word-for-word "
     "input minus only the superseded phrase and its cue. A grammar or capitalization "
     "error in the input is NOT a disfluency; keep it as-is even when you edit around "
-    "it. Do NOT remove fillers (already removed). Do NOT improve already-clean text. "
+    "it. Remove leading or interior speech fillers ('um', 'uh', 'er', 'hmm', "
+    "'well', 'so', 'right', 'you know') when they only pad the utterance and add no "
+    "meaning; drop them and their trailing comma. Do NOT improve already-clean text. "
     "Do NOT reformat spoken digits, codes, emails, URLs, phone numbers, or account "
     "info; keep them literally as spoken.\n\n"
-    "'Actually,' or 'Wait,' at the very START of the utterance is emphasis, not a "
-    "correction; there is nothing before it to retract, so output OK.\n\n"
+    "'Actually,' or 'Wait,' or 'No,' at the very START of the utterance is "
+    "emphasis or a forceful counter, not a correction; there is nothing before it "
+    "to retract, so output OK. Likewise casual abbreviations like 'idk', 'tbh', "
+    "'lol', 'imo' are words (content), never fillers; keep them.\n\n"
     "If the text is already clean, output exactly OK. If there is a disfluency, "
     "output exactly EDIT: followed by the merged transcript. Never output EDIT when "
     "the result would be identical to the input. No explanations."
@@ -215,6 +220,19 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
     (
         "Send the file to bob. Sorry, send it to alice instead.",
         "EDIT: Send it to alice instead.",
+    ),
+    # --- Filler stripping: leading filler adds no meaning; drop it. ---
+    (
+        "Um, I went to the store.",
+        "EDIT: I went to the store.",
+    ),
+    (
+        "I, uh, think it is fine.",
+        "EDIT: I think it is fine.",
+    ),
+    (
+        "Well, um, let me see.",
+        "EDIT: Let me see.",
     ),
 )
 
