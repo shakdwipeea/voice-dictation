@@ -208,6 +208,12 @@ def _codex_complete(prompt: str, reasoning_effort: str = "medium", retries: int 
             last = f"schema missing keys after normalize: {missing}"
         except subprocess.TimeoutExpired:
             last = "codex exec timeout"
+        except KeyboardInterrupt:
+            # someone attached to the tmux pane and hit Ctrl-C to look around.
+            # That SIGINTs the foreground codex call, NOT the loop. Treat as a
+            # retryable interruption so a peek doesn't kill the round.
+            last = "codex interrupted by SIGINT (pane peek); retrying"
+            print(f"  [codex] interrupted by SIGINT (likely attach-peek); retry {i+1}/{retries}", flush=True)
         except Exception as e:
             last = str(e)[:200]
         time.sleep(2 ** i)
