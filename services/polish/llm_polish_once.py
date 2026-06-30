@@ -14,7 +14,6 @@ import os
 import re
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 
 from llama_cpp import Llama
@@ -278,82 +277,6 @@ MODEL_RELATIVE = (
     "google_gemma-4-E2B-it-Q4_K_M.gguf"
 )
 
-EXPLICIT_CORRECTION_MARKERS = (
-    "actually",
-    "i mean",
-    "no wait",
-    "wait no",
-    "scratch that",
-    "strike that",
-)
-
-NEGATIONS = ("no", "not", "never", "without")
-CONTENT_DROP_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "but",
-    "by",
-    "for",
-    "from",
-    "how",
-    "i",
-    "in",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "this",
-    "to",
-    "was",
-    "we",
-    "were",
-    "with",
-    "you",
-}
-FILLER_CUE_WORDS = {"um", "uh", "erm", "er"}
-MEANINGFUL_LEADING_MARKERS = ("actually", "wait")
-DIGIT_WORDS = {
-    "zero",
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
-    "twenty",
-    "thirty",
-    "forty",
-    "fifty",
-    "sixty",
-    "seventy",
-    "eighty",
-    "ninety",
-    "hundred",
-    "thousand",
-}
-
-
 def repo_root() -> Path:
     if os.environ.get("SUNOTO_ROOT"):
         return Path(os.environ["SUNOTO_ROOT"]).resolve()
@@ -583,146 +506,11 @@ def parse_decision_output(raw: str) -> str | None:
     return None
 
 
-def contains_explicit_correction(text: str) -> bool:
-    haystack = " ".join(word_tokens(text))
-    return any(marker in haystack for marker in EXPLICIT_CORRECTION_MARKERS)
-
-
-def contains_plain_no_correction(text: str) -> bool:
-    return bool(re.search(r"\b[A-Za-z0-9][^.!?]*,\s*no,\s*(?!that\b|this\b|what\b)", text, re.I))
-
-
-def contains_no_correction(text: str) -> bool:
-    haystack = " ".join(word_tokens(text))
-    return "no wait" in haystack or "wait no" in haystack or contains_plain_no_correction(text)
-
-
-def has_spoken_digits(text: str) -> bool:
-    return any(token in DIGIT_WORDS for token in word_tokens(text))
-
-
-def introduces_ascii_digit_compaction(raw: str, output: str) -> bool:
-    if not has_spoken_digits(raw):
-        return False
-    return bool(re.search(r"\d", output)) and not bool(re.search(r"\d", raw))
-
-
-def introduces_formatted_target(raw: str, output: str) -> bool:
-    checks = (
-        r"\b\S+@\S+\.\S+\b",
-        r"https?://\S+|www\.\S+",
-        r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
-    )
-    return any(re.search(pattern, output) and not re.search(pattern, raw) for pattern in checks)
-
-
-def introduces_spoken_marker_formatting(raw: str, output: str) -> bool:
-    raw_tokens = set(word_tokens(raw))
-    if "at" in raw_tokens and "@" in output and "@" not in raw:
-        return True
-    if "dot" in raw_tokens:
-        raw_dotted = set(re.findall(r"\b[\w-]+\.[\w.-]+\b", raw))
-        output_dotted = set(re.findall(r"\b[\w-]+\.[\w.-]+\b", output))
-        if output_dotted - raw_dotted:
-            return True
-    return False
-
-
-def introduces_code_formatting(raw: str, output: str) -> bool:
-    if "`" in output and "`" not in raw:
-        return True
-    return '"' in output and '"' not in raw and re.search(r"\bprint\b|\bdef\b|\bclass\b", raw, re.I)
-
-
-def word_count(text: str, word: str) -> int:
-    return sum(1 for token in word_tokens(text) if token == word)
-
-
-def drops_negation_unsafely(raw: str, output: str) -> bool:
-    for word in ("not", "never", "without"):
-        if word_count(output, word) < word_count(raw, word):
-            return True
-    if word_count(output, "no") >= word_count(raw, "no"):
-        return False
-    return not contains_no_correction(raw)
-
-
-def drops_correction_no(raw: str, output: str) -> bool:
-    return (
-        word_count(output, "no") < word_count(raw, "no")
-        and not drops_negation_unsafely(raw, output)
-        and contains_no_correction(raw)
-    )
-
-
-def significant_content_words(text: str) -> list[str]:
-    return [
-        token
-        for token in word_tokens(text)
-        if len(token) > 2 and token not in CONTENT_DROP_STOPWORDS
-    ]
-
-
-def drops_content_unsafely(raw: str, output: str) -> bool:
-    if contains_explicit_correction(raw) or contains_no_correction(raw):
-        return False
-    if any(token in FILLER_CUE_WORDS for token in word_tokens(raw)):
-        return False
-
-    raw_words = significant_content_words(raw)
-    if len(raw_words) < 4:
-        return False
-
-    output_counts = Counter(significant_content_words(output))
-    missing = 0
-    for word in raw_words:
-        if output_counts[word] > 0:
-            output_counts[word] -= 1
-        else:
-            missing += 1
-
-    return missing >= 2 and (missing / len(raw_words)) >= 0.35
-
-
-def drops_meaningful_leading_marker(raw: str, output: str) -> bool:
-    raw_text = raw.strip().lower()
-    for marker in MEANINGFUL_LEADING_MARKERS:
-        if re.match(rf"^{marker}\s*,", raw_text) and word_count(output, marker) < word_count(raw, marker):
-            return True
-    return False
-
-
-def validate(raw: str, output: str) -> dict[str, list[str]]:
-    hard_unsafe: list[str] = []
-    review_flags: list[str] = []
-    if not output.strip():
-        hard_unsafe.append("empty_output")
-    if len(output) > int(len(raw) * 1.25) + 20:
-        review_flags.append("too_long")
-    if introduces_ascii_digit_compaction(raw, output):
-        hard_unsafe.append("digit_compaction")
-    if introduces_formatted_target(raw, output):
-        hard_unsafe.append("formatted_target")
-    if introduces_spoken_marker_formatting(raw, output):
-        hard_unsafe.append("spoken_marker_formatting")
-    if introduces_code_formatting(raw, output):
-        hard_unsafe.append("code_formatting")
-    if drops_negation_unsafely(raw, output):
-        hard_unsafe.append("negation_dropped")
-    elif drops_correction_no(raw, output):
-        review_flags.append("correction_no_dropped")
-    if drops_meaningful_leading_marker(raw, output):
-        hard_unsafe.append("marker_dropped")
-    if drops_content_unsafely(raw, output):
-        hard_unsafe.append("content_dropped")
-    return {"hard_unsafe": hard_unsafe, "review_flags": review_flags}
-
-
 def main() -> int:
     transcript = sys.stdin.read().strip()
     path = model_path()
     if not transcript:
-        print(json.dumps({"text": "", "hard_unsafe": ["empty_output"], "review_flags": []}))
+        print(json.dumps({"text": ""}))
         return 0
     if not path.is_file():
         raise SystemExit(f"model file not found: {path}")
@@ -750,8 +538,13 @@ def main() -> int:
         repeat_penalty=float(os.environ.get("SUNOTO_LLM_POLISH_REPEAT_PENALTY", "1.05")),
     )
     raw = response["choices"][0]["message"].get("content") or ""
+    # The LLM is authoritative for the merge: trust its output directly. The
+    # only robustness guard is the empty-output fallback below — there is NO
+    # deterministic content/digit/negation validator (those heuristics were
+    # too brittle on real speech and blocked legitimate merges).
     text = clean_model_output(raw, transcript, mode)
-    validation = validate(transcript, text)
+    if not text.strip():
+        text = transcript
     print(
         json.dumps(
             {
@@ -759,7 +552,6 @@ def main() -> int:
                 "raw_output": raw.strip(),
                 "latency_ms": round((time.time() - started) * 1000),
                 "output_mode": mode,
-                **validation,
             },
             separators=(",", ":"),
         )

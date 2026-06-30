@@ -37,7 +37,6 @@ pub struct LlmPolishOutcome {
     pub text: String,
     pub raw_output: Option<String>,
     pub latency_ms: u64,
-    pub review_flags: Vec<String>,
     pub diagnostics: LlmPolishDiagnostics,
 }
 
@@ -63,7 +62,6 @@ pub struct LlmPolishDiagnostics {
     pub decision_label: Option<String>,
     pub decision_malformed: Option<bool>,
     pub rewrite_called: Option<bool>,
-    pub validation_rejected: Option<bool>,
     pub decision: Option<LlmPolishCallDiagnostics>,
     pub rewrite: Option<LlmPolishCallDiagnostics>,
     pub llama_perf: Option<LlamaPerf>,
@@ -113,10 +111,6 @@ pub struct LlmPolishCallDiagnostics {
     pub cache_entries: Option<u64>,
     #[serde(default)]
     pub cache_size_bytes: Option<u64>,
-    #[serde(default)]
-    pub hard_unsafe: Vec<String>,
-    #[serde(default)]
-    pub review_flags: Vec<String>,
     #[serde(default)]
     pub llama_perf: Option<LlamaPerf>,
 }
@@ -174,10 +168,6 @@ enum LlmPolishEvent {
         #[serde(default)]
         raw_output: Option<String>,
         #[serde(default)]
-        hard_unsafe: Vec<String>,
-        #[serde(default)]
-        review_flags: Vec<String>,
-        #[serde(default)]
         polish_mode: Option<String>,
         #[serde(default)]
         output_mode: Option<String>,
@@ -217,8 +207,6 @@ enum LlmPolishEvent {
         decision_malformed: Option<bool>,
         #[serde(default)]
         rewrite_called: Option<bool>,
-        #[serde(default)]
-        validation_rejected: Option<bool>,
         #[serde(default)]
         decision: Option<LlmPolishCallDiagnostics>,
         #[serde(default)]
@@ -376,8 +364,6 @@ impl LlmPolishClient {
                         text,
                         latency_ms,
                         raw_output,
-                        hard_unsafe,
-                        review_flags,
                         polish_mode,
                         output_mode,
                         input_chars,
@@ -398,7 +384,6 @@ impl LlmPolishClient {
                         decision_label,
                         decision_malformed,
                         rewrite_called,
-                        validation_rejected,
                         decision,
                         rewrite,
                         llama_perf,
@@ -407,17 +392,10 @@ impl LlmPolishClient {
                         if text.is_empty() {
                             return Err("LLM polish returned empty output".to_string());
                         }
-                        if !hard_unsafe.is_empty() {
-                            return Err(format!(
-                                "LLM polish hard validation flags: {}",
-                                hard_unsafe.join(",")
-                            ));
-                        }
                         return Ok(LlmPolishOutcome {
                             text,
                             raw_output,
                             latency_ms,
-                            review_flags,
                             diagnostics: LlmPolishDiagnostics {
                                 polish_mode,
                                 output_mode,
@@ -439,7 +417,6 @@ impl LlmPolishClient {
                                 decision_label,
                                 decision_malformed,
                                 rewrite_called,
-                                validation_rejected,
                                 decision,
                                 rewrite,
                                 llama_perf,
@@ -642,12 +619,9 @@ mod tests {
                 "output_mode":"two_step",
                 "polish_mode":"two_step",
                 "completion_tokens":11,
-                "hard_unsafe":[],
-                "review_flags":[],
                 "decision_label":"EDIT",
                 "decision_malformed":false,
                 "rewrite_called":true,
-                "validation_rejected":false,
                 "decision":{
                     "decision":"EDIT",
                     "raw_output":"EDIT",

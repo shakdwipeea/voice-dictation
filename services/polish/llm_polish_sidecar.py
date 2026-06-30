@@ -43,7 +43,6 @@ from llm_polish_once import (
     parse_decision_output,
     polish_mode,
     rewrite_messages_for,
-    validate,
     word_tokens,
 )
 
@@ -386,7 +385,11 @@ def completion_payload(llm: Llama, transcript: str, label: str) -> dict[str, obj
     perf = llama_timings(llm)
     raw = response["choices"][0]["message"].get("content") or ""
     text = clean_model_output(raw, transcript, mode)
-    validation = validate(transcript, text)
+    # LLM is authoritative for the merge; only fall back to the raw transcript
+    # when the model emitted nothing. No deterministic content/digit/negation
+    # validator (too brittle on real speech, blocked legitimate merges).
+    if not text.strip():
+        text = transcript
     usage = response.get("usage") or {}
     payload = {
         "text": text,
@@ -401,7 +404,6 @@ def completion_payload(llm: Llama, transcript: str, label: str) -> dict[str, obj
         "cleaned_chars": len(text),
         **usage_payload(response),
         **cache_diagnostics(llm),
-        **validation,
         "llama_perf": perf,
     }
     log_completion(label, payload)
@@ -423,11 +425,10 @@ def constrained_payload(llm: Llama, transcript: str, label: str) -> dict[str, ob
     perf = llama_timings(llm)
     raw = response["choices"][0]["message"].get("content") or ""
     text, decision_label, malformed = clean_constrained_output(raw, transcript)
-    validation = validate(transcript, text)
-    validation_rejected = bool(validation.get("hard_unsafe"))
-    if validation_rejected:
+    # LLM is authoritative; only fall back to the raw transcript when the model
+    # emitted nothing. No deterministic content/digit/negation validator.
+    if not text.strip():
         text = transcript
-        validation = validate(transcript, text)
     payload: dict[str, object] = {
         "text": text,
         "raw_output": raw.strip(),
@@ -443,10 +444,8 @@ def constrained_payload(llm: Llama, transcript: str, label: str) -> dict[str, ob
         "decision_label": "UNCHANGED" if decision_label == "OK" else decision_label,
         "decision_malformed": malformed,
         "rewrite_called": decision_label == "EDIT",
-        "validation_rejected": validation_rejected,
         **usage_payload(response),
         **cache_diagnostics(llm),
-        **validation,
         "llama_perf": perf,
     }
     log_completion(label, payload)
@@ -479,7 +478,7 @@ def decision_payload(llm: Llama, transcript: str, label: str) -> dict[str, objec
         **cache_diagnostics(llm),
         "llama_perf": perf,
     }
-    log_completion(label, {**payload, "hard_unsafe": [], "review_flags": []})
+    log_completion(label, payload)
     log_timings(label, perf)
     return payload
 
@@ -493,7 +492,8 @@ def rewrite_payload(llm: Llama, transcript: str, label: str) -> dict[str, object
     perf = llama_timings(llm)
     raw = response["choices"][0]["message"].get("content") or ""
     text = clean_model_output(raw, transcript, "full")
-    validation = validate(transcript, text)
+    if not text.strip():
+        text = transcript
     payload: dict[str, object] = {
         "text": text,
         "raw_output": raw.strip(),
@@ -507,7 +507,6 @@ def rewrite_payload(llm: Llama, transcript: str, label: str) -> dict[str, object
         "cleaned_chars": len(text),
         **usage_payload(response),
         **cache_diagnostics(llm),
-        **validation,
         "llama_perf": perf,
     }
     log_completion(label, payload)
@@ -520,26 +519,16 @@ def two_step_payload(llm: Llama, transcript: str, label: str) -> dict[str, objec
     decision = decision_payload(llm, transcript, f"{label} decision")
     decision_label = decision.get("decision")
     rewrite: dict[str, object] | None = None
-    validation_rejected = False
 
     if decision_label == "UNCHANGED":
         text = transcript
         raw_output = "UNCHANGED"
-        validation = validate(transcript, text)
     else:
         rewrite = rewrite_payload(llm, transcript, f"{label} rewrite")
         rewrite_text = str(rewrite.get("text") or "")
-        rewrite_hard_unsafe = rewrite.get("hard_unsafe")
-        if isinstance(rewrite_hard_unsafe, list) and rewrite_hard_unsafe:
-            validation_rejected = True
-            text = transcript
-            validation = validate(transcript, text)
-        else:
-            text = rewrite_text
-            validation = {
-                "hard_unsafe": rewrite.get("hard_unsafe") or [],
-                "review_flags": rewrite.get("review_flags") or [],
-            }
+        # LLM is authoritative; fall back to the raw transcript only when the
+        # rewrite emitted nothing (no deterministic validator).
+        text = rewrite_text if rewrite_text.strip() else transcript
         raw_output = prefixed_edited_raw(str(rewrite.get("raw_output") or ""), rewrite_text)
 
     call_payloads = [decision, rewrite]
@@ -568,16 +557,13 @@ def two_step_payload(llm: Llama, transcript: str, label: str) -> dict[str, objec
         "decision_label": decision_label,
         "decision_malformed": bool(decision.get("decision_malformed")),
         "rewrite_called": rewrite is not None,
-        "validation_rejected": validation_rejected,
         "decision": decision,
         "rewrite": rewrite,
-        **validation,
     }
     log(
         f"{label}: two_step total={payload['latency_ms']}ms "
         f"decision={decision_label or 'MALFORMED'} "
-        f"rewrite_called={payload['rewrite_called']} "
-        f"validation_rejected={validation_rejected}"
+        f"rewrite_called={payload['rewrite_called']}"
     )
     return payload
 
@@ -738,12 +724,9 @@ def warmup(llm: Llama, texts: list[str]) -> None:
                     "cache_entries": payload["cache_entries"],
                     "cache_size_bytes": payload["cache_size_bytes"],
                     "finish_reason": payload["finish_reason"],
-                    "hard_unsafe": payload["hard_unsafe"],
-                    "review_flags": payload["review_flags"],
                     "decision_label": payload.get("decision_label"),
                     "decision_malformed": payload.get("decision_malformed"),
                     "rewrite_called": payload.get("rewrite_called"),
-                    "validation_rejected": payload.get("validation_rejected"),
                     "llama_perf": payload.get("llama_perf"),
                 }
             )

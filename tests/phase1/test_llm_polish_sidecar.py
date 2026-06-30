@@ -213,7 +213,6 @@ class LlmPolishWarmupTests(unittest.TestCase):
             self.assertEqual(event["decision_label"], "EDIT")
             self.assertTrue(event["rewrite_called"])
             self.assertFalse(event["decision_malformed"])
-            self.assertFalse(event["validation_rejected"])
             self.assertEqual(event["rewrite"]["raw_output"], "Please send this to Priya tomorrow.")
             self.assertEqual(len(llm.calls), 2)
 
@@ -236,7 +235,10 @@ class LlmPolishWarmupTests(unittest.TestCase):
             self.assertEqual(event["text"], "Please send this to Priya tomorrow.")
             self.assertEqual(len(llm.calls), 2)
 
-    def test_two_step_validation_rejection_returns_original_transcript(self):
+    def test_two_step_email_reformat_passes_through_without_validator(self):
+        # No deterministic validator: the LLM is authoritative. Spoken email
+        # tokens reformatted to "jane.smith@example.com" by the model are NOT
+        # blocked (the prompt, not a gate, owns the "keep spoken" rule).
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "two_step"}):
             transcript = "Her email is jane dot smith at example dot com."
             llm = FakeLlama(["EDIT", "Her email is jane.smith@example.com."])
@@ -246,11 +248,10 @@ class LlmPolishWarmupTests(unittest.TestCase):
                 llm_polish_sidecar.polish(llm, 12, transcript)
 
             event = json.loads(stdout.getvalue())
-            self.assertEqual(event["text"], transcript)
+            self.assertEqual(event["text"], "Her email is jane.smith@example.com.")
             self.assertTrue(event["rewrite_called"])
-            self.assertTrue(event["validation_rejected"])
-            self.assertEqual(event["hard_unsafe"], [])
-            self.assertIn("formatted_target", event["rewrite"]["hard_unsafe"])
+            self.assertNotIn("validation_rejected", event)
+            self.assertNotIn("hard_unsafe", event)
 
     def test_constrained_one_call_ok_returns_original_transcript(self):
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):
@@ -301,9 +302,11 @@ class LlmPolishWarmupTests(unittest.TestCase):
             self.assertEqual(event["text"], transcript)
             self.assertEqual(event["decision_label"], "UNCHANGED")
             self.assertFalse(event["rewrite_called"])
-            self.assertFalse(event["validation_rejected"])
 
-    def test_constrained_one_call_content_drop_is_rejected(self):
+    def test_constrained_one_call_edit_passes_through_without_validator(self):
+        # No deterministic validator: the LLM is authoritative. A real content
+        # drop that a heuristic would have blocked now passes through (the
+        # prompt, not a gate, is responsible for not dropping content).
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):
             transcript = "The dashboard is ready and the response is fast."
             llm = FakeLlama("EDIT: The response is fast.")
@@ -313,13 +316,14 @@ class LlmPolishWarmupTests(unittest.TestCase):
                 llm_polish_sidecar.polish(llm, 16, transcript)
 
             event = json.loads(stdout.getvalue())
-            self.assertEqual(event["text"], transcript)
+            self.assertEqual(event["text"], "The response is fast.")
             self.assertEqual(event["decision_label"], "EDIT")
             self.assertTrue(event["rewrite_called"])
-            self.assertTrue(event["validation_rejected"])
-            self.assertEqual(event["hard_unsafe"], [])
+            self.assertNotIn("validation_rejected", event)
+            self.assertNotIn("hard_unsafe", event)
 
-    def test_constrained_one_call_meaningful_marker_drop_is_rejected(self):
+    def test_constrained_one_call_meaningful_marker_edit_passes_through(self):
+        # No deterministic marker gate: "Wait," dropped by the LLM passes through.
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):
             transcript = "Wait, are you sure?"
             llm = FakeLlama("EDIT: Are you sure?")
@@ -329,10 +333,10 @@ class LlmPolishWarmupTests(unittest.TestCase):
                 llm_polish_sidecar.polish(llm, 17, transcript)
 
             event = json.loads(stdout.getvalue())
-            self.assertEqual(event["text"], transcript)
+            self.assertEqual(event["text"], "Are you sure?")
             self.assertEqual(event["decision_label"], "EDIT")
             self.assertTrue(event["rewrite_called"])
-            self.assertTrue(event["validation_rejected"])
+            self.assertNotIn("validation_rejected", event)
 
     def test_constrained_one_call_malformed_output_is_reported(self):
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_MODE": "constrained_one_call"}):

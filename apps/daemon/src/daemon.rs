@@ -1005,18 +1005,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 settings.llm_polish_timeout_ms,
                             ) {
                                 Ok(outcome) => {
-                                    let review = if outcome.review_flags.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(
-                                            ", review flags: {}",
-                                            outcome.review_flags.join(",")
-                                        )
-                                    };
                                     logging::info(&format!(
-                                        "session {session_id}: llm polish accepted in {}ms{}{}: {:?} -> {:?}",
+                                        "session {session_id}: llm polish accepted in {}ms{}: {:?} -> {:?}",
                                         outcome.latency_ms,
-                                        review,
                                         format_llm_diagnostics(&outcome.diagnostics),
                                         llm_input,
                                         outcome.text
@@ -1379,7 +1370,6 @@ fn control_polish_response(
                         "output": llm_output,
                         "raw_output": outcome.raw_output,
                         "latency_ms": outcome.latency_ms,
-                        "review_flags": outcome.review_flags,
                         "diagnostics": llm_diagnostics_json(&outcome.diagnostics),
                     });
                     output = outcome.text;
@@ -1436,7 +1426,6 @@ fn llm_diagnostics_json(diagnostics: &llm_polish::LlmPolishDiagnostics) -> serde
         "decision_label": diagnostics.decision_label,
         "decision_malformed": diagnostics.decision_malformed,
         "rewrite_called": diagnostics.rewrite_called,
-        "validation_rejected": diagnostics.validation_rejected,
         "decision": diagnostics
             .decision
             .as_ref()
@@ -1483,8 +1472,6 @@ fn llm_call_diagnostics_json(call: &llm_polish::LlmPolishCallDiagnostics) -> ser
         "cache_saved_tokens": call.cache_saved_tokens,
         "cache_entries": call.cache_entries,
         "cache_size_bytes": call.cache_size_bytes,
-        "hard_unsafe": call.hard_unsafe,
-        "review_flags": call.review_flags,
         "llama_perf": call.llama_perf.as_ref().map(llama_perf_json),
     })
 }
@@ -1555,9 +1542,6 @@ fn format_llm_diagnostics(diagnostics: &llm_polish::LlmPolishDiagnostics) -> Str
     }
     if let Some(rewrite_called) = diagnostics.rewrite_called {
         parts.push(format!("rewrite_called={rewrite_called}"));
-    }
-    if diagnostics.validation_rejected == Some(true) {
-        parts.push("validation_rejected=true".to_string());
     }
     if let Some(decision) = diagnostics.decision.as_ref() {
         if let Some(ms) = decision.latency_ms {
