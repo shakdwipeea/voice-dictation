@@ -642,9 +642,7 @@ def keepalive(llm: Llama) -> None:
     base = _keepalive_text or KEEPALIVE_FALLBACK_TEXT
     _keepalive_counter += 1
     text = f"{base} {_keepalive_counter}."
-    started = time.time()
     begin_cache_request(llm)
-    reset_llama_timings(llm)
     try:
         # No grammar constraint on the ping: its output is discarded, and
         # skipping grammar compilation keeps each ping short (smaller keepalive
@@ -659,14 +657,9 @@ def keepalive(llm: Llama) -> None:
     except Exception as error:
         log(f"keepalive error: {error}")
         return
-    perf = llama_timings(llm)
-    latency_ms = round((time.time() - started) * 1000)
-    log(
-        f"keepalive: latency={latency_ms}ms "
-        f"pe={perf.get('prompt_eval_ms')}ms/{perf.get('prompt_eval_tokens')}tok "
-        f"ev={perf.get('eval_ms')}ms/{perf.get('eval_tokens')}tok "
-        f"reused={perf.get('reused_tokens')}"
-    )
+    # Keepalive pings are internal warm-up, not dictation traffic: don't log
+    # them (they would flood the daemon log on every interval). Keepalive
+    # failures are still surfaced above.
 
 
 def keepalive_loop(llm: Llama, interval: float) -> None:
