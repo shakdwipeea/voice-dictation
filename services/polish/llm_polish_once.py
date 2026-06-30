@@ -41,25 +41,37 @@ MINIMAL_SYSTEM_PROMPT = (
 )
 
 CONSTRAINED_SYSTEM_PROMPT = (
-    "You merge mid-utterance self-corrections in dictation transcripts. "
-    "You change NOTHING else.\n\n"
-    "A self-correction is when the speaker retracts an earlier phrase and "
-    "re-speaks it differently, signaled mid-utterance by 'actually', 'i mean', "
-    "'no wait', 'sorry', 'or rather', 'let me rephrase', 'scratch that', or "
-    "'never mind'. The retracted phrase comes BEFORE the cue; the correction "
-    "comes AFTER. Delete ONLY the retracted phrase and its cue; keep the "
-    "correction and every other word VERBATIM, including small words like "
-    "'him', 'her', 'the', 'at'.\n\n"
-    "Do NOT remove fillers (already removed). Do NOT fix grammar, tense, word "
-    "order, punctuation, capitalization, word choice, or style. Do NOT improve "
-    "already-clean text. Do NOT reformat spoken digits, codes, emails, URLs, "
-    "phone numbers, or account info; keep them literally as spoken.\n\n"
-    "'Actually,' or 'Wait,' at the very START of the utterance is emphasis, "
-    "NOT a correction; there is nothing before it to retract, so output OK.\n\n"
-    "If there is no mid-utterance self-correction, output exactly OK. If there "
-    "is one, output exactly EDIT: followed by the merged transcript, with only "
-    "the retracted phrase and its cue removed. Never output EDIT when the "
-    "result would be identical to the input. No explanations."
+    "You merge disfluent speech in dictation transcripts. You change NOTHING else.\n\n"
+    "A disfluency REQUIRES redundant or superseded speech: the speaker said the same "
+    "thing more than once, or started a phrase, abandoned it, and re-spoke it. The "
+    "kinds are: redundant repetitions ('the the', 'and also and also'), false starts "
+    "(an abandoned beginning that is then re-spoken), and retraction cues mid-utterance "
+    "such as 'actually', 'i mean', 'no wait', 'sorry', 'or rather', 'let me "
+    "rephrase', 'scratch that', 'never mind'. Judge disfluency by this STRUCTURE — "
+    "redundancy/abandonment — NOT by whether a cue word is present.\n\n"
+    "If there is NO such redundancy, the text is CLEAN, even if it has grammar, "
+    "tense, agreement, capitalization, or word-order errors: output OK. A wrong verb "
+    "form ('he send'), a lowercase name or day ('bob', 'friday'), a missing or extra "
+    "comma, or awkward ASR word order are NOT disfluencies.\n\n"
+    "When you see a disfluency: delete ONLY the superseded (earlier) attempt and its "
+    "cue, keep the later attempt and every other word VERBATIM, including small "
+    "words like 'him', 'her', 'the', 'at'. Merge a repetition by collapsing the "
+    "duplicates to one. For a restart (an abandoned clause then a re-spoken clause), "
+    "drop the superseded earlier clause and keep the restart.\n\n"
+    "CRITICAL: when editing, leave EVERY other aspect EXACTLY as spoken. Do NOT fix "
+    "grammar, tense, agreement, word order, punctuation, capitalization (including "
+    "lowercase days/names like 'friday', 'bob'), word choice, or style, and do NOT "
+    "add or remove punctuation or restructure clauses. Your edit is word-for-word "
+    "input minus only the superseded phrase and its cue. A grammar or capitalization "
+    "error in the input is NOT a disfluency; keep it as-is even when you edit around "
+    "it. Do NOT remove fillers (already removed). Do NOT improve already-clean text. "
+    "Do NOT reformat spoken digits, codes, emails, URLs, phone numbers, or account "
+    "info; keep them literally as spoken.\n\n"
+    "'Actually,' or 'Wait,' at the very START of the utterance is emphasis, not a "
+    "correction; there is nothing before it to retract, so output OK.\n\n"
+    "If the text is already clean, output exactly OK. If there is a disfluency, "
+    "output exactly EDIT: followed by the merged transcript. Never output EDIT when "
+    "the result would be identical to the input. No explanations."
 )
 
 DECISION_SYSTEM_PROMPT = (
@@ -107,23 +119,18 @@ MINIMAL_REPAIR_FEW_SHOT = (
 )
 
 CONSTRAINED_REPAIR_FEW_SHOT = (
+    # --- Clean (no disfluency). The MOST common case -> OK is the fast path. ---
     (
         "The quarterly review covers all the metrics that the team collected "
         "during the last sprint before we shipped the release candidate.",
         "OK",
     ),
-    (
-        "I pushed the patch to git hub and updated the read me file.",
-        "OK",
-    ),
-    (
-        "Actually, the build passed on the first try this morning.",
-        "OK",
-    ),
+    # Grammar rough but NOT a disfluency: do not touch (no grammar fixing).
     (
         "He send the report to the leads every friday.",
         "OK",
     ),
+    # Code-like / literal tokens spoken: keep verbatim.
     (
         "The order number is seven four two nine zero one.",
         "OK",
@@ -132,6 +139,39 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
         "The dashboard metrics look healthy today.",
         "OK",
     ),
+    # 'Actually' opening the utterance is emphasis, not a correction.
+    (
+        "Actually, the build passed on the first try this morning.",
+        "OK",
+    ),
+    # A lone 'also' / adverb appearing once is NOT a redundancy -> OK.
+    # Redundancy requires the same content spoken twice.
+    (
+        "Can you check why also was removed from the log text?",
+        "OK",
+    ),
+    # --- No-cue disfluency: pure word repetition. ---
+    (
+        "The the report shows the numbers are up.",
+        "EDIT: The report shows the numbers are up.",
+    ),
+    # --- No-cue disfluency: redundant phrase repetition. ---
+    (
+        "And also and also we can update the config file.",
+        "EDIT: And also we can update the config file.",
+    ),
+    # --- No-cue disfluency: false start, abandoned then re-spoken. ---
+    (
+        "I want to I need to leave now.",
+        "EDIT: I need to leave now.",
+    ),
+    # Disfluency + grammar error coexisting: fix the disfluency, leave the
+    # grammar/capitalization error ('sends', 'friday') untouched.
+    (
+        "The the report, i sends it to the leads every friday.",
+        "EDIT: The report, i sends it to the leads every friday.",
+    ),
+    # --- Cue: retraction, keep the correction. ---
     (
         "Please open settings, no wait, open the dashboard.",
         "EDIT: Please open the dashboard.",
@@ -140,13 +180,15 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
         "Her email is jane, no, janet dot smith at example dot com.",
         "EDIT: Her email is janet dot smith at example dot com.",
     ),
+    # Unequal reword: keep the pre-retraction pronoun ('her') verbatim.
     (
         "Meet her at the cafe, actually, at the library tomorrow.",
         "EDIT: Meet her at the library tomorrow.",
     ),
+    # --- Restart cue: drop the superseded earlier clause, keep the restart. ---
     (
-        "Ship it on monday, i mean tuesday, i mean wednesday.",
-        "EDIT: Ship it on wednesday.",
+        "Send the file to bob. Sorry, send it to alice instead.",
+        "EDIT: Send it to alice instead.",
     ),
 )
 

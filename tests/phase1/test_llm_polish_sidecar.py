@@ -375,21 +375,22 @@ class LlmPolishWarmupTests(unittest.TestCase):
         self.assertEqual(messages[4]["content"], "EDIT: Use the new one.")
         self.assertEqual(messages[-1]["content"], "Clean this transcript:\nFinal transcript.")
 
-    def test_constrained_prompt_narrowed_to_merge_only(self):
-        """Phase 5: the constrained authority is merge-only, not grammar/style.
+    def test_constrained_prompt_recognizes_disfluencies_as_a_class(self):
+        """The constrained authority is merge-only of DISFLUENT speech, and must
+        NOT gate on an enumerated cue-word list (too brittle; misses no-cue
+        repetitions, false starts, and restarts).
 
-        Guards against regressing the scope-narrowing. The default prompt must
-        explicitly forbid grammar/tense/punctuation fixes and must NOT claim
-        filler removal (deterministic owns that). The default few-shot must
-        include a discourse-Actually-at-start OK example, a tense/error OK
-        example, and an unequal-reword EDIT that preserves a pre-retraction
-        pronoun (the reword_unequal correctness fix).
+        Guards: no affirmative filler-removal duty, grammar/tense/punctuation
+        are off-limits, and the few-shot demonstrates a no-cue disfluency
+        (so merging is driven by structure, not by cue words) plus the
+        keeping-a-pronoun unequal-reword example.
         """
         import llm_polish_once
 
         prompt = llm_polish_once.CONSTRAINED_SYSTEM_PROMPT.lower()
-        # merge-only authority, no affirmative filler removal, no grammar fixes.
-        self.assertIn("self-correction", prompt)
+        # authority is the class, not a cue-keyword gate.
+        self.assertIn("structure", prompt)
+        self.assertIn("not by whether a cue word is", prompt)
         # 'remove fillers' may only appear in the prohibition, never as a duty.
         self.assertIn("do not remove fillers", prompt)
         self.assertEqual(prompt.replace("do not remove fillers", "").count("remove filler"), 0)
@@ -410,6 +411,11 @@ class LlmPolishWarmupTests(unittest.TestCase):
         self.assertTrue(
             any("he send" in text.lower() for text in inputs),
             "few-shot must include a grammar/tense-not-ours OK example",
+        )
+        # a no-cue disfluency (pure repetition) is recognized -> EDIT
+        self.assertTrue(
+            any("the the" in text.lower() for text in inputs),
+            "few-shot must include a no-cue repetition EDIT example (structure, not cue)",
         )
         # unequal reword preserving a pre-retraction pronoun -> EDIT
         meet_example = next(
