@@ -4,6 +4,17 @@
 **Status:** enabled by default on macOS + Linux (commit `df3e6db0`, 2026-06-30)
 **Last updated:** 2026-06-30
 
+> **Platform coverage.** `llm_polish_enabled` now defaults to `true` on both
+> macOS and Linux (a single setting; the sidecar is pure Python + llama.cpp).
+> macOS is the only platform where it has been exercised under live dictation
+> so far. **Linux is not yet validated end-to-end** — the default Linux ASR
+> backend is `mock`, and a real backend (`nemotron`/`nemotron_offline` on CUDA)
+> plus the Metal→CUDA contention behavior (keepalive may be unnecessary on
+> NVIDIA, see §9) must be tested before relying on it there. **Next step:
+> test LLM polish on Linux** with a real ASR backend, profile prefill latency
+> under ASR load, and decide whether `SUNOTO_LLM_POLISH_KEEPALIVE_S` should
+> stay at 1.0 or be set to 0 (off).
+
 This document explains what LLM polish is, how it was wired into the daemon
 architecture, the correctness/quality changes, and the latency investigation that
 made it fast enough to run on every transcript.
@@ -300,6 +311,19 @@ Two causes:
    restart, send-to-bob→alice restart → all pass. The guard is **pure-Python**,
    invisible to the daemon contract — no `hard_unsafe`/`review_flags`/
    `validation_rejected` re-threaded through Rust.
+
+   **Known blind spot (low-word-count content loss).** The ≥3 threshold lets
+   through edits that drop a *short* but *meaningful* clause whose unique
+   content-word count is below 3. Live example: "...we have enabled it for macOS
+   and Linux, **but we have not done the testing in the Linux**. So the next
+   part is to test it on Linux." was edited to drop the bolded clause entirely.
+   The guard saw only `{done, testing}` as uncounterparted (2 words — `Linux`
+   is retained elsewhere, the rest are stopwords) and did not fire. Lowering the
+   threshold to 2 would catch this but would also false-fire on legitimate
+   entity-swap rewordings (e.g. "Send the file to bob. Sorry, send it to
+   alice" drops `{file, bob}` = 2, but `file` is anaphorically preserved via
+   "it"). A word-overlap guard cannot distinguish anaphora-preserving drops
+   from true meaning loss; reliable resolution needs the §11 finetune.
 
 This is deliberately **not** the old heuristic suite — no negation check, no
 digit/format detection, no leading-marker rule. The prompt owns those; the guard
