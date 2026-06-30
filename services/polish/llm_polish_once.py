@@ -56,8 +56,11 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "When you see a disfluency: delete ONLY the superseded (earlier) attempt and its "
     "cue, keep the later attempt and every other word VERBATIM, including small "
     "words like 'him', 'her', 'the', 'at'. Merge a repetition by collapsing the "
-    "duplicates to one. For a restart (an abandoned clause then a re-spoken clause), "
-    "drop the superseded earlier clause and keep the restart.\n\n"
+    "duplicates to one. For a restart — an earlier clause is abandoned (often "
+    "after 'sorry'/'actually' or a repeated opening) and the SAME request is then "
+    "re-spoken, even reworded or with a different tail — drop the ENTIRE earlier "
+    "clause and keep only the restart. Do NOT keep both as separate sentences: the "
+    "earlier attempt is superseded even when its wording differs from the restart.\n\n"
     "CRITICAL: when editing, leave EVERY other aspect EXACTLY as spoken. Do NOT fix "
     "grammar, tense, agreement, word order, punctuation, capitalization (including "
     "lowercase days/names like 'friday', 'bob'), word choice, or style, and do NOT "
@@ -189,6 +192,13 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
     (
         "Send the file to bob. Sorry, send it to alice instead.",
         "EDIT: Send it to alice instead.",
+    ),
+    # Partial-overlap restart: two attempts share the framing but differ in the
+    # tail. The earlier attempt is STILL superseded even though it is reworded
+    # rather than near-duplicate — drop it entirely, keep only the restart.
+    (
+        "Can you check if the build is healthy? Sorry, can you check if the build is green yet?",
+        "EDIT: Can you check if the build is green yet?",
     ),
 )
 
