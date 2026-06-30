@@ -330,6 +330,39 @@ digit/format detection, no leading-marker rule. The prompt owns those; the guard
 is a last-resort sanitizer for one specific, recurring failure mode (topic
 clause loss masquerading as a restart).
 
+### 6.5 Revert to the disfluency-by-structure baseline (current prompt)
+
+§6.2's strengthened restart rule ("drop the ENTIRE earlier clause") and §6.4's
+LOCAL-vs-RESTART distinction both backfired: the LLM over-applied them, reading a
+mid-sentence "sorry" correcting one short phrase as a full restart and
+discarding the utterance's actual topic. Two live failures with the §6.4 prompt
+in effect:
+
+- "Now, whatever configuration we are using for the LM police, ... sorry, um,
+  commit the changes first." → dropped the config/topic clause.
+- "...enabled it for macOS and Linux, but we have not done the testing in the
+  Linux. So the next part is to test it on Linux." → dropped the "not done
+  testing" clause (the guard saw only 2 uncounterparted content words, below
+  the threshold).
+
+**Reverted** (`52f4d137`): `CONSTRAINED_SYSTEM_PROMPT` and `CONSTRAINED_REPAIR_FEW_SHOT`
+back to the conservative `6438a058` wording — "For a restart (an abandoned
+clause then a re-spoken clause), drop the superseded earlier clause and keep the
+restart," with no "ENTIRE"/reworded-tail emphasis and no local-vs-restart
+carving. The partial-overlap and local-correction few-shots added since were
+dropped. The narrow content-loss guard (§6.4) and validator removal (§6.3) are
+**kept** — they are independent of the prompt.
+
+The trade-off: session 1's partial-overlap restart (a genuinely reworded
+tail) is no longer explicitly taught and may be kept as two sentences. That is
+accepted as the lesser failure — a redundant-but-harmless extra clause beats a
+dropped topic. Reliable restart-vs-local disambiguation needs the §11 finetune.
+
+This is deliberately **not** the old heuristic suite — no negation check, no
+digit/format detection, no leading-marker rule. The prompt owns those; the guard
+is a last-resort sanitizer for one specific, recurring failure mode (topic
+clause loss masquerading as a restart).
+
 ## 7. Deterministic polish bug: intra-token period mangling
 
 A separate but entangled issue: `sunoto-polish` (`crates/sunoto-polish/src/lib.rs`)
@@ -384,10 +417,11 @@ choice, not a portability issue.
 | Commit | Summary |
 | --- | --- |
 | `df3e6db0` | settings: enable llm_polish by default (macOS + Linux) |
+| `52f4d137` | llm-polish: revert CONSTRAINED prompt + few-shots to disfluency-by-structure baseline |
 | `80a7614a` | llm-polish: narrow content-loss guard + fix over-broad restart rule |
 | `2e08ebed` | llm-polish: remove the deterministic validator (LLM is authoritative) |
-| `beeee1ee` | llm-polish: teach partial-overlap restart merges |
-| `6438a058` | llm-polish: replace cue-word gate with disfluency-by-structure prompt |
+| `beeee1ee` | llm-polish: teach partial-overlap restart merges (reverted in `52f4d137`) |
+| `6438a058` | llm-polish: replace cue-word gate with disfluency-by-structure prompt (CURRENT baseline) |
 | `1d61eff1` | llm-polish: silence per-ping keepalive log |
 | `e8f3eff7` | llm-polish: opt-in LLM polish sidecar + keepalive, ASR/LLM contention fix |
 | `0db9add3` | polish: stop splitting/capitalizing intra-token periods |
