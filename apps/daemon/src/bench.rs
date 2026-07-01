@@ -7,18 +7,21 @@ use sunoto_desktop::UiAdapter;
 use sunoto_ipc::{SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_polish::polish;
 
+use crate::llm_polish::{self, LlmPolishDiagnostics, LlmPolishWarmupOutcome};
 use crate::logging;
 use crate::settings::{Settings, repo_root, sanitize_for_insertion};
 
 const FRAME_SAMPLES: usize = 320; // 20 ms at 16 kHz
 const READY_TIMEOUT: Duration = Duration::from_secs(600); // model load can be slow
 const FINAL_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_POST_ASR_LLM_OUTPUT: &str = "llm-polish-bench/out/post-asr-llm-latency/latest.json";
 
 pub struct BenchArgs {
     pub sessions: usize,
     pub audio: PathBuf,
     pub paced: bool,
     pub output: Option<PathBuf>,
+    pub post_asr_llm: bool,
 }
 
 impl Default for BenchArgs {
@@ -28,6 +31,7 @@ impl Default for BenchArgs {
             audio: repo_root().join("tests/corpus/hf-sample1.wav"),
             paced: true,
             output: None,
+            post_asr_llm: false,
         }
     }
 }
@@ -44,10 +48,44 @@ struct SessionMetrics {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct PostAsrLlmSessionMetrics {
+    session: usize,
+    audio_seconds: f64,
+    time_to_first_partial_ms: Option<u128>,
+    release_to_final_ms: u128,
+    deterministic_polish_ms: u128,
+    llm_latency_ms: Option<u64>,
+    final_to_llm_done_ms: u128,
+    release_to_llm_done_ms: u128,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    cache_hit: Option<bool>,
+    cache_matched_tokens: Option<u64>,
+    cache_entries: Option<u64>,
+    rewrite_called: Option<bool>,
+    decision_label: Option<String>,
+    raw_transcript: String,
+    deterministic_output: String,
+    llm_output: Option<String>,
+    llm_error: Option<String>,
+    llm_diagnostics: Option<LlmPolishDiagnostics>,
+}
+
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
 struct Percentiles {
     p50: u128,
     p95: u128,
     p99: u128,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PostAsrLlmPercentiles {
+    time_to_first_partial_ms: Option<Percentiles>,
+    release_to_final_ms: Option<Percentiles>,
+    llm_latency_ms: Option<Percentiles>,
+    final_to_llm_done_ms: Option<Percentiles>,
+    release_to_llm_done_ms: Option<Percentiles>,
 }
 
 fn percentiles(values: &mut [u128]) -> Option<Percentiles> {
@@ -66,11 +104,51 @@ fn percentiles(values: &mut [u128]) -> Option<Percentiles> {
     })
 }
 
+fn post_asr_llm_percentiles(runs: &[PostAsrLlmSessionMetrics]) -> PostAsrLlmPercentiles {
+    let mut ttfp: Vec<u128> = runs
+        .iter()
+        .filter_map(|run| run.time_to_first_partial_ms)
+        .collect();
+    let mut release_to_final: Vec<u128> = runs.iter().map(|run| run.release_to_final_ms).collect();
+    let successful_llm_runs: Vec<&PostAsrLlmSessionMetrics> = runs
+        .iter()
+        .filter(|run| run.llm_error.is_none() && run.llm_latency_ms.is_some())
+        .collect();
+    let mut llm_latency: Vec<u128> = successful_llm_runs
+        .iter()
+        .filter_map(|run| run.llm_latency_ms.map(u128::from))
+        .collect();
+    let mut final_to_llm_done: Vec<u128> = successful_llm_runs
+        .iter()
+        .map(|run| run.final_to_llm_done_ms)
+        .collect();
+    let mut release_to_llm_done: Vec<u128> = successful_llm_runs
+        .iter()
+        .map(|run| run.release_to_llm_done_ms)
+        .collect();
+
+    PostAsrLlmPercentiles {
+        time_to_first_partial_ms: percentiles(&mut ttfp),
+        release_to_final_ms: percentiles(&mut release_to_final),
+        llm_latency_ms: percentiles(&mut llm_latency),
+        final_to_llm_done_ms: percentiles(&mut final_to_llm_done),
+        release_to_llm_done_ms: percentiles(&mut release_to_llm_done),
+    }
+}
+
+pub(crate) fn default_post_asr_llm_output() -> PathBuf {
+    repo_root().join(DEFAULT_POST_ASR_LLM_OUTPUT)
+}
+
 /// End-to-end latency harness for the Phase 1 exit gate: pace recorded audio
 /// through the configured sidecar as if it were spoken live, treat the last
 /// chunk as the shortcut release, and measure until the final text has been
 /// typed into a real focused X11 window.
 pub fn run(settings: Settings, args: BenchArgs) -> Result<(), Box<dyn Error>> {
+    if args.post_asr_llm {
+        return run_post_asr_llm(settings, args);
+    }
+
     let samples = read_wav_mono_16k(&args.audio)?;
     logging::info(&format!(
         "bench: {} sessions, {:.2}s audio, backend={}, profile={}ms, paced={}",
@@ -209,6 +287,200 @@ pub fn run(settings: Settings, args: BenchArgs) -> Result<(), Box<dyn Error>> {
         return Err("no bench session completed".into());
     }
     Ok(())
+}
+
+fn run_post_asr_llm(settings: Settings, args: BenchArgs) -> Result<(), Box<dyn Error>> {
+    let samples = read_wav_mono_16k(&args.audio)?;
+    let audio_seconds = samples.len() as f64 / 16_000.0;
+    logging::info(&format!(
+        "post-ASR LLM bench: {} sessions, {audio_seconds:.2}s audio, backend={}, profile={}ms, paced={}",
+        args.sessions, settings.backend, settings.profile_ms, args.paced
+    ));
+
+    let (events_tx, events) = mpsc::channel::<SidecarMessage>();
+    let (python, sidecar_args) = settings.sidecar_command()?;
+    let arg_refs: Vec<&str> = sidecar_args.iter().map(String::as_str).collect();
+    let mut sidecar = SidecarClient::spawn(&python, &arg_refs, move |message| {
+        events_tx.send(message).is_ok()
+    })?;
+    sidecar.send(&SidecarRequest::Health)?;
+    let load_started = Instant::now();
+    wait_for_ready(&events, READY_TIMEOUT)?;
+    let asr_warm_start_ms = load_started.elapsed().as_millis();
+    logging::info(&format!("ASR sidecar ready after {asr_warm_start_ms}ms"));
+
+    let mut llm_polish = llm_polish::LlmPolishClient::spawn(&settings)
+        .map_err(|error| format!("cannot start LLM polish sidecar: {error}"))?;
+    let llm_warmup = llm_polish
+        .warmup(&llm_polish::WARMUP_TEXTS, settings.llm_polish_timeout_ms)
+        .map_err(|error| format!("LLM polish warmup failed: {error}"))?;
+    logging::info(&format!(
+        "LLM polish post-ASR warmup complete: {}",
+        format_llm_warmup_summary(&llm_warmup)
+    ));
+
+    let mut runs = Vec::with_capacity(args.sessions);
+    let mut failures: Vec<String> = Vec::new();
+    for session in 1..=args.sessions {
+        let session_id = session as u64;
+        sidecar.send(&SidecarRequest::StartSession {
+            session_id,
+            profile_ms: settings.profile_ms,
+        })?;
+
+        let speech_started = Instant::now();
+        let mut first_partial: Option<Instant> = None;
+        for chunk in samples.chunks(FRAME_SAMPLES) {
+            sidecar.send(&SidecarRequest::AudioChunk {
+                session_id,
+                samples: chunk.to_vec(),
+            })?;
+            drain_partials(&events, session_id, &mut first_partial);
+            if args.paced {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let released_at = Instant::now();
+        sidecar.send(&SidecarRequest::FinishSession { session_id })?;
+        let raw_transcript = wait_for_final(&events, session_id, &mut first_partial)?;
+        let final_at = Instant::now();
+
+        let deterministic_started = Instant::now();
+        let deterministic_output = if settings.polish_enabled {
+            polish(&raw_transcript, &settings.polish).text
+        } else {
+            raw_transcript.clone()
+        };
+        let deterministic_polish_ms = deterministic_started.elapsed().as_millis();
+
+        let mut llm_latency_ms = None;
+        let mut llm_output = None;
+        let mut llm_error = None;
+        let mut llm_diagnostics = None;
+        if raw_transcript.trim().is_empty() {
+            let error = "empty raw transcript; LLM polish skipped".to_string();
+            failures.push(format!("session {session}: {error}"));
+            llm_error = Some(error);
+        } else {
+            match llm_polish.polish(
+                session_id,
+                &deterministic_output,
+                settings.llm_polish_timeout_ms,
+            ) {
+                Ok(outcome) => {
+                    llm_latency_ms = Some(outcome.latency_ms);
+                    llm_output = Some(outcome.text);
+                    llm_diagnostics = Some(outcome.diagnostics);
+                }
+                Err(error) => {
+                    failures.push(format!("session {session}: LLM polish failed: {error}"));
+                    llm_error = Some(error);
+                }
+            }
+        }
+        let llm_done_at = Instant::now();
+
+        let metrics = PostAsrLlmSessionMetrics {
+            session,
+            audio_seconds,
+            time_to_first_partial_ms: first_partial
+                .map(|at| at.duration_since(speech_started).as_millis()),
+            release_to_final_ms: final_at.duration_since(released_at).as_millis(),
+            deterministic_polish_ms,
+            llm_latency_ms,
+            final_to_llm_done_ms: llm_done_at.duration_since(final_at).as_millis(),
+            release_to_llm_done_ms: llm_done_at.duration_since(released_at).as_millis(),
+            prompt_tokens: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.prompt_tokens),
+            completion_tokens: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.completion_tokens),
+            total_tokens: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.total_tokens),
+            cache_hit: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.cache_hit),
+            cache_matched_tokens: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.cache_matched_tokens),
+            cache_entries: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.cache_entries),
+            rewrite_called: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.rewrite_called),
+            decision_label: llm_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.decision_label.clone()),
+            raw_transcript,
+            deterministic_output,
+            llm_output,
+            llm_error,
+            llm_diagnostics,
+        };
+        logging::info(&format!(
+            "session {session}: release-to-final={}ms deterministic={}ms llm={:?}ms total={}ms",
+            metrics.release_to_final_ms,
+            metrics.deterministic_polish_ms,
+            metrics.llm_latency_ms,
+            metrics.release_to_llm_done_ms
+        ));
+        runs.push(metrics);
+    }
+
+    let successful_llm_runs: Vec<&PostAsrLlmSessionMetrics> = runs
+        .iter()
+        .filter(|run| run.llm_error.is_none() && run.llm_latency_ms.is_some())
+        .collect();
+    let percentile_report = post_asr_llm_percentiles(&runs);
+
+    let report = serde_json::json!({
+        "mode": "post_asr_llm",
+        "backend": settings.backend,
+        "profile_ms": settings.profile_ms,
+        "paced": args.paced,
+        "audio": args.audio.display().to_string(),
+        "audio_seconds": audio_seconds,
+        "sessions": args.sessions,
+        "completed": runs.len(),
+        "llm_completed": successful_llm_runs.len(),
+        "asr_warm_start_ms": asr_warm_start_ms,
+        "llm_warmup": llm_warmup,
+        "failures": failures,
+        "percentiles": percentile_report,
+        "runs": runs,
+    });
+    let rendered = serde_json::to_string_pretty(&report)?;
+    println!("{rendered}");
+    let output = args.output.unwrap_or_else(default_post_asr_llm_output);
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&output, rendered + "\n")?;
+    logging::info(&format!(
+        "post-ASR LLM bench report written to {}",
+        output.display()
+    ));
+    if runs.is_empty() {
+        return Err("no post-ASR LLM bench session completed".into());
+    }
+    Ok(())
+}
+
+fn format_llm_warmup_summary(outcome: &LlmPolishWarmupOutcome) -> String {
+    let labels = ["clean", "repair"];
+    let mut timings = vec![format!("total {}ms", outcome.latency_ms)];
+    for (index, request) in outcome.requests.iter().enumerate() {
+        let label =
+            labels
+                .get(index)
+                .copied()
+                .unwrap_or(if index == 0 { "warmup" } else { "extra" });
+        timings.push(format!("{label} {}ms", request.latency_ms));
+    }
+    timings.join(", ")
 }
 
 fn wait_for_ready(
@@ -384,5 +656,81 @@ mod tests {
         let result = percentiles(&mut single).unwrap();
         assert_eq!((result.p50, result.p95, result.p99), (42, 42, 42));
         assert!(percentiles(&mut Vec::new()).is_none());
+    }
+
+    fn post_asr_run(
+        session: usize,
+        release_to_final_ms: u128,
+        llm_latency_ms: Option<u64>,
+        llm_error: Option<&str>,
+    ) -> PostAsrLlmSessionMetrics {
+        PostAsrLlmSessionMetrics {
+            session,
+            audio_seconds: 1.0,
+            time_to_first_partial_ms: Some(50),
+            release_to_final_ms,
+            deterministic_polish_ms: 1,
+            llm_latency_ms,
+            final_to_llm_done_ms: llm_latency_ms.map(u128::from).unwrap_or(999),
+            release_to_llm_done_ms: release_to_final_ms
+                + llm_latency_ms.map(u128::from).unwrap_or(999),
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            cache_hit: None,
+            cache_matched_tokens: None,
+            cache_entries: None,
+            rewrite_called: None,
+            decision_label: None,
+            raw_transcript: "raw".to_string(),
+            deterministic_output: "deterministic".to_string(),
+            llm_output: llm_latency_ms.map(|_| "llm".to_string()),
+            llm_error: llm_error.map(str::to_string),
+            llm_diagnostics: None,
+        }
+    }
+
+    #[test]
+    fn post_asr_llm_percentiles_ignore_failed_llm_sessions() {
+        let runs = vec![
+            post_asr_run(1, 100, Some(10), None),
+            post_asr_run(2, 200, None, Some("timed out")),
+            post_asr_run(3, 300, Some(30), None),
+        ];
+
+        let report = post_asr_llm_percentiles(&runs);
+
+        assert_eq!(
+            report.release_to_final_ms,
+            Some(Percentiles {
+                p50: 200,
+                p95: 300,
+                p99: 300,
+            })
+        );
+        assert_eq!(
+            report.llm_latency_ms,
+            Some(Percentiles {
+                p50: 10,
+                p95: 30,
+                p99: 30,
+            })
+        );
+        assert_eq!(
+            report.final_to_llm_done_ms,
+            Some(Percentiles {
+                p50: 10,
+                p95: 30,
+                p99: 30,
+            })
+        );
+        assert_eq!(
+            report.release_to_llm_done_ms,
+            Some(Percentiles {
+                p50: 110,
+                p95: 330,
+                p99: 330,
+            })
+        );
     }
 }

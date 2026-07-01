@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "services" / "asr"))
@@ -137,6 +139,32 @@ class StreamingEngineTest(unittest.TestCase):
         engine = _FakeStreamingEngine()
         with self.assertRaises(ValueError):
             engine.start(123)
+
+    def test_finish_mlx_synchronize_is_opt_in(self):
+        class FakeMx:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def synchronize(self) -> None:
+                self.calls += 1
+
+        disabled_mx = FakeMx()
+        disabled = _FakeStreamingEngine(texts=["final"], chunk_samples=4, flush_samples=0)
+        disabled._mx = disabled_mx
+        disabled.start(160)
+        disabled.accept_audio([1 / 32768.0] * 4)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(disabled.finish(), "final")
+        self.assertEqual(disabled_mx.calls, 0)
+
+        enabled_mx = FakeMx()
+        enabled = _FakeStreamingEngine(texts=["final"], chunk_samples=4, flush_samples=0)
+        enabled._mx = enabled_mx
+        enabled.start(160)
+        enabled.accept_audio([1 / 32768.0] * 4)
+        with patch.dict(os.environ, {"SUNOTO_ASR_MLX_SYNCHRONIZE_FINAL": "1"}):
+            self.assertEqual(enabled.finish(), "final")
+        self.assertEqual(enabled_mx.calls, 1)
 
 
 class StreamingProtocolTest(unittest.TestCase):

@@ -1,11 +1,12 @@
 mod bench;
 mod daemon;
 mod eval;
+mod llm_polish;
 mod logging;
 mod settings;
 
 use std::error::Error;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -23,6 +24,7 @@ Commands:
   selftest                  run insertion, push-to-talk, clipboard self-tests
   selftest hotkey           synthesize the configured shortcut and verify press/release
   insert TEXT               type TEXT at the focused cursor
+  polish TEXT               send TEXT through the running daemon polish path
   trigger press|release     send a push-to-talk edge to the running daemon
   run                       run the dictation daemon
   bench [OPTIONS]           measure release-to-insertion latency percentiles
@@ -42,6 +44,8 @@ Bench options:
   --sessions N              number of dictation sessions (default 10)
   --audio PATH              16 kHz mono WAV input (default tests/corpus/hf-sample1.wav)
   --unpaced                 send audio as fast as possible instead of real time
+  --post-asr-llm            measure WAV -> ASR final -> deterministic polish -> LLM polish,
+                            skipping insertion and writing a JSON report by default
   --output PATH             write the JSON report to PATH
 
 Eval options (always runs the default pipeline config plus the corpus's own
@@ -86,6 +90,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
                 Err(error) => Err(error.into()),
             }
         }
+        "polish" if !rest.is_empty() => polish_control(rest),
         "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
@@ -96,6 +101,25 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             Err(format!("unknown command: {command}").into())
         }
     }
+}
+
+fn polish_control(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let text = args.join(" ");
+    let path = settings::control_socket_path();
+    let mut stream = UnixStream::connect(&path)
+        .map_err(|error| format!("cannot connect to {}: {error}", path.display()))?;
+    serde_json::to_writer(
+        &mut stream,
+        &serde_json::json!({
+            "type": "polish",
+            "text": text,
+        }),
+    )?;
+    stream.write_all(b"\n")?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    print!("{response}");
+    Ok(())
 }
 
 fn trigger(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -133,6 +157,37 @@ fn load_settings(args: &[String]) -> Result<Settings, Box<dyn Error>> {
     if let Some(profile) = option_value(args, "--profile-ms") {
         loaded.profile_ms = profile.parse()?;
     }
+    // Runtime overrides for the experimental LLM polish model. The named
+    // profile is the ergonomic knob; an explicit path wins over it. Both let
+    // a bench/daemon run switch models without editing the config file.
+    if let Some(model) = std::env::var("SUNOTO_LLM_POLISH_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        loaded.llm_polish_model = model.trim().to_string();
+    }
+    if let Some(path) = std::env::var("SUNOTO_LLM_POLISH_MODEL_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        loaded.llm_polish_model_path = Some(path.trim().to_string());
+    }
+    // Runtime override for the sidecar dispatch mode. Defaults to
+    // constrained_one_call so the live path matches the benchmarked path; this
+    // override exists for the legacy minimal fallback and experiments.
+    if let Some(mode) = std::env::var("SUNOTO_LLM_POLISH_MODE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        loaded.llm_polish_mode = mode.trim().to_string();
+    }
+    if let Some(secs) = std::env::var("SUNOTO_LLM_POLISH_KEEPALIVE_S")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| value.trim().parse::<f64>().ok())
+    {
+        loaded.llm_polish_keepalive_secs = secs;
+    }
     loaded.validate()?;
     Ok(loaded)
 }
@@ -147,6 +202,9 @@ fn parse_bench_args(args: &[String]) -> Result<bench::BenchArgs, Box<dyn Error>>
     }
     if args.iter().any(|arg| arg == "--unpaced") {
         parsed.paced = false;
+    }
+    if args.iter().any(|arg| arg == "--post-asr-llm") {
+        parsed.post_asr_llm = true;
     }
     parsed.output = option_value(args, "--output").map(PathBuf::from);
     Ok(parsed)
@@ -238,4 +296,30 @@ fn selftest_hotkey(args: &[String]) -> Result<(), Box<dyn Error>> {
         loaded.shortcut
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_post_asr_llm_bench_flag() {
+        let args = vec![
+            "bench".to_string(),
+            "--post-asr-llm".to_string(),
+            "--sessions".to_string(),
+            "3".to_string(),
+            "--unpaced".to_string(),
+        ];
+        let parsed = parse_bench_args(&args).unwrap();
+
+        assert!(parsed.post_asr_llm);
+        assert_eq!(parsed.sessions, 3);
+        assert!(!parsed.paced);
+        assert!(parsed.output.is_none());
+        assert!(
+            bench::default_post_asr_llm_output()
+                .ends_with("llm-polish-bench/out/post-asr-llm-latency/latest.json")
+        );
+    }
 }

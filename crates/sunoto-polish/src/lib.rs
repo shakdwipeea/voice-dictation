@@ -226,9 +226,21 @@ fn normalize(text: &str) -> String {
             .checked_sub(1)
             .and_then(|p| chars.get(p))
             .is_some_and(|c| c.is_ascii_digit());
-        if !(previous_is_digit && next.is_ascii_digit()) {
-            spaced.push(' ');
+        // Numeric intra-token punctuation like "3.14" / "1,000" is never split.
+        if previous_is_digit && next.is_ascii_digit() {
+            continue;
         }
+        // A period is ambiguous: it is both sentence-terminal ("end. Next")
+        // and intra-token ("agents.md", "example.com", "v1.2a", "file.txt").
+        // Only split when the following char is uppercase, which is the real
+        // sentence-start signal. A lowercase letter after a period between
+        // letters is almost always a filename / domain / version token and
+        // must not be broken. Other clause punctuation (",", ";", ":", "!",
+        // "?") is never intra-token, so it always takes the space.
+        if current == '.' && !next.is_ascii_uppercase() {
+            continue;
+        }
+        spaced.push(' ');
     }
     spaced.into_iter().collect()
 }
@@ -279,7 +291,21 @@ fn detokenize(tokens: &[Token]) -> String {
         match token {
             Token::Word(word) => {
                 if !output.is_empty() && !output.ends_with(' ') {
-                    output.push(' ');
+                    // A period followed by a lowercase-starting word is almost
+                    // always an intra-token filename/domain/version
+                    // ("agents.md", "example.com", "v1.2"): do not insert a
+                    // space. An uppercase-starting word after a period is a real
+                    // sentence start ("end. Next"): keep the separating space.
+                    let prev_is_period = output.ends_with('.');
+                    let next_starts_uppercase = word
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_uppercase());
+                    if prev_is_period && !next_starts_uppercase {
+                        // no space — intra-token period
+                    } else {
+                        output.push(' ');
+                    }
                 }
                 output.push_str(word);
             }
@@ -459,6 +485,29 @@ fn apply_swap_marker(tokens: &[Token]) -> Option<Vec<Token>> {
         if !all_words {
             continue;
         }
+        // Phase 5 conservative guard: defer unequal rewordings to the LLM.
+        // If R's first word reappears as a non-leading word in L (e.g.
+        // "Call him at five, actually, at five thirty": L="him at five",
+        // R="at five thirty"; R[0]="at" sits at L[1]), the true retraction
+        // is a suffix of L overlapping a prefix of R -- an unequal
+        // rewording whose boundary deterministic cannot bound safely.
+        // Skipping avoids dropping a surviving word ("him"). Equal swaps
+        // with a shared leading token ("next Tuesday, actually next
+        // Wednesday") are unaffected: R[0] == L[0] only at position 0,
+        // which this guard excludes by scanning positions 1..clause_len.
+        if clause_len > 1
+            && let Some(r_first) = tokens.get(replacement_start).and_then(Token::word)
+        {
+            let retraction_ambiguous = (1..clause_len).any(|offset| {
+                tokens
+                    .get(replaced_start + offset)
+                    .and_then(Token::word)
+                    .is_some_and(|word| equals_ignore_case(word, r_first))
+            });
+            if retraction_ambiguous {
+                continue;
+            }
+        }
         if !clauses_shape_compatible(tokens, replaced_start, replacement_start, clause_len) {
             continue;
         }
@@ -630,25 +679,21 @@ fn format_prose(text: &str) -> String {
 fn capitalize_sentences(chars: &[char]) -> Vec<char> {
     let mut output = Vec::with_capacity(chars.len());
     let mut capitalize_next = true;
-    for (index, &character) in chars.iter().enumerate() {
+    for &character in chars.iter() {
         if capitalize_next && character.is_alphabetic() {
             output.extend(character.to_uppercase());
             capitalize_next = false;
             continue;
         }
         output.push(character);
-        if SENTENCE_TERMINATORS.contains(&character) {
-            let decimal_point = character == '.'
-                && index
-                    .checked_sub(1)
-                    .and_then(|previous| chars.get(previous))
-                    .is_some_and(|previous| previous.is_ascii_digit())
-                && chars
-                    .get(index + 1)
-                    .is_some_and(|next| next.is_ascii_digit());
-            if !decimal_point {
-                capitalize_next = true;
-            }
+        // Auto-capitalize only after '!' and '?', NOT after '.'. A period is
+        // ambiguous: it is sentence-terminal ("Done. Next") but also
+        // intra-token ("agents.md", "example.com", "v1.2"). Capitalizing after
+        // every period mangled filenames ("agents.md" -> "agents. Md"). ASR
+        // predicts casing for real sentence starts; deterministic polish must
+        // not drive capitalization off periods.
+        if matches!(character, '!' | '?') {
+            capitalize_next = true;
         }
     }
     output
@@ -677,6 +722,61 @@ mod tests {
     }
 
     #[test]
+    fn normalize_does_not_split_intra_token_periods() {
+        // Filenames, domains, and version strings must keep their periods.
+        // (Previously "agents.md" was mangled to "agents. md" in live use.)
+        assert_eq!(normalize("agents.md"), "agents.md");
+        assert_eq!(normalize("example.com"), "example.com");
+        assert_eq!(normalize("file.txt"), "file.txt");
+        assert_eq!(normalize("v1.2"), "v1.2");
+        assert_eq!(normalize("3.14"), "3.14");
+        assert_eq!(normalize("the agents.md file"), "the agents.md file");
+        assert_eq!(
+            normalize("see example.com for details"),
+            "see example.com for details"
+        );
+    }
+
+    #[test]
+    fn detokenize_keeps_intra_token_periods_intact() {
+        // detokenize reassembles tokens after filler/correction removal. It
+        // must NOT insert a space after a period before a lowercase word
+        // ("agents.md" -> "agents. md" was the live regression). An uppercase
+        // word after a period is a real sentence start and keeps the space.
+        let tokens = tokenize("agents.md file");
+        assert_eq!(detokenize(&tokens), "agents.md file");
+        let cap_tokens = tokenize("end.Next sentence");
+        assert_eq!(detokenize(&cap_tokens), "end. Next sentence");
+        let dom_tokens = tokenize("see example.com now");
+        assert_eq!(detokenize(&dom_tokens), "see example.com now");
+    }
+
+    #[test]
+    fn polish_preserves_filename_through_full_pipeline() {
+        // End-to-end on the session 8 shape: a transcript containing
+        // "agents.md" plus a filler ("uh") must keep "agents.md" intact and
+        // not auto-capitalize the extension to "Md".
+        let outcome = polish(
+            "can you make changes in the agents.md file and sorry uh and make changes",
+            &defaults(),
+        );
+        assert!(outcome.text.contains("agents.md"), "got: {}", outcome.text);
+        assert!(!outcome.text.contains("agents. md"), "got: {}", outcome.text);
+        assert!(!outcome.text.contains("agents. Md"), "got: {}", outcome.text);
+    }
+
+    #[test]
+    fn normalize_still_splits_sentence_final_period_before_uppercase() {
+        // A period immediately before an uppercase letter is a sentence
+        // boundary and gets a space: "end.Next" -> "end. Next". A period
+        // before a lowercase letter is intra-token and stays joined:
+        // "agents.md" stays "agents.md".
+        assert_eq!(normalize("end.Next"), "end. Next");
+        assert_eq!(normalize("hello.World"), "hello. World");
+        assert_eq!(normalize("agents.md"), "agents.md");
+    }
+
+    #[test]
     fn normalize_preserves_numbers_and_ellipses() {
         assert_eq!(normalize("pi is 3.14"), "pi is 3.14");
         assert_eq!(normalize("1,000 items"), "1,000 items");
@@ -701,6 +801,27 @@ mod tests {
             "Meet on Tuesday, actually Wednesday works better for me too."
         );
         assert_eq!(run("Actually, send it now."), "Actually, send it now.");
+    }
+
+    #[test]
+    fn swap_defers_unequal_rewording_to_llm() {
+        // Phase 5: when R's first word reappears as a non-leading word in L,
+        // the retraction boundary is ambiguous (an unequal rewording).
+        // Deterministic must NOT collapse it and drop a surviving word like
+        // "him"; leave it verbatim for the LLM to merge.
+        assert_eq!(
+            run("Call him at five, actually, at five thirty."),
+            "Call him at five, actually, at five thirty."
+        );
+        assert_eq!(
+            run("Meet her at the cafe, actually, at the library tomorrow."),
+            "Meet her at the cafe, actually, at the library tomorrow."
+        );
+        // Equal swap with a shared leading token is unaffected.
+        assert_eq!(
+            run("next Tuesday, actually next Wednesday."),
+            "Next Wednesday."
+        );
     }
 
     #[test]
@@ -830,9 +951,12 @@ mod tests {
             "Unfinished thought..."
         );
         assert_eq!(polish("version 3.14", &config).text, "Version 3.14.");
+        // A period no longer triggers auto-capitalization of the next word (it
+        // mangled filenames like "agents.md"). Only the utterance start is
+        // capitalized; ASR predicts casing for real sentence starts.
         assert_eq!(
             polish("first sentence. second sentence", &config).text,
-            "First sentence. Second sentence."
+            "First sentence. second sentence."
         );
         assert_eq!(polish("...", &config).text, "...");
     }

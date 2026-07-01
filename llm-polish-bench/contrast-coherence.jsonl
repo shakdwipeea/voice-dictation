@@ -1,0 +1,28 @@
+{"id":"contrast-01","category":"contrast_coherence","input":"I was working on this, but now I want you to work on that.","expected":"I was working on this, but now I want you to work on that."}
+{"id":"contrast-02","category":"contrast_coherence","input":"We tried the cache first, instead we ended up rewriting the loop.","expected":"We tried the cache first, instead we ended up rewriting the loop."}
+{"id":"contrast-03","category":"contrast_coherence","input":"The first build failed, however the retry passed.","expected":"The first build failed, however the retry passed."}
+{"id":"contrast-04","category":"contrast_coherence","input":"On the one hand it is fast, on the other hand it is expensive.","expected":"On the one hand it is fast, on the other hand it is expensive."}
+{"id":"contrast-05","category":"contrast_coherence","input":"I used to like that tool, whereas now I prefer this one.","expected":"I used to like that tool, whereas now I prefer this one."}
+{"id":"contrast-06","category":"contrast_coherence","input":"I was going to, but I decided not to.","expected":"I was going to, but I decided not to."}
+{"id":"contrast-07","category":"contrast_coherence","input":"She wanted to ship today, but he wanted to wait until Monday.","expected":"She wanted to ship today, but he wanted to wait until Monday."}
+{"id":"contrast-08","category":"contrast_coherence","input":"The old API is deprecated, but the new one is not ready yet.","expected":"The old API is deprecated, but the new one is not ready yet."}
+{"id":"contrast-09","category":"contrast_coherence","input":"I usually run tests first, however today I forgot.","expected":"I usually run tests first, however today I forgot."}
+{"id":"contrast-10","category":"contrast_coherence","input":"You can use the CLI, or you can edit the file directly.","expected":"You can use the CLI, or you can edit the file directly."}
+{"id":"contrast-11","category":"contrast_coherence","input":"Um, I was working on this, but now I want you to work on that.","expected":"I was working on this, but now I want you to work on that."}
+{"id":"contrast-12","category":"contrast_coherence","input":"I, uh, tried the cache first, but we ended up rewriting the loop.","expected":"I tried the cache first, but we ended up rewriting the loop."}
+{"id":"contrast-13","category":"contrast_coherence","input":"The the first build failed, however the retry passed.","expected":"The first build failed, however the retry passed."}
+{"id":"contrast-14","category":"contrast_coherence","input":"Well, I I used to like that tool, whereas now I prefer this one.","expected":"I used to like that tool, whereas now I prefer this one."}
+{"id":"contrast-15","category":"contrast_coherence","input":"So, the old API is deprecated, but the new one is not ready yet.","expected":"The old API is deprecated, but the new one is not ready yet."}
+{"id":"contrast-16","category":"contrast_coherence","input":"I was going to delete it, but then I realized it is still needed.","expected":"I was going to delete it, but then I realized it is still needed."}
+{"id":"contrast-17","category":"contrast_coherence","input":"The service is up, however the dashboard is not rendering yet.","expected":"The service is up, however the dashboard is not rendering yet."}
+{"id":"contrast-18","category":"contrast_coherence","input":"He fixed the bug, whereas she wrote the tests for it.","expected":"He fixed the bug, whereas she wrote the tests for it."}
+{"id": "contrast-19", "category": "contrast_coherence", "input": "I would rather use a library than write it from scratch.", "expected": "I would rather use a library than write it from scratch."}
+{"id": "contrast-20", "category": "contrast_coherence", "input": "We deploy on Fridays as opposed to Mondays.", "expected": "We deploy on Fridays as opposed to Mondays."}
+{"id": "contrast-21", "category": "contrast_coherence", "input": "It is not a bug, it is a feature.", "expected": "It is not a bug, it is a feature."}
+{"id": "contrast-22", "category": "contrast_coherence", "input": "He likes tea, she likes coffee.", "expected": "He likes tea, she likes coffee."}
+{"id": "contrast-23", "category": "contrast_coherence", "input": "I tried, but I could not finish in time, so I asked for help.", "expected": "I tried, but I could not finish in time, so I asked for help."}
+{"id": "contrast-24", "category": "contrast_coherence", "input": "The fix works on Linux but not on macOS yet.", "expected": "The fix works on Linux but not on macOS yet."}
+{"id": "contrast-25", "category": "contrast_coherence", "input": "She did not call back, however I left a voicemail.", "expected": "She did not call back, however I left a voicemail."}
+{"id": "contrast-26", "category": "contrast_coherence", "input": "You can configure it in code, or you can set environment variables.", "expected": "You can configure it in code, or you can set environment variables."}
+{"id": "contrast-27", "category": "contrast_coherence", "input": "Uh, the fix works on Linux but not on macOS yet.", "expected": "The fix works on Linux but not on macOS yet."}
+{"id": "contrast-28", "category": "contrast_coherence", "input": "Um, she did not call back, however I left a voicemail.", "expected": "She did not call back, however I left a voicemail."}

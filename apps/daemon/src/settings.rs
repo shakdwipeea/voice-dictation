@@ -5,6 +5,38 @@ use sunoto_polish::PolishConfig;
 
 const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v3";
 
+/// Default named LLM polish model profile. Resolved (see
+/// `llm_polish_model_relative`) under `models/llm-polish-hf/` relative to
+/// the repo root. Phi-4-mini Q5 is the post-ASR harness winner: ~433ms edit
+/// p50 / ~236ms clean p50, vs ~799ms edit p50 for the previous Gemma 2B Q4.
+const DEFAULT_LLM_POLISH_MODEL: &str = "phi4_mini";
+
+/// Default and allowed values for the LLM polish sidecar dispatch mode. The
+/// sidecar selects its completion path by reading `SUNOTO_LLM_POLISH_MODE`.
+/// `constrained_one_call` uses the grammar-constrained single LLM call that
+/// the post-ASR harness validated (Phi-4-mini edit p50 ~433ms); it is the
+/// default so the live daemon runs the same path we benchmarked. The legacy
+/// `one_pass_minimal` path is kept for fallback but is not the default.
+const DEFAULT_LLM_POLISH_MODE: &str = "constrained_one_call";
+const ALLOWED_LLM_POLISH_MODES: &[&str] =
+    &["constrained_one_call", "one_pass_minimal", "two_step"];
+
+/// Resolve a named LLM polish profile to its repo-relative GGUF path. Used
+/// both to build the sidecar env and to validate config. Returns None for an
+/// unknown name so callers can surface a config error instead of silently
+/// falling back to the Python sidecar's bundled default.
+fn llm_polish_model_relative(name: &str) -> Option<&'static str> {
+    match name {
+        "phi4_mini" => Some(
+            "models/llm-polish-hf/phi-4-mini-q5/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf",
+        ),
+        "gemma4_e2b" => Some(
+            "models/llm-polish-hf/gemma-4-e2b-it-q4/google_gemma-4-E2B-it-Q4_K_M.gguf",
+        ),
+        _ => None,
+    }
+}
+
 fn default_backend() -> &'static str {
     if cfg!(target_os = "macos") {
         "parakeet_mlx_streaming"
@@ -73,6 +105,50 @@ pub struct Settings {
     pub overlay_backend: String,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
+    /// Experimental local LLM cleanup after deterministic polish. Disabled by
+    /// default; when enabled, a warm sidecar loads the model once at startup.
+    pub llm_polish_enabled: bool,
+    /// Override the Python interpreter used by the LLM polish sidecar.
+    pub llm_polish_python: Option<String>,
+    /// Override the LLM polish sidecar path.
+    pub llm_polish_script: Option<String>,
+    /// Override the local GGUF model path used by the helper. When set this
+    /// wins over `llm_polish_model`. Unset means resolve `llm_polish_model`.
+    pub llm_polish_model_path: Option<String>,
+    /// Named LLM polish model profile resolved under `models/llm-polish-hf/`.
+    /// "phi4_mini" (default) selects the Phi-4-mini Q5 checkpoint that
+    /// benchmarked best on the post-ASR harness; "gemma4_e2b" keeps the
+    /// original Gemma 2B Q4 model. Ignored when `llm_polish_model_path` is
+    /// set. Overridable at runtime with `SUNOTO_LLM_POLISH_MODEL`.
+    pub llm_polish_model: String,
+    /// LLM polish sidecar dispatch mode. The post-ASR harness and e2e gate
+    /// validate `constrained_one_call` (grammar-constrained single call); it
+    /// is the default so the live path matches the benchmarked path. Other
+    /// values: `one_pass_minimal` (legacy minimal prompt), `two_step`. Override
+    /// at runtime with `SUNOTO_LLM_POLISH_MODE`.
+    pub llm_polish_mode: String,
+    /// Maximum wall-clock time for LLM polish startup and each request before
+    /// falling back.
+    pub llm_polish_timeout_ms: u64,
+    /// LLM keepalive heartbeat interval, seconds. A ping fires when the sidecar
+    /// stdin is idle for this long, keeping Metal prefill kernels warm so the
+    /// first polish after an ASR recording is fast (ASR and polish share one
+    /// GPU; without a mid-recording ping, ASR evicts the LLM's kernel working
+    /// set and the post-ASR polish pays a ~3s cold ramp). ~1s is required to
+    /// reliably fire during a short recording's final-generate window; 0
+    /// disables. Override at runtime with `SUNOTO_LLM_POLISH_KEEPALIVE_S`.
+    pub llm_polish_keepalive_secs: f64,
+    /// Progressive LLM-polish insertion (default off). When on, the sidecar
+    /// streams decoded tokens as `polish_chunk` deltas and the daemon types
+    /// them into the focused window as they arrive (CGEvent keypresses, the
+    /// existing typing path), overlapping decode with paste so the user sees
+    /// the first character at TTFT instead of after the whole completion.
+    /// Only the `constrained_one_call` mode streams; OK (clean) transcripts
+    /// take the unchanged single-paste fast path. See
+    /// docs/llm-polish-streaming-plan.md for the trade-offs (typing may be
+    /// dropped by apps that ignore CGEvent keypresses; on such failure the
+    /// daemon keeps the typed text and logs a warning).
+    pub llm_polish_stream_insert: bool,
     pub polish: PolishConfig,
 }
 
@@ -94,6 +170,15 @@ impl Default for Settings {
             overlay_enabled: true,
             overlay_backend: default_overlay_backend().to_string(),
             polish_enabled: true,
+            llm_polish_enabled: true,
+            llm_polish_python: None,
+            llm_polish_script: None,
+            llm_polish_model_path: None,
+            llm_polish_model: DEFAULT_LLM_POLISH_MODEL.to_string(),
+            llm_polish_mode: DEFAULT_LLM_POLISH_MODE.to_string(),
+            llm_polish_timeout_ms: 10_000,
+            llm_polish_keepalive_secs: 1.0,
+            llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
         }
     }
@@ -196,6 +281,60 @@ impl Settings {
         ]
     }
 
+    pub fn llm_polish_command(&self) -> (String, Vec<String>, Vec<(String, String)>) {
+        let root = repo_root();
+        let python = self.llm_polish_python.clone().unwrap_or_else(|| {
+            let venv = root.join(".venv-llm-polish-mac/bin/python");
+            if venv.is_file() {
+                return venv.to_string_lossy().into_owned();
+            }
+            "python3".to_string()
+        });
+        let script = self.llm_polish_script.clone().unwrap_or_else(|| {
+            root.join("services/polish/llm_polish_sidecar.py")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let mut envs = vec![(
+            "SUNOTO_ROOT".to_string(),
+            root.to_string_lossy().into_owned(),
+        )];
+        // An explicit path always wins; otherwise resolve the named profile to
+        // a repo-relative GGUF so the sidecar never silently falls back to its
+        // bundled (Gemma) default when a daemon/bench asks for Phi.
+        let resolved_model_path = self
+            .llm_polish_model_path
+            .as_ref()
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+            .or_else(|| {
+                llm_polish_model_relative(&self.llm_polish_model)
+                    .map(|relative| root.join(relative).to_string_lossy().into_owned())
+            });
+        if let Some(model_path) = resolved_model_path {
+            envs.push((
+                "SUNOTO_LLM_POLISH_MODEL_PATH".to_string(),
+                model_path,
+            ));
+        }
+        // Always pass the dispatch mode so the live daemon runs the same
+        // completion path we benchmarked (defaults to constrained_one_call);
+        // without this the sidecar silently uses its one_pass_minimal default,
+        // which is a different (slower, less-validated) code path.
+        envs.push((
+            "SUNOTO_LLM_POLISH_MODE".to_string(),
+            self.llm_polish_mode.clone(),
+        ));
+        envs.push((
+            "SUNOTO_LLM_POLISH_KEEPALIVE_S".to_string(),
+            format!("{}", self.llm_polish_keepalive_secs),
+        ));
+        if self.llm_polish_stream_insert {
+            envs.push(("SUNOTO_LLM_POLISH_STREAM".to_string(), "1".to_string()));
+        }
+        (python, vec![script], envs)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         match self.backend.as_str() {
             "mock"
@@ -245,7 +384,38 @@ impl Settings {
             other => Err(format!(
                 "unsupported overlay_backend {other:?}; use auto, x11, wayland, or macos"
             )),
+        }?;
+        if self.llm_polish_enabled && self.llm_polish_timeout_ms == 0 {
+            return Err("llm_polish_timeout_ms must be greater than zero".to_string());
         }
+        let has_explicit_model_path = self
+            .llm_polish_model_path
+            .as_ref()
+            .map(|path| !path.trim().is_empty())
+            .unwrap_or(false);
+        if !has_explicit_model_path
+            && llm_polish_model_relative(&self.llm_polish_model).is_none()
+        {
+            return Err(format!(
+                "unknown llm_polish_model {:?}; use phi4_mini or gemma4_e2b, or set llm_polish_model_path",
+                self.llm_polish_model
+            ));
+        }
+        if self.llm_polish_enabled
+            && !ALLOWED_LLM_POLISH_MODES.contains(&self.llm_polish_mode.as_str())
+        {
+            return Err(format!(
+                "unknown llm_polish_mode {:?}; use constrained_one_call, one_pass_minimal, or two_step",
+                self.llm_polish_mode
+            ));
+        }
+        if self.llm_polish_stream_insert && self.llm_polish_mode != "constrained_one_call" {
+            return Err(format!(
+                "llm_polish_stream_insert is on but llm_polish_mode is {:?}; streaming is only implemented for constrained_one_call",
+                self.llm_polish_mode
+            ));
+        }
+        Ok(())
     }
 
     /// Command and environment for the overlay UI sidecar. Linux uses the
@@ -470,6 +640,206 @@ mod tests {
         assert_eq!(args[1..], ["--profile-ms".to_string(), "80".to_string()]);
         settings.backend = "imaginary".to_string();
         assert!(settings.sidecar_command().is_err());
+    }
+
+    #[test]
+    fn llm_polish_defaults_to_enabled_phi4_mini_sidecar() {
+        let settings = Settings::default();
+        assert!(settings.llm_polish_enabled);
+        assert_eq!(settings.llm_polish_model, "phi4_mini");
+        assert_eq!(settings.llm_polish_mode, "constrained_one_call");
+        assert_eq!(settings.llm_polish_timeout_ms, 10_000);
+        let (python, args, envs) = settings.llm_polish_command();
+        if cfg!(target_os = "macos") {
+            assert!(python.ends_with(".venv-llm-polish-mac/bin/python") || python == "python3");
+        }
+        assert_eq!(args.len(), 1);
+        assert!(args[0].ends_with("services/polish/llm_polish_sidecar.py"));
+        assert!(envs.iter().any(|(key, _)| key == "SUNOTO_ROOT"));
+        // The named default profile is resolved to a concrete path so the
+        // sidecar never silently falls back to its bundled Gemma default.
+        let model_env = envs
+            .iter()
+            .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODEL_PATH")
+            .map(|(_, value)| value.as_str());
+        assert!(
+            model_env.unwrap_or("").ends_with(
+                "models/llm-polish-hf/phi-4-mini-q5/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf"
+            ),
+            "phi model path was {model_env:?}"
+        );
+        // The dispatch mode is always pushed so the live daemon runs the
+        // benchmarked constrained_one_call path instead of the sidecar's
+        // one_pass_minimal default.
+        let mode_env = envs
+            .iter()
+            .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODE")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(mode_env, Some("constrained_one_call"));
+        // Streaming insert defaults off; the env var is only pushed when on.
+        assert!(!settings.llm_polish_stream_insert);
+        assert!(!envs
+            .iter()
+            .any(|(key, _)| key == "SUNOTO_LLM_POLISH_STREAM"));
+    }
+
+    #[test]
+    fn llm_polish_stream_insert_pushes_env_when_on() {
+        let settings = Settings {
+            llm_polish_stream_insert: true,
+            ..Settings::default()
+        };
+        let (_python, _args, envs) = settings.llm_polish_command();
+        assert_eq!(
+            envs.iter()
+                .find(|(key, _)| key == "SUNOTO_LLM_POLISH_STREAM")
+                .map(|(_, value)| value.as_str()),
+            Some("1")
+        );
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_stream_insert_with_non_constrained_mode() {
+        let settings = Settings {
+            llm_polish_mode: "one_pass_minimal".to_string(),
+            llm_polish_stream_insert: true,
+            ..Settings::default()
+        };
+        let error = settings.validate().unwrap_err();
+        assert!(
+            error.contains("streaming is only implemented for constrained_one_call"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn llm_polish_command_resolves_gemma4_e2b_profile() {
+        let settings = Settings {
+            llm_polish_model: "gemma4_e2b".to_string(),
+            ..Settings::default()
+        };
+        let (_python, _args, envs) = settings.llm_polish_command();
+        let model_env = envs
+            .iter()
+            .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODEL_PATH")
+            .map(|(_, value)| value.as_str());
+        assert!(
+            model_env.unwrap_or("").ends_with(
+                "models/llm-polish-hf/gemma-4-e2b-it-q4/google_gemma-4-E2B-it-Q4_K_M.gguf"
+            ),
+            "gemma model path was {model_env:?}"
+        );
+    }
+
+    #[test]
+    fn llm_polish_command_explicit_path_overrides_profile() {
+        let settings = Settings {
+            llm_polish_model: "gemma4_e2b".to_string(),
+            llm_polish_model_path: Some("/tmp/custom-model.gguf".to_string()),
+            ..Settings::default()
+        };
+        let (_python, _args, envs) = settings.llm_polish_command();
+        let model_env = envs
+            .iter()
+            .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODEL_PATH")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(model_env, Some("/tmp/custom-model.gguf"));
+    }
+
+    #[test]
+    fn loaded_config_without_model_field_defaults_to_phi4_mini() {
+        let path = std::env::temp_dir().join(format!(
+            "sunoto-settings-llm-default-{}.json",
+            std::process::id()
+        ));
+        // The existing macOS config predates the model field; loading it must
+        // resolve to the Phi default rather than rejecting.
+        std::fs::write(
+            &path,
+            "{\"llm_polish_enabled\": true, \"llm_polish_timeout_ms\": 30000}",
+        )
+        .unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.llm_polish_model, "phi4_mini");
+        assert_eq!(loaded.llm_polish_mode, "constrained_one_call");
+        // Streaming default survives a config without the field.
+        assert!(!loaded.llm_polish_stream_insert);
+        assert!(loaded.validate().is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn validation_rejects_unknown_llm_polish_model_name() {
+        let settings = Settings {
+            llm_polish_model: "does-not-exist".to_string(),
+            ..Settings::default()
+        };
+        let error = settings.validate().unwrap_err();
+        assert!(error.contains("unknown llm_polish_model"), "{error}");
+        // An explicit path bypasses the named-profile check.
+        let with_path = Settings {
+            llm_polish_model: "does-not-exist".to_string(),
+            llm_polish_model_path: Some("/tmp/anything.gguf".to_string()),
+            ..Settings::default()
+        };
+        assert!(with_path.validate().is_ok());
+    }
+
+    #[test]
+    fn llm_polish_mode_defaults_to_constrained_one_call_and_validates() {
+        let settings = Settings::default();
+        assert_eq!(settings.llm_polish_mode, "constrained_one_call");
+        // The mode is pushed even when polish is disabled so a future opt-in
+        // run never silently hits the sidecar's one_pass_minimal default.
+        let (_python, _args, envs) = settings.llm_polish_command();
+        let mode_env = envs
+            .iter()
+            .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODE")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(mode_env, Some("constrained_one_call"));
+        // Explicit legacy mode still passes validation when enabled.
+        let legacy = Settings {
+            llm_polish_enabled: true,
+            llm_polish_mode: "one_pass_minimal".to_string(),
+            ..Settings::default()
+        };
+        assert!(legacy.validate().is_ok());
+        let (_python, _args, envs) = legacy.llm_polish_command();
+        let mode_env = envs
+            .iter()
+            .find(|(key, _)| key == "SUNOTO_LLM_POLISH_MODE")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(mode_env, Some("one_pass_minimal"));
+    }
+
+    #[test]
+    fn validation_rejects_unknown_llm_polish_mode_name() {
+        let settings = Settings {
+            llm_polish_enabled: true,
+            llm_polish_mode: "fancy_mode".to_string(),
+            ..Settings::default()
+        };
+        let error = settings.validate().unwrap_err();
+        assert!(error.contains("unknown llm_polish_mode"), "{error}");
+        // An unknown mode is allowed when polish is disabled (validated only
+        // at opt-in), matching the model-name-check behaviour.
+        let disabled = Settings {
+            llm_polish_enabled: false,
+            llm_polish_mode: "fancy_mode".to_string(),
+            ..Settings::default()
+        };
+        assert!(disabled.validate().is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_zero_llm_polish_timeout_when_enabled() {
+        let settings = Settings {
+            llm_polish_enabled: true,
+            llm_polish_timeout_ms: 0,
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_err());
     }
 
     #[test]

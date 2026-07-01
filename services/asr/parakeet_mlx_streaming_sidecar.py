@@ -44,6 +44,13 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class StreamingParakeetMlxEngine:
     """Loads Parakeet-MLX once and streams per push-to-talk session."""
 
@@ -213,9 +220,12 @@ class StreamingParakeetMlxEngine:
             if self._is_degenerate(text) and self._last_good_text:
                 log("finish: final stream text was degenerate; using last good partial")
                 text = self._last_good_text
+            sync_ms = self._synchronize_final_if_requested()
+            sync_part = f"mlx_sync={sync_ms:.0f}ms, " if sync_ms is not None else ""
             log(
                 f"finish: streaming chunks={self._chunk_count}, "
-                f"final_text_chars={len(text)}, total {(time.perf_counter() - t0)*1000:.0f}ms"
+                f"final_text_chars={len(text)}, {sync_part}"
+                f"total {(time.perf_counter() - t0)*1000:.0f}ms"
             )
             return text
         finally:
@@ -227,6 +237,19 @@ class StreamingParakeetMlxEngine:
             self._last_good_text = ""
             self._seen_audio = False
             self._chunk_count = 0
+
+    def _synchronize_final_if_requested(self) -> float | None:
+        if not env_bool("SUNOTO_ASR_MLX_SYNCHRONIZE_FINAL"):
+            return None
+        synchronize = getattr(self._mx, "synchronize", None)
+        if not callable(synchronize):
+            log("finish: MLX final synchronize requested but unavailable")
+            return None
+        started = time.perf_counter()
+        synchronize()
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        log(f"finish: MLX final synchronize {elapsed_ms:.0f}ms")
+        return elapsed_ms
 
     def cancel(self) -> None:
         self._close_stream()
