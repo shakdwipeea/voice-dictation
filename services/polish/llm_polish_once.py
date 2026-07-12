@@ -50,7 +50,9 @@ CONSTRAINED_SYSTEM_PROMPT = (
     "no questions, no narration.\n\n"
     "A disfluency REQUIRES redundant or superseded speech, OR pure speech padding. "
     "The kinds are: redundant repetitions ('the the', 'and also and also'), false "
-    "starts (an abandoned beginning that is then re-spoken), retraction cues "
+    "starts (an abandoned beginning that is then re-spoken OR a fragment the speaker "
+    "began and dropped to start a fresh phrase — even WITHOUT a cue word, as in "
+    "'I want to, let me get the file' → 'Let me get the file'), retraction cues "
     "mid-utterance such as 'actually', 'i mean', 'no wait', 'sorry', 'or rather', "
     "'let me rephrase', 'scratch that', 'never mind', AND speech fillers ('um', "
     "'uh', 'er', 'hmm', 'well', 'so', 'right', 'you know') that pad the utterance "
@@ -233,6 +235,17 @@ CONSTRAINED_REPAIR_FEW_SHOT = (
     (
         "Well, um, let me see.",
         "EDIT: Let me see.",
+    ),
+    # --- No-cue false start: speaker abandoned a fragment and started fresh;
+    # there is no retraction cue word — the comma + new clause IS the cue.
+    # Drop the abandoned fragment, keep the fresh clause verbatim. ---
+    (
+        "I want to, let me get the file.",
+        "EDIT: Let me get the file.",
+    ),
+    (
+        "We should probably, you know what, never mind.",
+        "EDIT: Never mind.",
     ),
 )
 

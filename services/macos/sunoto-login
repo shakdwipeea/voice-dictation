@@ -1,0 +1,39 @@
+#!/bin/bash
+# GUI Login Item entrypoint. Launch Services starts this executable from an
+# LSUIElement app bundle. It remains the daemon's parent so macOS retains the
+# responsible GUI process context required by CGEventTap.
+
+set -euo pipefail
+
+CONTENTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE="$CONTENTS_DIR/Resources/sunoto-login.env"
+
+if [ ! -r "$ENV_FILE" ]; then
+    echo "sunoto-login: missing $ENV_FILE; rerun install-macos.sh" >&2
+    exit 1
+fi
+# Generated locally by install-macos.sh; not user-controlled input.
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+
+if [ ! -x "$SUNOTO_DAEMON" ]; then
+    echo "sunoto-login: daemon missing or not executable: $SUNOTO_DAEMON" >&2
+    exit 1
+fi
+if [ -n "${SUNOTO_ASR_PYTHON:-}" ] && [ ! -x "$SUNOTO_ASR_PYTHON" ]; then
+    echo "sunoto-login: ASR Python missing or not executable: $SUNOTO_ASR_PYTHON" >&2
+    echo "sunoto-login: run services/asr/setup_macos_runtime.sh, then install-macos.sh" >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$SUNOTO_LOG")"
+cd "$SUNOTO_ROOT"
+export SUNOTO_ROOT
+"$SUNOTO_DAEMON" run >>"$SUNOTO_LOG" 2>&1 &
+daemon_pid=$!
+
+forward_signal() {
+    kill -TERM "$daemon_pid" 2>/dev/null || true
+}
+trap forward_signal TERM INT HUP
+wait "$daemon_pid"
