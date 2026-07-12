@@ -235,8 +235,15 @@ target/release/sunoto-daemon config init
 target/release/sunoto-daemon config show
 ```
 
-Run the daemon from a terminal (NOT via launchd) so it inherits the GUI/TCC
-context and the CGEventTap stays enabled:
+For automatic startup, install the GUI Login Item so Sunoto starts through
+Launch Services with a responsible GUI/TCC context:
+
+```bash
+bash install-macos.sh
+open "$HOME/Applications/Sunoto Login.app"
+```
+
+For manual development, run the daemon from a terminal:
 
 ```bash
 nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &
@@ -257,15 +264,10 @@ Stop the daemon:
 pkill -f 'target/release/sunoto-daemon run'
 ```
 
-Auto-start at login (launchd) is also available, but note the hotkey tap can be
-disabled by TCC under launchd because it has no responsible GUI process. For
-reliable dictation prefer the terminal-launched bare binary above. See
-[docs/macos-recurring-issues.md](macos-recurring-issues.md) for full detail.
-
-```bash
-bash scripts/macos-port/install-macos.sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.earendil-works.sunoto.plist
-```
+The old launchd LaunchAgent is intentionally removed by `install-macos.sh`:
+launchd has no responsible GUI process and macOS disables its event tap. See
+[macos-gui-login-item-plan.md](macos-gui-login-item-plan.md) and
+[macos-recurring-issues.md](macos-recurring-issues.md) for full detail.
 
 ## ASR profile
 

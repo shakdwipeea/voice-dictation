@@ -60,7 +60,7 @@ physical-keyboard event tap. Stop here; it's §1, not the ASR.
   via a prompt** — the prompt is suppressed. System Settings toggling also
   fails to bind to the new cdhash reliably for adhoc bundles.
 
-### Fix: run the BARE binary from a terminal (nohup), NOT via launchd
+### Fix: use the GUI Login Item (or run the bare binary from a terminal), NOT launchd
 
 Two things matter, and BOTH are required:
 
@@ -76,19 +76,29 @@ Two things matter, and BOTH are required:
    zero events). A process launched from Terminal inherits Terminal's GUI/TCC
    session context and the tap stays enabled (`tap is_enabled=1`).
 
-So the working macOS dev launch is:
+For automatic startup, install the GUI-context Login Item:
+```sh
+bash install-macos.sh
+open "$HOME/Applications/Sunoto Login.app"
+tail -f "$HOME/Library/Logs/sunoto/daemon.log"
+```
+
+The launcher is an `LSUIElement` application started by Launch Services. It
+stays alive as the bare daemon's parent, preserving the responsible GUI
+process context that launchd lacks. Grant Accessibility and Input Monitoring
+to both `~/Applications/Sunoto Login.app` and the bare daemon on first install.
+See `docs/macos-gui-login-item-plan.md`.
+
+The working manual development launch remains:
 ```sh
 pkill -f "sunoto-daemon run"
 nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &
 tail -f /tmp/sunoto-bare.log   # wait for "ASR sidecar ready"
 ```
 
-The launchd plist (`com.earendil-works.sunoto.plist`) and `install-macos.sh`
-point at the bare binary (still better than the app bundle), but **the
-launchd-launched tap is inert due to TCC context** — launchd is only useful
-for auto-starting the sidecar warmup, not for a working hotkey. Until a GUI-
-context launchd workaround is found, **use the nohup-from-terminal launch**
-for actual dictation.
+The legacy launchd plist (`com.earendil-works.sunoto.plist`) points at the bare
+binary, but **the launchd-launched tap is inert due to TCC context**.
+`install-macos.sh` now removes that plist and installs the GUI Login Item.
 
 To get the bare binary's TCC grant in place (one-time, per machine):
 
@@ -136,7 +146,8 @@ has not recurred for a while.
 
 - Do not run the app bundle (`Sunoto.app`) as the daemon on macOS dev.
 - Do not run the daemon via launchd and expect the hotkey to work — the
-  launchd TCC context disables the tap. Use `nohup ... &` from a terminal.
+  launchd TCC context disables the tap. Use the GUI Login Item or `nohup ...
+  &` from a terminal.
 - Do not `tccutil reset ListenEvent com.earendil-works.sunoto` expecting a
   re-prompt — the launchd/background context suppresses it.
 - Do not trust `sunoto-daemon check` alone to rule out this issue.

@@ -181,10 +181,20 @@ phase6() {
 }
 
 phase7() {
-  echo "== phase 7: launchd service + install =="
+  echo "== phase 7: GUI login item + install =="
   [ -f "install-macos.sh" ] && ok "install-macos.sh exists" || fail "install-macos.sh missing"
-  if find services/macos -name "*.plist" 2>/dev/null | grep -q .; then ok "launchd plist exists"; else fail "launchd plist missing"; fi
-  manual "launchctl load/unload is an interactive install step"
+  [ -x "services/macos/sunoto-login" ] && ok "GUI login launcher exists" || fail "GUI login launcher missing"
+  if grep -q 'make login item' install-macos.sh && grep -q 'Sunoto Login.app' install-macos.sh; then
+    ok "installer registers Sunoto Login.app"
+  else
+    fail "installer does not register GUI login item"
+  fi
+  if grep -q 'launchctl bootout' install-macos.sh; then
+    ok "installer removes obsolete LaunchAgent"
+  else
+    fail "installer does not remove obsolete LaunchAgent"
+  fi
+  manual "Login Item registration and live GUI/TCC event tap require an interactive session"
 }
 
 phase8() {
