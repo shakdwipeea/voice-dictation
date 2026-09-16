@@ -1,0 +1,4 @@
+interface:
+  display_name: "System Mode E2E"
+  short_description: "Verify System Mode safely end to end"
+  default_prompt: "Use $system-mode-e2e to run the safe non-live System Mode verification workflow and report the evidence."

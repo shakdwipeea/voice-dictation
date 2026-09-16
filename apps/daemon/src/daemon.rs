@@ -12,19 +12,92 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
-use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionState};
+use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState};
 use sunoto_desktop::{
     BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error,
 };
-use sunoto_ipc::{OverlayRequest, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest};
+use sunoto_ipc::{
+    OverlayRequest, OverlaySuggestion, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest,
+};
 use sunoto_polish::{polish, resolve_style};
+use sunoto_system::{
+    CapabilityInput, NativeCapabilityCall, PendingSuggestionSet, RouteOutcome, SuggestionAction,
+    SystemIntent, TargetHint, ValidatedHttpUrl, route_deterministically,
+};
 
 use crate::llm_polish;
 use crate::logging;
 use crate::settings::{self, Settings, sanitize_for_insertion};
+use crate::system_worker::{SystemJob, SystemWorker, SystemWorkerEvent};
 
 const SAMPLES_PER_MS: usize = 16;
 const TICK: Duration = Duration::from_millis(50);
+
+enum PendingSystemSelection {
+    Targets(PendingSuggestionSet),
+    BrowserNavigation {
+        pending: PendingSuggestionSet,
+        url: ValidatedHttpUrl,
+    },
+    Navigation {
+        session_id: u64,
+        input: CapabilityInput,
+        title: String,
+    },
+}
+
+enum SelectedSystemAction {
+    Target(sunoto_system::ResolvedSystemAction),
+    Navigation {
+        input: CapabilityInput,
+        title: String,
+    },
+    BrowserNavigation {
+        action: sunoto_system::ResolvedSystemAction,
+        url: ValidatedHttpUrl,
+    },
+}
+
+impl PendingSystemSelection {
+    fn session_id(&self) -> u64 {
+        match self {
+            Self::Targets(pending) => pending.session_id(),
+            Self::BrowserNavigation { pending, .. } => pending.session_id(),
+            Self::Navigation { session_id, .. } => *session_id,
+        }
+    }
+
+    fn select(
+        &mut self,
+        session_id: u64,
+        suggestion_id: &str,
+    ) -> Result<SelectedSystemAction, String> {
+        match self {
+            Self::Targets(pending) => pending
+                .select(session_id, suggestion_id)
+                .map(SelectedSystemAction::Target)
+                .map_err(|error| error.to_string()),
+            Self::BrowserNavigation { pending, url } => pending
+                .select(session_id, suggestion_id)
+                .map(|action| SelectedSystemAction::BrowserNavigation {
+                    action,
+                    url: url.clone(),
+                })
+                .map_err(|error| error.to_string()),
+            Self::Navigation {
+                session_id: active_session,
+                input,
+                title,
+            } if *active_session == session_id && suggestion_id == "system-navigation-confirm" => {
+                Ok(SelectedSystemAction::Navigation {
+                    input: input.clone(),
+                    title: title.clone(),
+                })
+            }
+            Self::Navigation { .. } => Err("stale or invented System navigation selection".into()),
+        }
+    }
+}
 const ERROR_BUBBLE_VISIBLE: Duration = Duration::from_millis(2500);
 const SIDECAR_BACKOFF_START: Duration = Duration::from_millis(500);
 const SIDECAR_BACKOFF_CAP: Duration = Duration::from_secs(5);
@@ -50,16 +123,24 @@ fn install_signal_handlers() {
 }
 
 pub enum DaemonEvent {
-    Hotkey(HotkeyEvent),
+    Hotkey(ModeHotkeyEvent),
     Audio(AudioEvent),
     Sidecar(SidecarMessage),
     /// Messages from the GTK overlay UI sidecar (ready handshake, exit).
     Overlay(SidecarMessage),
+    /// Results from blocking native discovery and execution work.
+    System(SystemWorkerEvent),
     Ui(UiReport),
     /// WM_CLASS (instance, class) of the window focused at shortcut release;
     /// reported by the UI thread right after CaptureFocus.
     FocusClass(Option<(String, String)>),
     ControlPolish {
+        text: String,
+        response: UnixStream,
+    },
+    /// Read-only System planning request. Keeping this on the event loop makes
+    /// the ownership boundary explicit before live System sessions are added.
+    ControlSystemPlan {
         text: String,
         response: UnixStream,
     },
@@ -69,7 +150,55 @@ pub enum DaemonEvent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ControlCommand {
-    Polish { text: String },
+    Polish {
+        text: String,
+    },
+    PlanSystem {
+        text: String,
+        dry_run: bool,
+    },
+    Trigger {
+        mode: ControlMode,
+        edge: ControlEdge,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ControlMode {
+    Dictation,
+    System,
+}
+
+impl From<ControlMode> for SessionMode {
+    fn from(mode: ControlMode) -> Self {
+        match mode {
+            ControlMode::Dictation => Self::Dictation,
+            ControlMode::System => Self::System,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ControlEdge {
+    Press,
+    Release,
+}
+
+impl From<ControlEdge> for HotkeyEvent {
+    fn from(edge: ControlEdge) -> Self {
+        match edge {
+            ControlEdge::Press => Self::Pressed,
+            ControlEdge::Release => Self::Released,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ModeHotkeyEvent {
+    mode: SessionMode,
+    edge: HotkeyEvent,
 }
 
 pub struct UiReport {
@@ -98,7 +227,10 @@ pub enum UiCommand {
     CaptureFocus,
     ShowBubble(BubbleKind, String),
     HideBubble,
-    Insert { session_id: u64, text: String },
+    Insert {
+        session_id: u64,
+        text: String,
+    },
     /// Progressive LLM-polish streaming insertion.
     /// `first` is true on the first chunk of a session (the UI thread uses it
     /// to consume the captured focus token and choose typing vs clipboard
@@ -244,9 +376,9 @@ impl UiBackend {
     /// characters, which the caller handles by switching to clipboard fallback.
     fn type_chunk(&mut self, text: &str) -> Result<(), String> {
         match self {
-            Self::X11(adapter) | Self::Macos(adapter) => {
-                adapter.insert_direct(text).map_err(|error| error.to_string())
-            }
+            Self::X11(adapter) | Self::Macos(adapter) => adapter
+                .insert_direct(text)
+                .map_err(|error| error.to_string()),
             Self::Wayland(adapter) => adapter.type_direct(text),
         }
     }
@@ -488,7 +620,8 @@ fn ui_thread(commands: Receiver<UiCommand>, events: Sender<DaemonEvent>, backend
                     continue;
                 };
                 session.accumulated.push_str(&delta);
-                if session.focus_ok && session.typed_ok
+                if session.focus_ok
+                    && session.typed_ok
                     && let Err(error) = adapter.type_chunk(&delta)
                 {
                     // Typing failed mid-stream: switch to clipboard
@@ -658,6 +791,35 @@ impl UiFront {
         }
     }
 
+    /// A palette is an interaction boundary, not a cosmetic animation frame.
+    /// Report whether it was queued so the daemon never retains executable
+    /// actions when there is no UI capable of selecting them.
+    fn show_system_palette(
+        &self,
+        session_id: u64,
+        transcript: String,
+        suggestions: Vec<OverlaySuggestion>,
+    ) -> bool {
+        if !self.overlay_active() {
+            return false;
+        }
+        let Some(handle) = self.overlay.as_ref() else {
+            return false;
+        };
+        handle
+            .tx
+            .try_send(OverlayRequest::SystemPalette {
+                session_id,
+                transcript,
+                suggestions,
+            })
+            .is_ok()
+    }
+
+    fn dismiss_system_palette(&self, session_id: u64) {
+        self.overlay_send(OverlayRequest::DismissSystemPalette { session_id });
+    }
+
     fn show(&self, kind: BubbleKind, text: &str) {
         if self.overlay_active() {
             self.overlay_send(OverlayRequest::Show);
@@ -762,12 +924,20 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // Wayland has no global-grab primitive; it relies on compositor bindings
     // driving `sunoto-daemon trigger press|release` over the control socket.
     // X11 (XGrabKey) and macOS (CGEventTap) both install a real global hotkey.
-    let shortcut = if backend == DesktopBackend::Wayland {
-        None
+    let shortcuts = if backend == DesktopBackend::Wayland {
+        Vec::new()
     } else {
-        Some(Shortcut::parse(&settings.shortcut)?)
+        let mut shortcuts = vec![(SessionMode::Dictation, Shortcut::parse(&settings.shortcut)?)];
+        if settings.system_mode_enabled {
+            shortcuts.push((
+                SessionMode::System,
+                Shortcut::parse(&settings.system_shortcut)?,
+            ));
+        }
+        shortcuts
     };
     let (events_tx, events) = mpsc::channel::<DaemonEvent>();
+    let system_worker = SystemWorker::spawn(events_tx.clone(), settings.system_search_root_paths());
 
     // UI thread (insertion/clipboard/bubble on its own backend connection).
     let (ui_tx, ui_rx) = mpsc::channel::<UiCommand>();
@@ -780,11 +950,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     // Hotkey thread (second X11 connection, blocking with poll timeouts).
     let hotkey_stop = Arc::new(AtomicBool::new(false));
-    let hotkey_handle = shortcut
-        .map(|shortcut| spawn_hotkey_thread(shortcut, events_tx.clone(), Arc::clone(&hotkey_stop)));
+    let hotkey_handles = shortcuts
+        .into_iter()
+        .map(|(mode, shortcut)| {
+            spawn_hotkey_thread(mode, shortcut, events_tx.clone(), Arc::clone(&hotkey_stop))
+        })
+        .collect::<Vec<_>>();
     if backend == DesktopBackend::Wayland {
         logging::info(
-            "Wayland session detected; use compositor bindings to call `sunoto-daemon trigger press|release`",
+            "Wayland session detected; use compositor bindings to call `sunoto-daemon trigger [dictation|system] press|release`",
         );
     }
 
@@ -822,9 +996,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
+    let system_shortcut = if settings.system_mode_enabled {
+        format!(", system_shortcut={}", settings.system_shortcut)
+    } else {
+        String::new()
+    };
     logging::info(&format!(
-        "Sunoto daemon starting: backend={}, desktop={backend:?}, profile={}ms, shortcut={}. Wait for the ASR sidecar ready message; Ctrl+C exits.",
-        settings.backend, settings.profile_ms, settings.shortcut
+        "Sunoto daemon starting: backend={}, desktop={backend:?}, profile={}ms, shortcut={}{}. Wait for the ASR sidecar ready message; Ctrl+C exits.",
+        settings.backend, settings.profile_ms, settings.shortcut, system_shortcut
     ));
 
     let mut machine = SessionMachine::default();
@@ -839,25 +1018,52 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut respawn_at: Option<Instant> = None;
     let mut respawn_backoff = SIDECAR_BACKOFF_START;
     let mut llm_post_asr_warmed = llm_polish.is_none();
+    let mut active_system_resolution: Option<u64> = None;
+    let mut pending_system: Option<PendingSystemSelection> = None;
     let mut exit_error: Option<String> = None;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         match events.recv_timeout(TICK) {
-            Ok(DaemonEvent::Hotkey(HotkeyEvent::Pressed)) => {
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                mode,
+                edge: HotkeyEvent::Pressed,
+            })) => {
+                if mode == SessionMode::System && !settings.system_mode_enabled {
+                    logging::warn("System shortcut ignored because System mode is disabled");
+                    continue;
+                }
+                // A new capture explicitly replaces any old palette. This
+                // also invalidates a discovery result still in flight.
+                active_system_resolution = None;
+                system_worker.invalidate_sessions();
+                if let Some(pending) = pending_system.take() {
+                    let session_id = pending.session_id();
+                    ui.dismiss_system_palette(session_id);
+                }
                 if !sidecar_ready {
                     logging::warn("push-to-talk ignored while ASR sidecar is loading");
                     show_error(&ui, "ASR still loading...", &mut bubble_hide_at);
                     continue;
                 }
-                if llm_polish.is_some() && !llm_post_asr_warmed {
+                if mode == SessionMode::Dictation && llm_polish.is_some() && !llm_post_asr_warmed {
                     logging::warn("push-to-talk ignored while LLM polish is warming");
                     show_error(&ui, "LLM polish still warming...", &mut bubble_hide_at);
                     continue;
                 }
-                if let SessionAction::Started { session_id } = machine.press() {
+                if let SessionAction::Started { session_id, .. } = machine.press_mode(mode) {
+                    if mode == SessionMode::System {
+                        system_worker.activate_session(session_id);
+                    }
                     last_pressed_at = Some(Instant::now());
-                    logging::info(&format!("session {session_id}: recording"));
-                    ui.show(BubbleKind::Recording, "recording...");
+                    logging::info(&format!(
+                        "session {session_id}: recording ({})",
+                        mode_label(mode)
+                    ));
+                    let recording_label = match mode {
+                        SessionMode::Dictation => "recording...",
+                        SessionMode::System => "System — listening...",
+                    };
+                    ui.show(BubbleKind::Recording, recording_label);
                     bubble_hide_at = None;
                     let preroll_samples = preroll.snapshot();
                     preroll.clear();
@@ -897,8 +1103,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-            Ok(DaemonEvent::Hotkey(HotkeyEvent::Released)) => {
-                if let SessionAction::FinishRequested { session_id } = machine.release() {
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                mode,
+                edge: HotkeyEvent::Released,
+            })) => {
+                if let SessionAction::FinishRequested {
+                    session_id, mode, ..
+                } = machine.release_mode(mode)
+                {
                     // The class arrives with the fresh focus capture below; a
                     // stale one from an earlier session must not style this one.
                     focused_class = None;
@@ -933,10 +1145,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 .unwrap_or_default(),
                         ));
                     }
-                    // Focus is captured at release: that window is where the
-                    // user expects the dictated text to land.
-                    let _ = ui_tx.send(UiCommand::CaptureFocus);
-                    ui.show(BubbleKind::Transcribing, "transcribing...");
+                    if mode == SessionMode::Dictation {
+                        // Focus is captured only for dictation. System mode
+                        // never inserts its transcript into the active app.
+                        let _ = ui_tx.send(UiCommand::CaptureFocus);
+                        ui.show(BubbleKind::Transcribing, "transcribing...");
+                    } else {
+                        ui.show(BubbleKind::Transcribing, "System — matching...");
+                    }
                     let request = SidecarRequest::FinishSession { session_id };
                     let send_error = sidecar
                         .as_mut()
@@ -965,7 +1181,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 }
             }
             Ok(DaemonEvent::Audio(AudioEvent::Frame(samples))) => match machine.state() {
-                SessionState::Recording { session_id } => {
+                SessionState::Recording { session_id, .. } => {
                     let session_id = *session_id;
                     if let Some(stats) = audio_stats.as_mut() {
                         stats.observe(&samples);
@@ -1049,16 +1265,23 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             }
                         }
                     }
-                    logging::info(&format!(
-                        "Sunoto ready for dictation. Hold {} to dictate.",
-                        settings.shortcut
-                    ));
+                    if settings.system_mode_enabled {
+                        logging::info(&format!(
+                            "Sunoto ready. Hold {} to dictate or {} for System mode.",
+                            settings.shortcut, settings.system_shortcut
+                        ));
+                    } else {
+                        logging::info(&format!(
+                            "Sunoto ready for dictation. Hold {} to dictate.",
+                            settings.shortcut
+                        ));
+                    }
                 }
                 SidecarEvent::SessionStarted { session_id } => {
                     logging::info(&format!("session {session_id}: sidecar accepted"));
                 }
                 SidecarEvent::Partial { session_id, text } => {
-                    if let SessionAction::PartialUpdated { text, .. } =
+                    if let SessionAction::PartialUpdated { mode, text, .. } =
                         machine.partial(session_id, text)
                     {
                         let kind = match machine.state() {
@@ -1073,12 +1296,19 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             .into_iter()
                             .rev()
                             .collect();
-                        ui.show(kind, &tail);
+                        let visible = match mode {
+                            SessionMode::Dictation => tail,
+                            SessionMode::System => format!("System: {tail}"),
+                        };
+                        ui.show(kind, &visible);
                     }
                 }
                 SidecarEvent::Final { session_id, text } => {
-                    if let SessionAction::Finalized { session_id, text } =
-                        machine.finalize(session_id, text)
+                    if let SessionAction::Finalized {
+                        session_id,
+                        mode,
+                        text,
+                    } = machine.finalize(session_id, text)
                     {
                         transcribe_deadline = None;
                         if text.is_empty() {
@@ -1088,6 +1318,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 .unwrap_or_else(|| "audio statistics unavailable".to_string());
                             logging::warn(&format!(
                                 "session {session_id}: ASR backend returned an empty transcript ({summary})"
+                            ));
+                        } else if mode == SessionMode::System {
+                            logging::info(&format!(
+                                "session {session_id}: System transcript captured ({} characters)",
+                                text.chars().count()
                             ));
                         } else {
                             logging::info(&format!(
@@ -1107,6 +1342,121 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     .map(|ms| format!(", ASR turnaround {ms}ms"))
                                     .unwrap_or_default(),
                             ));
+                        }
+                        if mode == SessionMode::System {
+                            let outcome = crate::system_mode::present_live_plan(
+                                &text,
+                                settings.system_llm_fallback_enabled,
+                            );
+                            logging::info(&format!(
+                                "session {session_id}: System route completed (matched={})",
+                                outcome.intent.is_some()
+                            ));
+                            match outcome.intent {
+                                Some(
+                                    intent @ (SystemIntent::OpenTarget {
+                                        hint: TargetHint::Application | TargetHint::Auto,
+                                        ..
+                                    }
+                                    | SystemIntent::OpenTargetWithApplication { .. }
+                                    | SystemIntent::FindFile { .. }
+                                    | SystemIntent::OpenFileByQuery { .. }
+                                    | SystemIntent::RevealFileByQuery { .. }
+                                    | SystemIntent::OpenFolder { .. }),
+                                ) => {
+                                    ui.show(
+                                        BubbleKind::Transcribing,
+                                        "System — searching targets...",
+                                    );
+                                    active_system_resolution = Some(session_id);
+                                    if let Err(error) =
+                                        system_worker.send(SystemJob::DispatchFindTargets {
+                                            session_id,
+                                            transcript: text.clone(),
+                                            intent,
+                                        })
+                                    {
+                                        active_system_resolution = None;
+                                        show_error(&ui, &error, &mut bubble_hide_at);
+                                    }
+                                }
+                                Some(SystemIntent::OpenBrowserAndUrl { browser_query, .. }) => {
+                                    ui.show(
+                                        BubbleKind::Transcribing,
+                                        "System — finding selected browser...",
+                                    );
+                                    active_system_resolution = Some(session_id);
+                                    let intent = SystemIntent::OpenTarget {
+                                        query: browser_query,
+                                        hint: TargetHint::Application,
+                                    };
+                                    if let Err(error) =
+                                        system_worker.send(SystemJob::DispatchFindTargets {
+                                            session_id,
+                                            transcript: text.clone(),
+                                            intent,
+                                        })
+                                    {
+                                        active_system_resolution = None;
+                                        show_error(&ui, &error, &mut bubble_hide_at);
+                                    }
+                                }
+                                Some(SystemIntent::OpenUrl { spoken_url })
+                                | Some(SystemIntent::OpenTarget {
+                                    query: spoken_url,
+                                    hint: TargetHint::Url,
+                                }) => {
+                                    let navigation = ValidatedHttpUrl::parse_spoken(&spoken_url)
+                                        .map(|url| {
+                                            (
+                                                CapabilityInput::Native(
+                                                    NativeCapabilityCall::OpenUrl {
+                                                        url,
+                                                        browser: None,
+                                                    },
+                                                ),
+                                                format!("open {spoken_url}"),
+                                            )
+                                        });
+                                    present_navigation_confirmation(
+                                        navigation,
+                                        session_id,
+                                        &text,
+                                        &ui,
+                                        &mut pending_system,
+                                        &mut bubble_hide_at,
+                                    );
+                                }
+                                Some(SystemIntent::WebSearch { query }) => {
+                                    let navigation = Ok((
+                                        CapabilityInput::Native(NativeCapabilityCall::WebSearch {
+                                            query: query.clone(),
+                                            browser: None,
+                                        }),
+                                        format!("search the web for {query}"),
+                                    ));
+                                    present_navigation_confirmation(
+                                        navigation,
+                                        session_id,
+                                        &text,
+                                        &ui,
+                                        &mut pending_system,
+                                        &mut bubble_hide_at,
+                                    );
+                                }
+                                Some(_) => show_error(
+                                    &ui,
+                                    "That System action is not available yet",
+                                    &mut bubble_hide_at,
+                                ),
+                                None => show_error(&ui, &outcome.message, &mut bubble_hide_at),
+                            }
+                            // Raw ASR text is never polished, pasted, or sent
+                            // to a command interpreter. Only a resolved typed
+                            // action can proceed, after explicit UI selection.
+                            timing = None;
+                            focused_class = None;
+                            continue;
                         }
                         let raw_text = text.clone();
                         let mut output = if settings.polish_enabled {
@@ -1171,16 +1521,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             ) {
                                 Ok(outcome) => {
                                     let ttft = outcome.diagnostics.ttft_ms;
-                                    let streamed =
-                                        outcome.diagnostics.streamed == Some(true);
-                                    let chunks =
-                                        outcome.diagnostics.stream_chunks.unwrap_or(0);
+                                    let streamed = outcome.diagnostics.streamed == Some(true);
+                                    let chunks = outcome.diagnostics.stream_chunks.unwrap_or(0);
                                     logging::info(&format!(
                                         "session {session_id}: llm polish accepted in {}ms (ttft {}ms, streamed={} {}chunks){}: {:?} -> {:?}",
                                         outcome.latency_ms,
-                                        ttft
-                                            .map(|ms| ms.to_string())
-                                            .unwrap_or_else(|| "?".into()),
+                                        ttft.map(|ms| ms.to_string()).unwrap_or_else(|| "?".into()),
                                         streamed,
                                         chunks,
                                         format_llm_diagnostics(&outcome.diagnostics),
@@ -1196,16 +1542,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                         // guard revert after streaming is an
                                         // accepted edge; see
                                         // docs/llm-polish-streaming-plan.md).
-                                        let sanitized_outcome =
-                                            sanitize_for_insertion(
-                                                &outcome.text,
-                                                settings.allow_enter_and_tab,
-                                            );
+                                        let sanitized_outcome = sanitize_for_insertion(
+                                            &outcome.text,
+                                            settings.allow_enter_and_tab,
+                                        );
                                         if let Some(timing) = timing.as_mut() {
-                                            timing.polish_done_at =
-                                                Some(Instant::now());
-                                            timing.insert_dispatched_at =
-                                                Some(Instant::now());
+                                            timing.polish_done_at = Some(Instant::now());
+                                            timing.insert_dispatched_at = Some(Instant::now());
                                         }
                                         if sanitized_outcome.is_empty() {
                                             logging::info(&format!(
@@ -1213,13 +1556,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                             ));
                                             ui.hide();
                                         } else {
-                                            let _ = ui_tx.send(
-                                                UiCommand::InsertStreamEnd {
-                                                    session_id,
-                                                    final_text: sanitized_outcome,
-                                                    streamed_ok: true,
-                                                },
-                                            );
+                                            let _ = ui_tx.send(UiCommand::InsertStreamEnd {
+                                                session_id,
+                                                final_text: sanitized_outcome,
+                                                streamed_ok: true,
+                                            });
                                         }
                                         streaming_inserted = true;
                                     } else {
@@ -1243,18 +1584,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                             "session {session_id}: streaming insert kept partial text after llm error; result may be truncated"
                                         ));
                                         if let Some(timing) = timing.as_mut() {
-                                            timing.polish_done_at =
-                                                Some(Instant::now());
-                                            timing.insert_dispatched_at =
-                                                Some(Instant::now());
+                                            timing.polish_done_at = Some(Instant::now());
+                                            timing.insert_dispatched_at = Some(Instant::now());
                                         }
-                                        let _ = ui_tx.send(
-                                            UiCommand::InsertStreamEnd {
-                                                session_id,
-                                                final_text: output.clone(),
-                                                streamed_ok: true,
-                                            },
-                                        );
+                                        let _ = ui_tx.send(UiCommand::InsertStreamEnd {
+                                            session_id,
+                                            final_text: output.clone(),
+                                            streamed_ok: true,
+                                        });
                                         streaming_inserted = true;
                                     }
                                 }
@@ -1304,6 +1641,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         ));
                     }
                 }
+                SidecarEvent::SystemSelection { .. } | SidecarEvent::SystemCancelled { .. } => {
+                    logging::warn("unexpected System UI event from ASR sidecar");
+                }
             },
             Ok(DaemonEvent::Sidecar(SidecarMessage::Garbage { line })) => {
                 logging::warn(&format!("ignored non-protocol sidecar output: {line}"));
@@ -1330,6 +1670,83 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 overlay_backoff = SIDECAR_BACKOFF_START;
                 logging::info(&format!("overlay UI ready ({backend})"));
             }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SystemSelection {
+                session_id,
+                suggestion_id,
+            }))) => {
+                let selection = pending_system
+                    .as_mut()
+                    .ok_or_else(|| "there is no active System suggestion set".to_string())
+                    .and_then(|pending| pending.select(session_id, &suggestion_id));
+                match selection {
+                    Ok(SelectedSystemAction::Target(action)) => {
+                        let display_name = action.display_name().to_string();
+                        pending_system = None;
+                        ui.dismiss_system_palette(session_id);
+                        ui.show(
+                            BubbleKind::Transcribing,
+                            &format!("System — opening {display_name}..."),
+                        );
+                        if let Err(error) =
+                            system_worker.send(SystemJob::DispatchOpenTarget { session_id, action })
+                        {
+                            show_error(&ui, &error, &mut bubble_hide_at);
+                        }
+                    }
+                    Ok(SelectedSystemAction::Navigation { input, title }) => {
+                        pending_system = None;
+                        ui.dismiss_system_palette(session_id);
+                        ui.show(BubbleKind::Transcribing, &format!("System — {title}..."));
+                        if let Err(error) =
+                            system_worker.send(SystemJob::DispatchNavigation { session_id, input })
+                        {
+                            show_error(&ui, &error, &mut bubble_hide_at);
+                        }
+                    }
+                    Ok(SelectedSystemAction::BrowserNavigation { action, url }) => {
+                        pending_system = None;
+                        ui.dismiss_system_palette(session_id);
+                        ui.show(
+                            BubbleKind::Transcribing,
+                            "System — opening selected browser...",
+                        );
+                        if let Err(error) =
+                            system_worker.send(SystemJob::DispatchSelectedBrowserNavigation {
+                                session_id,
+                                action,
+                                url,
+                            })
+                        {
+                            show_error(&ui, &error, &mut bubble_hide_at);
+                        }
+                    }
+                    Err(error) => {
+                        logging::warn(&format!(
+                            "ignored invalid System selection for session {session_id}: {error}"
+                        ));
+                    }
+                }
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SystemCancelled {
+                session_id,
+            }))) => {
+                let is_current = pending_system
+                    .as_ref()
+                    .is_some_and(|pending| pending.session_id() == session_id);
+                if is_current {
+                    pending_system = None;
+                    ui.dismiss_system_palette(session_id);
+                    ui.hide();
+                    system_worker.cancel_session(session_id);
+                    logging::info(&format!(
+                        "session {session_id}: System suggestions dismissed"
+                    ));
+                } else {
+                    logging::warn(&format!(
+                        "ignored cancellation for stale System session {session_id}"
+                    ));
+                }
+            }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(event))) => {
                 logging::warn(&format!("unexpected overlay event: {event:?}"));
             }
@@ -1337,6 +1754,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 logging::warn(&format!("ignored non-protocol overlay output: {line}"));
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Closed)) => {
+                pending_system = None;
+                system_worker.invalidate_sessions();
                 if ui.overlay.is_none() {
                     // Already torn down (shutdown path); nothing to do.
                 } else if overlay_ever_ready {
@@ -1354,6 +1773,192 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     ui.overlay = None;
                     ui.overlay_ready = false;
                 }
+            }
+            Ok(DaemonEvent::System(SystemWorkerEvent::TargetFindDispatched {
+                session_id,
+                transcript,
+                intent,
+                observation,
+                candidates,
+            })) => {
+                if active_system_resolution != Some(session_id) {
+                    logging::warn(&format!(
+                        "ignored target results for stale System session {session_id}"
+                    ));
+                    continue;
+                }
+                active_system_resolution = None;
+                match observation {
+                    observation if !observation.is_success() => {
+                        logging::error(&format!(
+                            "session {session_id}: target discovery failed ({})",
+                            "native_dispatch_failed"
+                        ));
+                        show_error(
+                            &ui,
+                            "Could not search Voice Spotlight targets",
+                            &mut bubble_hide_at,
+                        );
+                    }
+                    _ => {
+                        let browser_navigation = match route_deterministically(&transcript) {
+                            RouteOutcome::Matched {
+                                intent: SystemIntent::OpenBrowserAndUrl { spoken_url, .. },
+                                ..
+                            } => ValidatedHttpUrl::parse_spoken(&spoken_url).ok(),
+                            _ => None,
+                        };
+                        let pending =
+                            PendingSuggestionSet::build(session_id, &intent, candidates, 5);
+                        if pending.suggestions().is_empty() {
+                            logging::info(&format!(
+                                "session {session_id}: target resolution returned no matches"
+                            ));
+                            show_error(&ui, "No matching target found", &mut bubble_hide_at);
+                            continue;
+                        }
+                        let suggestions = pending
+                            .suggestions()
+                            .iter()
+                            .map(|suggestion| OverlaySuggestion {
+                                suggestion_id: suggestion.suggestion_id.clone(),
+                                title: suggestion.title.clone(),
+                                subtitle: suggestion.subtitle.clone(),
+                                action_label: suggestion_action_label(suggestion.action).into(),
+                            })
+                            .collect::<Vec<_>>();
+                        let suggestion_count = suggestions.len();
+                        ui.hide();
+                        if ui.show_system_palette(session_id, transcript, suggestions) {
+                            pending_system = Some(match browser_navigation {
+                                Some(url) => {
+                                    PendingSystemSelection::BrowserNavigation { pending, url }
+                                }
+                                None => PendingSystemSelection::Targets(pending),
+                            });
+                            logging::info(&format!(
+                                "session {session_id}: presented {suggestion_count} System suggestion(s); awaiting explicit selection"
+                            ));
+                        } else {
+                            show_error(
+                                &ui,
+                                "System suggestions UI is unavailable",
+                                &mut bubble_hide_at,
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(DaemonEvent::System(SystemWorkerEvent::TargetOpenDispatched {
+                session_id,
+                elapsed_ms,
+                terminal,
+                observation,
+            })) => {
+                if !system_worker.is_active_session(session_id) {
+                    logging::warn(&format!(
+                        "ignored target-open result for stale System session {session_id}"
+                    ));
+                    continue;
+                }
+                if !matches!(terminal, sunoto_system::PlanTerminalState::Completed) {
+                    let terminal_kind = match &terminal {
+                        sunoto_system::PlanTerminalState::Cancelled => "cancelled",
+                        sunoto_system::PlanTerminalState::TimedOut { .. } => "timed_out",
+                        sunoto_system::PlanTerminalState::Rejected { .. } => "rejected",
+                        sunoto_system::PlanTerminalState::Failed { .. } => "failed",
+                        sunoto_system::PlanTerminalState::Completed => "completed",
+                    };
+                    logging::warn(&format!(
+                        "session {session_id}: System plan stopped before completion ({terminal_kind})"
+                    ));
+                    if !matches!(terminal, sunoto_system::PlanTerminalState::Cancelled) {
+                        show_error(&ui, "Could not open target", &mut bubble_hide_at);
+                    }
+                    system_worker.cancel_session(session_id);
+                    continue;
+                }
+                match observation {
+                    observation if observation.is_success() => {
+                        let result = match observation.evidence {
+                            sunoto_system::ObservationEvidence::ApplicationLaunched {
+                                display_name,
+                                native_result,
+                            } => (display_name, native_result, "launch_application"),
+                            sunoto_system::ObservationEvidence::LocalTargetOpened {
+                                display_name,
+                                native_result,
+                                ..
+                            } => (display_name, native_result, "open_local_target"),
+                            sunoto_system::ObservationEvidence::LocalTargetRevealed {
+                                display_name,
+                                native_result,
+                            } => (display_name, native_result, "reveal_local_target"),
+                            _ => {
+                                logging::error(&format!(
+                                    "session {session_id}: native dispatcher returned no target success evidence"
+                                ));
+                                show_error(&ui, "Could not open target", &mut bubble_hide_at);
+                                system_worker.cancel_session(session_id);
+                                continue;
+                            }
+                        };
+                        logging::info(&format!(
+                            "session {session_id}: System audit action={} policy=selected outcome=success latency_ms={elapsed_ms} backend={}",
+                            result.2, result.1,
+                        ));
+                        ui.show(BubbleKind::Transcribing, &format!("Opened {}", result.0));
+                        bubble_hide_at = Some(Instant::now() + ERROR_BUBBLE_VISIBLE);
+                    }
+                    _ => {
+                        logging::error(&format!(
+                            "session {session_id}: System audit action=open_target policy=selected outcome=failure latency_ms={elapsed_ms} error_class={}",
+                            "native_dispatch_failed",
+                        ));
+                        show_error(&ui, "Could not open target", &mut bubble_hide_at);
+                    }
+                }
+                system_worker.cancel_session(session_id);
+            }
+            Ok(DaemonEvent::System(SystemWorkerEvent::NavigationComplete {
+                session_id,
+                elapsed_ms,
+                terminal,
+                observation,
+            })) => {
+                if !system_worker.is_active_session(session_id) {
+                    logging::warn(&format!(
+                        "ignored navigation result for stale System session {session_id}"
+                    ));
+                    continue;
+                }
+                match (&terminal, observation) {
+                    (sunoto_system::PlanTerminalState::Completed, observation)
+                        if observation.is_success() =>
+                    {
+                        if let sunoto_system::ObservationEvidence::UrlOpened {
+                            url,
+                            native_result,
+                        } = observation.evidence
+                        {
+                            logging::info(&format!(
+                                "session {session_id}: System audit action=url_open policy=selected outcome=success latency_ms={elapsed_ms} backend={native_result}"
+                            ));
+                            ui.show(BubbleKind::Transcribing, &format!("Opened {url}"));
+                            bubble_hide_at = Some(Instant::now() + ERROR_BUBBLE_VISIBLE);
+                        } else {
+                            show_error(&ui, "Could not open web target", &mut bubble_hide_at);
+                        }
+                    }
+                    (sunoto_system::PlanTerminalState::Cancelled, _) => {}
+                    _ => {
+                        logging::warn(&format!(
+                            "session {session_id}: System navigation failed before verification"
+                        ));
+                        show_error(&ui, "Could not open web target", &mut bubble_hide_at);
+                    }
+                }
+                system_worker.cancel_session(session_id);
             }
             Ok(DaemonEvent::FocusClass(class)) => {
                 // Logged per session: when text "disappears", the first
@@ -1475,6 +2080,28 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     let _ = response.write_all(b"\n");
                 }
             }
+            Ok(DaemonEvent::ControlSystemPlan { text, mut response }) => {
+                match crate::system_mode::plan_json_with_llm_fallback(
+                    &text,
+                    settings.system_llm_fallback_enabled,
+                ) {
+                    Ok(payload) => {
+                        let _ = response.write_all(payload.as_bytes());
+                        let _ = response.write_all(b"\n");
+                    }
+                    Err(error) => {
+                        let _ = serde_json::to_writer(
+                            &mut response,
+                            &serde_json::json!({
+                                "type": "error",
+                                "ok": false,
+                                "error": format!("cannot serialize System plan: {error}"),
+                            }),
+                        );
+                        let _ = response.write_all(b"\n");
+                    }
+                }
+            }
             Ok(DaemonEvent::Fatal(message)) => {
                 exit_error = Some(message);
                 break;
@@ -1491,7 +2118,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             && Instant::now() >= deadline
         {
             transcribe_deadline = None;
-            if let SessionState::Transcribing { session_id } = *machine.state() {
+            if let SessionState::Transcribing { session_id, .. } = *machine.state() {
                 if let Some(client) = sidecar.as_mut() {
                     let _ = client.send(&SidecarRequest::CancelSession { session_id });
                 }
@@ -1545,14 +2172,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     }
 
     logging::info("shutting down");
-    if let SessionState::Recording { session_id } | SessionState::Transcribing { session_id } =
-        *machine.state()
+    if let SessionState::Recording { session_id, .. }
+    | SessionState::Transcribing { session_id, .. } = *machine.state()
         && let Some(client) = sidecar.as_mut()
     {
         let _ = client.send(&SidecarRequest::CancelSession { session_id });
     }
     ui.overlay_send(OverlayRequest::Shutdown);
     ui.overlay = None;
+    system_worker.shutdown();
     let _ = ui_tx.send(UiCommand::Shutdown);
     control_stop.store(true, Ordering::SeqCst);
     hotkey_stop.store(true, Ordering::SeqCst);
@@ -1560,7 +2188,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     drop(sidecar);
     let _ = ui_handle.join();
     let _ = control_handle.join();
-    if let Some(hotkey_handle) = hotkey_handle {
+    for hotkey_handle in hotkey_handles {
         let _ = hotkey_handle.join();
     }
     let _ = capture_handle.join();
@@ -1573,6 +2201,65 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 fn show_error(ui: &UiFront, message: &str, bubble_hide_at: &mut Option<Instant>) {
     ui.show(BubbleKind::Error, message);
     *bubble_hide_at = Some(Instant::now() + ERROR_BUBBLE_VISIBLE);
+}
+
+fn present_navigation_confirmation(
+    navigation: Result<(CapabilityInput, String), String>,
+    session_id: u64,
+    transcript: &str,
+    ui: &UiFront,
+    pending_system: &mut Option<PendingSystemSelection>,
+    bubble_hide_at: &mut Option<Instant>,
+) {
+    let (input, title) = match navigation {
+        Ok(navigation) => navigation,
+        Err(error) => {
+            logging::warn(&format!(
+                "session {session_id}: invalid System URL: {error}"
+            ));
+            show_error(
+                ui,
+                "That is not a supported HTTP or HTTPS URL",
+                bubble_hide_at,
+            );
+            return;
+        }
+    };
+    let suggestions = vec![OverlaySuggestion {
+        suggestion_id: "system-navigation-confirm".into(),
+        title: title.clone(),
+        subtitle: Some("Opens in the default browser after selection".into()),
+        action_label: "Open".into(),
+    }];
+    ui.hide();
+    if ui.show_system_palette(session_id, transcript.into(), suggestions) {
+        *pending_system = Some(PendingSystemSelection::Navigation {
+            session_id,
+            input,
+            title,
+        });
+    } else {
+        show_error(ui, "System suggestions UI is unavailable", bubble_hide_at);
+    }
+}
+
+fn mode_label(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Dictation => "dictation",
+        SessionMode::System => "system",
+    }
+}
+
+fn suggestion_action_label(action: SuggestionAction) -> &'static str {
+    match action {
+        SuggestionAction::OpenApplication
+        | SuggestionAction::OpenFile
+        | SuggestionAction::OpenFolder
+        | SuggestionAction::OpenProject
+        | SuggestionAction::OpenUrl => "Open",
+        SuggestionAction::RevealFile => "Reveal",
+        SuggestionAction::SearchWeb => "Search",
+    }
 }
 
 fn control_polish_response(
@@ -1969,8 +2656,14 @@ fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEvent>) -> bo
     }
     let trimmed = line.trim();
     let event = match trimmed {
-        "press" => Some(HotkeyEvent::Pressed),
-        "release" => Some(HotkeyEvent::Released),
+        "press" => Some(ModeHotkeyEvent {
+            mode: SessionMode::Dictation,
+            edge: HotkeyEvent::Pressed,
+        }),
+        "release" => Some(ModeHotkeyEvent {
+            mode: SessionMode::Dictation,
+            edge: HotkeyEvent::Released,
+        }),
         other => match serde_json::from_str::<ControlCommand>(other) {
             Ok(ControlCommand::Polish { text }) => {
                 return events
@@ -1980,6 +2673,34 @@ fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEvent>) -> bo
                     })
                     .is_ok();
             }
+            Ok(ControlCommand::PlanSystem {
+                text,
+                dry_run: true,
+            }) => {
+                return events
+                    .send(DaemonEvent::ControlSystemPlan {
+                        text,
+                        response: reader.into_inner(),
+                    })
+                    .is_ok();
+            }
+            Ok(ControlCommand::PlanSystem { dry_run: false, .. }) => {
+                let mut stream = reader.into_inner();
+                let _ = serde_json::to_writer(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "error",
+                        "ok": false,
+                        "error": "plan_system currently requires dry_run=true",
+                    }),
+                );
+                let _ = stream.write_all(b"\n");
+                return true;
+            }
+            Ok(ControlCommand::Trigger { mode, edge }) => Some(ModeHotkeyEvent {
+                mode: mode.into(),
+                edge: edge.into(),
+            }),
             Err(_) => {
                 let mut stream = reader.into_inner();
                 let _ = serde_json::to_writer(
@@ -2002,6 +2723,7 @@ fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEvent>) -> bo
 }
 
 fn spawn_hotkey_thread(
+    mode: SessionMode,
     shortcut: Shortcut,
     events: Sender<DaemonEvent>,
     stop: Arc<AtomicBool>,
@@ -2010,15 +2732,22 @@ fn spawn_hotkey_thread(
         let listener = match HotkeyListener::open(&shortcut) {
             Ok(listener) => listener,
             Err(error) => {
-                let _ = events.send(DaemonEvent::Fatal(format!(
-                    "global shortcut unavailable: {error}"
-                )));
+                // A missing macOS TCC grant must not take down the daemon:
+                // compositor/control-socket triggers remain useful for
+                // recovery and mock System-mode verification. The native
+                // hotkey stays unavailable until the user grants permission.
+                logging::warn(&format!(
+                    "global {} shortcut unavailable: {error}; physical hotkey disabled while control triggers remain available",
+                    mode_label(mode)
+                ));
                 return;
             }
         };
         while !stop.load(Ordering::SeqCst) {
             if let Some(event) = listener.wait(Duration::from_millis(250))
-                && events.send(DaemonEvent::Hotkey(event)).is_err()
+                && events
+                    .send(DaemonEvent::Hotkey(ModeHotkeyEvent { mode, edge: event }))
+                    .is_err()
             {
                 return;
             }
@@ -2089,4 +2818,229 @@ fn spawn_capture_thread(
             h.stop();
         }
     }))
+}
+
+#[cfg(test)]
+mod system_mode_integration_tests {
+    use super::*;
+    use sunoto_system::{
+        ActionExecutor, ActionResult, ActionSuccessEvidence, ApplicationResolver,
+        CapabilityDispatcher, FakePlanner, FixtureApplicationResolver, NativeCapabilityDispatcher,
+        ObservationEvidence, PlanLimits, PlanTerminalState, PlannedCapabilityCall,
+        PlannedCapabilityInput, ResolvedSystemAction, SystemOperationError, SystemPlan,
+        SystemPlanRunner,
+    };
+
+    #[derive(Default)]
+    struct BrowserFixture {
+        resolver: FixtureApplicationResolver,
+        url_calls: Vec<(String, String)>,
+    }
+
+    impl ApplicationResolver for BrowserFixture {
+        fn application_candidates(
+            &mut self,
+        ) -> Result<Vec<sunoto_system::ActionCandidate>, SystemOperationError> {
+            self.resolver.application_candidates()
+        }
+
+        fn target_candidates(
+            &mut self,
+            intent: &SystemIntent,
+        ) -> Result<Vec<sunoto_system::ActionCandidate>, SystemOperationError> {
+            self.resolver.target_candidates(intent)
+        }
+    }
+
+    impl ActionExecutor for BrowserFixture {
+        fn execute(
+            &mut self,
+            action: &ResolvedSystemAction,
+        ) -> Result<ActionResult, SystemOperationError> {
+            let evidence = match action {
+                ResolvedSystemAction::LaunchApplication { .. } => {
+                    ActionSuccessEvidence::ApplicationRunning
+                }
+                ResolvedSystemAction::OpenLocalTarget { reveal: true, .. } => {
+                    ActionSuccessEvidence::LocalTargetRevealed
+                }
+                ResolvedSystemAction::OpenLocalTarget { .. } => {
+                    ActionSuccessEvidence::LocalTargetOpened
+                }
+            };
+            Ok(ActionResult {
+                display_name: action.display_name().into(),
+                detail: "unused application fixture action".into(),
+                evidence,
+            })
+        }
+
+        fn can_open_http_urls(
+            &mut self,
+            action: &ResolvedSystemAction,
+        ) -> Result<bool, SystemOperationError> {
+            Ok(action.display_name() == "Google Chrome")
+        }
+
+        fn open_url(
+            &mut self,
+            url: &ValidatedHttpUrl,
+            browser: Option<&ResolvedSystemAction>,
+        ) -> Result<ActionResult, SystemOperationError> {
+            let browser = browser.ok_or_else(|| SystemOperationError::new("missing browser"))?;
+            self.url_calls
+                .push((url.as_str().into(), browser.display_name().into()));
+            Ok(ActionResult {
+                display_name: browser.display_name().into(),
+                detail: "fixture native URL observation".into(),
+                evidence: ActionSuccessEvidence::ApplicationRunning,
+            })
+        }
+    }
+
+    #[test]
+    fn compound_system_route_requires_palette_selection_then_observes_selected_browser_url() {
+        let presentation =
+            crate::system_mode::present_live_plan("open Chrome and go to google dot com", false);
+        let Some(SystemIntent::OpenBrowserAndUrl {
+            browser_query,
+            spoken_url,
+        }) = presentation.intent
+        else {
+            panic!("compound route was not deterministic");
+        };
+        let url = ValidatedHttpUrl::parse_spoken(&spoken_url).unwrap();
+        let find = CapabilityInput::Native(NativeCapabilityCall::FindApplication {
+            query: browser_query,
+        });
+        let mut dispatcher = NativeCapabilityDispatcher::new(BrowserFixture::default());
+        let found = dispatcher.dispatch(&find);
+        assert!(found.is_success());
+        let candidates = dispatcher.take_last_candidates();
+        let intent = SystemIntent::OpenTarget {
+            query: "Chrome".into(),
+            hint: TargetHint::Application,
+        };
+        let mut palette = PendingSystemSelection::BrowserNavigation {
+            pending: PendingSuggestionSet::build(77, &intent, candidates, 5),
+            url: url.clone(),
+        };
+        let suggestion = match &palette {
+            PendingSystemSelection::BrowserNavigation { pending, .. } => {
+                pending.suggestions()[0].suggestion_id.clone()
+            }
+            _ => unreachable!(),
+        };
+        let SelectedSystemAction::BrowserNavigation { action, url } =
+            palette.select(77, &suggestion).unwrap()
+        else {
+            panic!("palette did not produce browser navigation");
+        };
+        assert!(
+            palette.select(77, &suggestion).is_err(),
+            "selection must be one-time"
+        );
+        let CapabilityInput::Native(NativeCapabilityCall::OpenApplication { target }) =
+            dispatcher.authorize_selected_action(&action).unwrap()
+        else {
+            panic!("selected application did not produce an opaque target");
+        };
+        let input = CapabilityInput::Native(NativeCapabilityCall::OpenUrl {
+            url: url.clone(),
+            browser: Some(target),
+        });
+        let plan = SystemPlan {
+            goal: "Open Chrome and go to google.com".into(),
+            steps: vec![PlannedCapabilityCall {
+                id: "open-url".into(),
+                input: PlannedCapabilityInput::Literal(input),
+                depends_on: vec![],
+            }],
+            limits: PlanLimits::default(),
+        };
+        let mut planner = FakePlanner::returning(plan);
+        let result = SystemPlanRunner::run(
+            "Open Chrome and go to google.com",
+            &mut planner,
+            &mut dispatcher,
+            &(),
+        );
+        assert_eq!(result.terminal, PlanTerminalState::Completed);
+        assert!(matches!(
+            &result.observations[0].1.evidence,
+            ObservationEvidence::UrlOpened { url: observed, .. } if observed == url.as_str()
+        ));
+        assert_eq!(
+            dispatcher.into_inner().url_calls,
+            vec![(url.as_str().into(), "Google Chrome".into())]
+        );
+    }
+
+    #[test]
+    fn voice_spotlight_project_and_editor_route_through_one_time_palette_and_runner() {
+        let presentation =
+            crate::system_mode::present_live_plan("open who-else-is-free in VS Code", false);
+        let Some(intent @ SystemIntent::OpenTargetWithApplication { .. }) = presentation.intent
+        else {
+            panic!("project/editor route was not deterministic");
+        };
+        let mut dispatcher = NativeCapabilityDispatcher::new(BrowserFixture::default());
+        let found =
+            dispatcher.dispatch(&CapabilityInput::Native(NativeCapabilityCall::FindTarget {
+                intent: intent.clone(),
+            }));
+        assert!(found.is_success(), "{found:?}");
+        let candidates = dispatcher.take_last_candidates();
+        let mut palette = PendingSystemSelection::Targets(PendingSuggestionSet::build(
+            88, &intent, candidates, 10,
+        ));
+        let suggestion_id = match &palette {
+            PendingSystemSelection::Targets(pending) => pending
+                .suggestions()
+                .iter()
+                .find(|suggestion| suggestion.title == "Open who-else-is-free")
+                .unwrap()
+                .suggestion_id
+                .clone(),
+            _ => unreachable!(),
+        };
+        let SelectedSystemAction::Target(action) = palette.select(88, &suggestion_id).unwrap()
+        else {
+            panic!("palette did not produce a typed local-target action");
+        };
+        assert!(palette.select(88, &suggestion_id).is_err());
+        assert!(matches!(
+            &action,
+            ResolvedSystemAction::OpenLocalTarget {
+                application_display_name: Some(name),
+                ..
+            } if name == "Visual Studio Code"
+        ));
+        let input = dispatcher.authorize_selected_action(&action).unwrap();
+        let plan = SystemPlan {
+            goal: "Open project in selected editor".into(),
+            steps: vec![PlannedCapabilityCall {
+                id: "open-project".into(),
+                input: PlannedCapabilityInput::Literal(input.clone()),
+                depends_on: vec![],
+            }],
+            limits: PlanLimits::default(),
+        };
+        let mut planner = FakePlanner::returning(plan);
+        let result = SystemPlanRunner::run(
+            "Open who-else-is-free in VS Code",
+            &mut planner,
+            &mut dispatcher,
+            &(),
+        );
+        assert_eq!(result.terminal, PlanTerminalState::Completed);
+        assert!(matches!(
+            &result.observations[0].1.evidence,
+            ObservationEvidence::LocalTargetOpened {
+                kind: sunoto_system::CandidateKind::Project,
+                ..
+            }
+        ));
+        assert!(!dispatcher.dispatch(&input).is_success());
+    }
 }

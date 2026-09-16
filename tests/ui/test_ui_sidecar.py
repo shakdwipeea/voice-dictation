@@ -30,6 +30,12 @@ class StubOverlay:
     def clear_segments(self):
         self.calls.append(("clear",))
 
+    def show_system_palette(self, session_id, transcript, suggestions):
+        self.calls.append(("system_palette", session_id, transcript, suggestions))
+
+    def dismiss_system_palette(self, session_id):
+        self.calls.append(("dismiss_system_palette", session_id))
+
     def shutdown(self):
         self.calls.append(("shutdown",))
 
@@ -66,6 +72,28 @@ class DispatchTest(unittest.TestCase):
     def test_shutdown_stops_loop_without_calling_overlay(self):
         self.assertFalse(dispatch(self.overlay, {"type": "shutdown"}))
         self.assertEqual(self.overlay.calls, [])
+
+    def test_system_palette_and_dismiss_map_typed_fields(self):
+        suggestions = [{
+            "suggestion_id": "session-7:suggestion-1",
+            "title": "Open Google Chrome",
+            "subtitle": "Application",
+            "action_label": "Open",
+        }]
+        self.assertTrue(dispatch(self.overlay, {
+            "type": "system_palette",
+            "session_id": 7,
+            "transcript": "open chrome",
+            "suggestions": suggestions,
+        }))
+        self.assertTrue(dispatch(self.overlay, {
+            "type": "dismiss_system_palette",
+            "session_id": 7,
+        }))
+        self.assertEqual(self.overlay.calls, [
+            ("system_palette", 7, "open chrome", suggestions),
+            ("dismiss_system_palette", 7),
+        ])
 
     def test_unknown_op_is_skipped(self):
         self.assertTrue(dispatch(self.overlay, {"type": "explode"}))

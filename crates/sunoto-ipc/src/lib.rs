@@ -34,7 +34,24 @@ pub enum OverlayRequest {
         text: String,
     },
     Clear,
+    /// Focusable command palette shown only after System recording ends.
+    SystemPalette {
+        session_id: u64,
+        transcript: String,
+        suggestions: Vec<OverlaySuggestion>,
+    },
+    DismissSystemPalette {
+        session_id: u64,
+    },
     Shutdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlaySuggestion {
+    pub suggestion_id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub action_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +74,13 @@ pub enum SidecarEvent {
     Error {
         session_id: Option<u64>,
         message: String,
+    },
+    SystemSelection {
+        session_id: u64,
+        suggestion_id: String,
+    },
+    SystemCancelled {
+        session_id: u64,
     },
 }
 
@@ -277,6 +301,24 @@ mod tests {
             serde_json::to_string(&OverlayRequest::Show).unwrap(),
             r#"{"type":"show"}"#
         );
+
+        let palette = OverlayRequest::SystemPalette {
+            session_id: 9,
+            transcript: "Open Chrome".into(),
+            suggestions: vec![OverlaySuggestion {
+                suggestion_id: "session-9:suggestion-1".into(),
+                title: "Open Google Chrome".into(),
+                subtitle: Some("Application".into()),
+                action_label: "Open".into(),
+            }],
+        };
+        let encoded = serde_json::to_string(&palette).unwrap();
+        assert_eq!(
+            serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
+            palette
+        );
+        assert!(!encoded.contains("application_id"));
+        assert!(!encoded.contains("path"));
     }
 
     #[test]

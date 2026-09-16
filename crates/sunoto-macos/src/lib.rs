@@ -11,8 +11,10 @@
 mod ffi;
 mod hotkey;
 mod insertion;
+mod system;
 mod types;
 
 pub use hotkey::HotkeyListener;
 pub use insertion::{ProbeWindow, UiAdapter};
+pub use system::SystemPlatform;
 pub use types::{BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, X11Error};

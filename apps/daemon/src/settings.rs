@@ -18,8 +18,7 @@ const DEFAULT_LLM_POLISH_MODEL: &str = "phi4_mini";
 /// default so the live daemon runs the same path we benchmarked. The legacy
 /// `one_pass_minimal` path is kept for fallback but is not the default.
 const DEFAULT_LLM_POLISH_MODE: &str = "constrained_one_call";
-const ALLOWED_LLM_POLISH_MODES: &[&str] =
-    &["constrained_one_call", "one_pass_minimal", "two_step"];
+const ALLOWED_LLM_POLISH_MODES: &[&str] = &["constrained_one_call", "one_pass_minimal", "two_step"];
 
 /// Resolve a named LLM polish profile to its repo-relative GGUF path. Used
 /// both to build the sidecar env and to validate config. Returns None for an
@@ -27,12 +26,12 @@ const ALLOWED_LLM_POLISH_MODES: &[&str] =
 /// falling back to the Python sidecar's bundled default.
 fn llm_polish_model_relative(name: &str) -> Option<&'static str> {
     match name {
-        "phi4_mini" => Some(
-            "models/llm-polish-hf/phi-4-mini-q5/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf",
-        ),
-        "gemma4_e2b" => Some(
-            "models/llm-polish-hf/gemma-4-e2b-it-q4/google_gemma-4-E2B-it-Q4_K_M.gguf",
-        ),
+        "phi4_mini" => {
+            Some("models/llm-polish-hf/phi-4-mini-q5/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf")
+        }
+        "gemma4_e2b" => {
+            Some("models/llm-polish-hf/gemma-4-e2b-it-q4/google_gemma-4-E2B-it-Q4_K_M.gguf")
+        }
         _ => None,
     }
 }
@@ -62,6 +61,18 @@ fn default_overlay_backend() -> &'static str {
 pub struct Settings {
     /// Push-to-talk shortcut, e.g. "Ctrl+F1".
     pub shortcut: String,
+    /// Enables the separate voice-command capture path. It remains off until
+    /// the suggestion palette is connected; enabling it must never change the
+    /// behavior of the normal dictation shortcut.
+    pub system_mode_enabled: bool,
+    /// Push-to-talk shortcut reserved for System mode, e.g. "Ctrl+F2".
+    pub system_shortcut: String,
+    /// Send only clean deterministic no-matches to the constrained LLM
+    /// intent router. Unsafe inputs are rejected before this fallback.
+    pub system_llm_fallback_enabled: bool,
+    /// User-approved roots for Voice Spotlight file/folder/project search.
+    /// Relative values resolve below the current user's home directory.
+    pub system_search_roots: Vec<String>,
     /// PulseAudio source name, or "auto" for the first physical microphone.
     pub microphone: String,
     /// ASR backend. Linux config init defaults to "mock"; macOS config init
@@ -105,8 +116,8 @@ pub struct Settings {
     pub overlay_backend: String,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
-    /// Experimental local LLM cleanup after deterministic polish. Disabled by
-    /// default; when enabled, a warm sidecar loads the model once at startup.
+    /// Experimental local LLM cleanup after deterministic polish. Enabled by
+    /// default; a warm sidecar loads the model once at startup.
     pub llm_polish_enabled: bool,
     /// Override the Python interpreter used by the LLM polish sidecar.
     pub llm_polish_python: Option<String>,
@@ -156,6 +167,15 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             shortcut: "Ctrl+F1".to_string(),
+            system_mode_enabled: false,
+            system_shortcut: "Ctrl+F2".to_string(),
+            system_llm_fallback_enabled: true,
+            system_search_roots: vec![
+                "Desktop".into(),
+                "Documents".into(),
+                "Downloads".into(),
+                "workspace".into(),
+            ],
             microphone: "auto".to_string(),
             backend: default_backend().to_string(),
             profile_ms: default_profile_ms(),
@@ -312,10 +332,7 @@ impl Settings {
                     .map(|relative| root.join(relative).to_string_lossy().into_owned())
             });
         if let Some(model_path) = resolved_model_path {
-            envs.push((
-                "SUNOTO_LLM_POLISH_MODEL_PATH".to_string(),
-                model_path,
-            ));
+            envs.push(("SUNOTO_LLM_POLISH_MODEL_PATH".to_string(), model_path));
         }
         // Always pass the dispatch mode so the live daemon runs the same
         // completion path we benchmarked (defaults to constrained_one_call);
@@ -336,6 +353,36 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.system_mode_enabled && self.system_shortcut.trim().is_empty() {
+            return Err("system_shortcut must not be empty when System mode is enabled".into());
+        }
+        if self.system_mode_enabled
+            && self
+                .shortcut
+                .trim()
+                .eq_ignore_ascii_case(self.system_shortcut.trim())
+        {
+            return Err("system_shortcut must differ from the dictation shortcut".into());
+        }
+        if self.system_search_roots.len() > 16
+            || self
+                .system_search_roots
+                .iter()
+                .any(|root| root.trim().is_empty() || root.chars().any(char::is_control))
+        {
+            return Err(
+                "system_search_roots must contain at most 16 non-empty single-line paths".into(),
+            );
+        }
+        if self.system_search_roots.iter().any(|root| {
+            let path = Path::new(root.trim());
+            path == Path::new("/") || path.components().any(|part| part.as_os_str() == "..")
+        }) {
+            return Err(
+                "system_search_roots must not be the filesystem root or contain parent traversal"
+                    .into(),
+            );
+        }
         match self.backend.as_str() {
             "mock"
             | "nemotron"
@@ -380,9 +427,9 @@ impl Settings {
             }
         }
         match self.overlay_backend.as_str() {
-            "auto" | "x11" | "wayland" | "macos" => Ok(()),
+            "auto" | "x11" | "wayland" | "macos" | "mock" => Ok(()),
             other => Err(format!(
-                "unsupported overlay_backend {other:?}; use auto, x11, wayland, or macos"
+                "unsupported overlay_backend {other:?}; use auto, x11, wayland, macos, or mock"
             )),
         }?;
         if self.llm_polish_enabled && self.llm_polish_timeout_ms == 0 {
@@ -393,9 +440,7 @@ impl Settings {
             .as_ref()
             .map(|path| !path.trim().is_empty())
             .unwrap_or(false);
-        if !has_explicit_model_path
-            && llm_polish_model_relative(&self.llm_polish_model).is_none()
-        {
+        if !has_explicit_model_path && llm_polish_model_relative(&self.llm_polish_model).is_none() {
             return Err(format!(
                 "unknown llm_polish_model {:?}; use phi4_mini or gemma4_e2b, or set llm_polish_model_path",
                 self.llm_polish_model
@@ -418,9 +463,36 @@ impl Settings {
         Ok(())
     }
 
+    pub fn system_search_root_paths(&self) -> Vec<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        self.system_search_roots
+            .iter()
+            .map(|root| PathBuf::from(root.trim()))
+            .filter_map(|root| {
+                if root.is_absolute() {
+                    Some(root)
+                } else {
+                    home.as_ref().map(|home| home.join(root))
+                }
+            })
+            .collect()
+    }
+
     /// Command and environment for the overlay UI sidecar. Linux uses the
     /// GTK Python module; macOS uses the native Swift NSPanel helper.
     pub fn overlay_command(&self) -> (String, Vec<String>, Vec<(String, String)>) {
+        if self.overlay_backend == "mock" {
+            return (
+                "python3".to_string(),
+                vec![
+                    repo_root()
+                        .join("services/ui/mock_overlay_sidecar.py")
+                        .to_string_lossy()
+                        .into_owned(),
+                ],
+                vec![("SUNOTO_OVERLAY_BACKEND".to_string(), "mock".to_string())],
+            );
+        }
         let src = repo_root().join("src");
         if cfg!(target_os = "macos") && self.overlay_backend == "macos" {
             let root = repo_root();
@@ -604,6 +676,59 @@ mod tests {
     }
 
     #[test]
+    fn system_mode_defaults_are_safe_and_do_not_claim_the_hotkey() {
+        let settings = Settings::default();
+        assert!(!settings.system_mode_enabled);
+        assert_eq!(settings.system_shortcut, "Ctrl+F2");
+        assert!(settings.system_llm_fallback_enabled);
+        assert!(settings.system_search_roots.contains(&"workspace".into()));
+    }
+
+    #[test]
+    fn system_search_roots_are_bounded_and_resolve_below_home() {
+        let traversal = Settings {
+            system_search_roots: vec!["Documents/../Library".into()],
+            ..Settings::default()
+        };
+        assert!(traversal.validate().is_err());
+        let root = Settings {
+            system_search_roots: vec!["/".into()],
+            ..Settings::default()
+        };
+        assert!(root.validate().is_err());
+        let settings = Settings::default();
+        assert!(
+            settings
+                .system_search_root_paths()
+                .iter()
+                .any(|path| path.ends_with("workspace"))
+        );
+    }
+
+    #[test]
+    fn enabled_system_mode_requires_a_distinct_shortcut() {
+        let same_shortcut = Settings {
+            system_mode_enabled: true,
+            system_shortcut: "ctrl+f1".into(),
+            ..Settings::default()
+        };
+        assert!(same_shortcut.validate().is_err());
+
+        let empty_shortcut = Settings {
+            system_mode_enabled: true,
+            system_shortcut: "  ".into(),
+            ..Settings::default()
+        };
+        assert!(empty_shortcut.validate().is_err());
+
+        let valid = Settings {
+            system_mode_enabled: true,
+            ..Settings::default()
+        };
+        assert!(valid.validate().is_ok());
+    }
+
+    #[test]
     fn invalid_settings_files_are_rejected() {
         let path = std::env::temp_dir().join(format!(
             "sunoto-settings-invalid-{}.json",
@@ -678,9 +803,11 @@ mod tests {
         assert_eq!(mode_env, Some("constrained_one_call"));
         // Streaming insert defaults off; the env var is only pushed when on.
         assert!(!settings.llm_polish_stream_insert);
-        assert!(!envs
-            .iter()
-            .any(|(key, _)| key == "SUNOTO_LLM_POLISH_STREAM"));
+        assert!(
+            !envs
+                .iter()
+                .any(|(key, _)| key == "SUNOTO_LLM_POLISH_STREAM")
+        );
     }
 
     #[test]
@@ -1054,6 +1181,19 @@ mod tests {
             ..Settings::default()
         };
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn mock_overlay_backend_is_headless_and_explicit() {
+        let settings = Settings {
+            overlay_backend: "mock".into(),
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_ok());
+        let (program, args, envs) = settings.overlay_command();
+        assert_eq!(program, "python3");
+        assert!(args[0].ends_with("services/ui/mock_overlay_sidecar.py"));
+        assert!(envs.contains(&("SUNOTO_OVERLAY_BACKEND".into(), "mock".into())));
     }
 
     #[cfg(target_os = "macos")]

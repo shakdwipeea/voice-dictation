@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 
+// The passive pill is used while recording and resolving. System mode uses a
+// purple accent so it cannot be confused with ordinary red dictation capture.
 private final class PillView: NSView {
     var level: CGFloat = 0.0 {
         didSet { needsDisplay = true }
@@ -27,7 +29,11 @@ private final class PillView: NSView {
         NSBezierPath(roundedRect: pillRect, xRadius: pillRect.height / 2.0, yRadius: pillRect.height / 2.0).fill()
 
         let dotRect = NSRect(x: pillRect.minX + 14, y: pillRect.minY + (pillRect.height - 10) / 2.0, width: 10, height: 10)
-        NSColor(calibratedRed: 0.94, green: 0.26, blue: 0.26, alpha: 1.0).setFill()
+        let systemMode = status.lowercased().hasPrefix("system")
+        let dotColor = systemMode
+            ? NSColor.controlAccentColor
+            : NSColor(calibratedRed: 0.94, green: 0.26, blue: 0.26, alpha: 1.0)
+        dotColor.setFill()
         NSBezierPath(ovalIn: dotRect).fill()
 
         let meterX = pillRect.minX + 36
@@ -74,10 +80,347 @@ private final class PillView: NSView {
     }
 }
 
+private enum PaletteLayout {
+    static let width: CGFloat = 520
+    static let headerHeight: CGFloat = 52
+    static let rowHeight: CGFloat = 56
+    static let rowSpacing: CGFloat = 2
+    static let footerHeight: CGFloat = 28
+    static let horizontalInset: CGFloat = 12
+    static let cornerRadius: CGFloat = 14
+    // Use the person's macOS accent instead of imposing an "AI purple".
+    // This keeps System mode native in blue, graphite, or their chosen color.
+    static let accent = NSColor.controlAccentColor
+
+    static func height(rowCount: Int) -> CGFloat {
+        let rows = CGFloat(max(1, min(rowCount, 5)))
+        return headerHeight + 1 + 4 + rows * (rowHeight + rowSpacing) + 4 + 1 + footerHeight
+    }
+}
+
+private struct PaletteSuggestion {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let actionLabel: String
+
+    var displayTitle: String {
+        let prefix = actionLabel + " "
+        guard title.lowercased().hasPrefix(prefix.lowercased()) else { return title }
+        return String(title.dropFirst(prefix.count))
+    }
+}
+
+private final class SystemPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+private final class PaletteTableView: NSTableView {
+    var confirmHandler: (() -> Void)?
+    var cancelHandler: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76: confirmHandler?()
+        case 53: cancelHandler?()
+        default: super.keyDown(with: event)
+        }
+    }
+}
+
+private final class PaletteRowBackgroundView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 4, dy: 2)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+        PaletteLayout.accent.withAlphaComponent(0.17).setFill()
+        path.fill()
+    }
+}
+
+private final class PaletteRowView: NSTableCellView {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let subtitleLabel = NSTextField(labelWithString: "")
+    private let actionLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        iconView.image = NSImage(
+            systemSymbolName: "app.fill",
+            accessibilityDescription: "Application"
+        )?.withSymbolConfiguration(.init(pointSize: 17, weight: .medium))
+        iconView.contentTintColor = PaletteLayout.accent
+        iconView.imageScaling = .scaleProportionallyDown
+
+        titleLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.font = .systemFont(ofSize: 11)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        actionLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        actionLabel.textColor = PaletteLayout.accent
+        actionLabel.alignment = .right
+
+        let labels = NSStackView(views: [titleLabel, subtitleLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 1
+
+        for view in [iconView, labels, actionLabel] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 30),
+            iconView.heightAnchor.constraint(equalToConstant: 30),
+            labels.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            labels.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionLabel.leadingAnchor.constraint(greaterThanOrEqualTo: labels.trailingAnchor, constant: 12),
+            actionLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            actionLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            actionLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 52),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(with suggestion: PaletteSuggestion) {
+        titleLabel.stringValue = suggestion.displayTitle
+        subtitleLabel.stringValue = suggestion.subtitle ?? "Application"
+        actionLabel.stringValue = suggestion.actionLabel + "  ↵"
+        setAccessibilityLabel(suggestion.title)
+    }
+}
+
+/// A compact, focusable result list. It receives only per-session suggestion
+/// tokens; native application identifiers remain inside the Rust daemon.
+private final class SystemPaletteController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+    private let panel: NSPanel
+    private let queryLabel = NSTextField(labelWithString: "")
+    private let table = PaletteTableView()
+    private let onSelect: (UInt64, String) -> Void
+    private let onCancel: (UInt64) -> Void
+    private var sessionID: UInt64?
+    private var suggestions: [PaletteSuggestion] = []
+
+    init(onSelect: @escaping (UInt64, String) -> Void, onCancel: @escaping (UInt64) -> Void) {
+        self.onSelect = onSelect
+        self.onCancel = onCancel
+        panel = SystemPanel(
+            contentRect: NSRect(x: 0, y: 0, width: PaletteLayout.width, height: 150),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+
+        panel.title = "Sunoto System"
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isFloatingPanel = true
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.animationBehavior = .utilityWindow
+        panel.isMovableByWindowBackground = true
+        panel.delegate = self
+
+        let header = NSView()
+        let modeIcon = NSImageView()
+        modeIcon.image = NSImage(
+            systemSymbolName: "command.circle.fill",
+            accessibilityDescription: "System mode"
+        )?.withSymbolConfiguration(.init(pointSize: 15, weight: .semibold))
+        modeIcon.contentTintColor = PaletteLayout.accent
+        queryLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        queryLabel.lineBreakMode = .byTruncatingTail
+        let modeLabel = NSTextField(labelWithString: "SYSTEM")
+        modeLabel.font = .systemFont(ofSize: 9.5, weight: .semibold)
+        modeLabel.textColor = PaletteLayout.accent
+        modeLabel.alignment = .right
+
+        table.headerView = nil
+        table.rowHeight = PaletteLayout.rowHeight
+        table.intercellSpacing = NSSize(width: 0, height: PaletteLayout.rowSpacing)
+        table.allowsMultipleSelection = false
+        table.allowsEmptySelection = false
+        table.backgroundColor = .clear
+        table.focusRingType = .none
+        table.selectionHighlightStyle = .regular
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.action = #selector(confirmSelection)
+        table.confirmHandler = { [weak self] in self?.confirmSelection() }
+        table.cancelHandler = { [weak self] in self?.cancelSelection() }
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("suggestion"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.documentView = table
+
+        let headerSeparator = NSBox()
+        headerSeparator.boxType = .separator
+        let footerSeparator = NSBox()
+        footerSeparator.boxType = .separator
+        let help = NSTextField(labelWithString: "Click or ↵ to open   ·   esc to cancel")
+        help.font = .systemFont(ofSize: 10.5)
+        help.textColor = .tertiaryLabelColor
+        help.alignment = .center
+
+        let content = NSVisualEffectView()
+        content.material = .popover
+        content.blendingMode = .behindWindow
+        content.state = .active
+        content.wantsLayer = true
+        content.layer?.cornerRadius = PaletteLayout.cornerRadius
+        content.layer?.masksToBounds = true
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        panel.contentView = content
+
+        for view in [header, modeIcon, queryLabel, modeLabel, headerSeparator, scroll, footerSeparator, help] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+        }
+        content.addSubview(header)
+        header.addSubview(modeIcon)
+        header.addSubview(queryLabel)
+        header.addSubview(modeLabel)
+        content.addSubview(headerSeparator)
+        content.addSubview(scroll)
+        content.addSubview(footerSeparator)
+        content.addSubview(help)
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: content.topAnchor),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: PaletteLayout.headerHeight),
+            modeIcon.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            modeIcon.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            modeIcon.widthAnchor.constraint(equalToConstant: 30),
+            modeIcon.heightAnchor.constraint(equalToConstant: 22),
+            queryLabel.leadingAnchor.constraint(equalTo: modeIcon.trailingAnchor, constant: 10),
+            queryLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            modeLabel.leadingAnchor.constraint(greaterThanOrEqualTo: queryLabel.trailingAnchor, constant: 12),
+            modeLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+            modeLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            modeLabel.widthAnchor.constraint(equalToConstant: 54),
+            headerSeparator.topAnchor.constraint(equalTo: header.bottomAnchor),
+            headerSeparator.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: PaletteLayout.horizontalInset),
+            headerSeparator.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -PaletteLayout.horizontalInset),
+            scroll.topAnchor.constraint(equalTo: headerSeparator.bottomAnchor, constant: 4),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 4),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -4),
+            scroll.bottomAnchor.constraint(equalTo: footerSeparator.topAnchor, constant: -4),
+            footerSeparator.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: PaletteLayout.horizontalInset),
+            footerSeparator.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -PaletteLayout.horizontalInset),
+            help.topAnchor.constraint(equalTo: footerSeparator.bottomAnchor),
+            help.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            help.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            help.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            help.heightAnchor.constraint(equalToConstant: PaletteLayout.footerHeight),
+        ])
+    }
+
+    func show(sessionID: UInt64, transcript: String, suggestions: [PaletteSuggestion]) {
+        self.sessionID = sessionID
+        self.suggestions = suggestions
+        queryLabel.stringValue = transcript
+        panel.setContentSize(NSSize(
+            width: PaletteLayout.width,
+            height: PaletteLayout.height(rowCount: suggestions.count)
+        ))
+        table.reloadData()
+        if !suggestions.isEmpty {
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        positionPanel()
+        panel.alphaValue = 0
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(table)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    func dismiss(sessionID: UInt64) {
+        guard self.sessionID == sessionID else { return }
+        self.sessionID = nil
+        suggestions = []
+        panel.orderOut(nil)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        suggestions.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let view = PaletteRowView(frame: .zero)
+        view.update(with: suggestions[row])
+        return view
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        PaletteRowBackgroundView()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cancelSelection()
+        return false
+    }
+
+    private func positionPanel() {
+        guard let screen = NSScreen.main else {
+            panel.center()
+            return
+        }
+        let visible = screen.visibleFrame
+        panel.setFrameOrigin(NSPoint(
+            x: visible.midX - panel.frame.width / 2,
+            y: visible.midY - panel.frame.height / 2 + 86
+        ))
+    }
+
+    @objc private func confirmSelection() {
+        guard let sessionID, table.selectedRow >= 0, table.selectedRow < suggestions.count else { return }
+        let suggestionID = suggestions[table.selectedRow].id
+        self.sessionID = nil
+        suggestions = []
+        panel.orderOut(nil)
+        onSelect(sessionID, suggestionID)
+    }
+
+    @objc private func cancelSelection() {
+        guard let sessionID else { return }
+        self.sessionID = nil
+        suggestions = []
+        panel.orderOut(nil)
+        onCancel(sessionID)
+    }
+}
+
 private final class OverlayApp: NSObject, NSApplicationDelegate {
     private let panel: NSPanel
     private let pill = PillView(frame: NSRect(x: 0, y: 0, width: 214, height: 34))
+    private var palette: SystemPaletteController!
     private var visible = false
+    private let stdoutLock = NSLock()
 
     override init() {
         panel = NSPanel(
@@ -87,6 +430,18 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             defer: false
         )
         super.init()
+        palette = SystemPaletteController(
+            onSelect: { [weak self] sessionID, suggestionID in
+                self?.emit([
+                    "type": "system_selection",
+                    "session_id": sessionID,
+                    "suggestion_id": suggestionID,
+                ])
+            },
+            onCancel: { [weak self] sessionID in
+                self?.emit(["type": "system_cancelled", "session_id": sessionID])
+            }
+        )
         panel.contentView = pill
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -100,13 +455,16 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hide()
-        announceReady()
+        emit(["type": "ready", "backend": "overlay"])
         DispatchQueue.global(qos: .utility).async { self.pumpStdin() }
     }
 
-    private func announceReady() {
-        let line = "{\"type\":\"ready\",\"backend\":\"overlay\"}\n"
-        FileHandle.standardOutput.write(Data(line.utf8))
+    private func emit(_ object: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        stdoutLock.lock()
+        defer { stdoutLock.unlock() }
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data([0x0A]))
     }
 
     private func pumpStdin() {
@@ -134,6 +492,27 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         case "status":
             pill.status = (message["text"] as? String) ?? ""
             resizeForStatus()
+        case "system_palette":
+            guard let sessionID = uint64(message["session_id"]),
+                  let transcript = message["transcript"] as? String,
+                  let rows = message["suggestions"] as? [[String: Any]] else { return }
+            let suggestions = rows.compactMap { row -> PaletteSuggestion? in
+                guard let id = row["suggestion_id"] as? String,
+                      let title = row["title"] as? String,
+                      let actionLabel = row["action_label"] as? String else { return nil }
+                return PaletteSuggestion(
+                    id: id,
+                    title: title,
+                    subtitle: row["subtitle"] as? String,
+                    actionLabel: actionLabel
+                )
+            }
+            hide()
+            palette.show(sessionID: sessionID, transcript: transcript, suggestions: suggestions)
+        case "dismiss_system_palette":
+            if let sessionID = uint64(message["session_id"]) {
+                palette.dismiss(sessionID: sessionID)
+            }
         case "segment", "clear":
             break
         case "shutdown":
@@ -144,10 +523,15 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     private func number(_ value: Any?) -> Double {
-        if let value = value as? Double { return value }
-        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
         if let value = value as? String { return Double(value) ?? 0.0 }
         return 0.0
+    }
+
+    private func uint64(_ value: Any?) -> UInt64? {
+        if let value = value as? NSNumber { return value.uint64Value }
+        if let value = value as? String { return UInt64(value) }
+        return nil
     }
 
     private func resizeForStatus() {

@@ -4,6 +4,8 @@ mod eval;
 mod llm_polish;
 mod logging;
 mod settings;
+mod system_mode;
+mod system_worker;
 
 use std::error::Error;
 use std::io::{Read, Write};
@@ -25,7 +27,11 @@ Commands:
   selftest hotkey           synthesize the configured shortcut and verify press/release
   insert TEXT               type TEXT at the focused cursor
   polish TEXT               send TEXT through the running daemon polish path
-  trigger press|release     send a push-to-talk edge to the running daemon
+  system plan [--daemon] TEXT
+                            route a System request without resolving or executing it
+  system resolve TEXT       resolve installed-app suggestions without executing them
+  trigger [dictation|system] press|release
+                            send a mode-aware push-to-talk edge to the daemon
   run                       run the dictation daemon
   bench [OPTIONS]           measure release-to-insertion latency percentiles
   eval [OPTIONS]            measure the pipeline's zero-edit rate on a corpus
@@ -91,6 +97,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
         }
         "polish" if !rest.is_empty() => polish_control(rest),
+        "system" => system_mode::run_cli(rest),
         "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
@@ -123,15 +130,37 @@ fn polish_control(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 fn trigger(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let command = match args.first().map(String::as_str) {
-        Some("press" | "start") => "press",
-        Some("release" | "stop") => "release",
-        _ => return Err("usage: sunoto-daemon trigger press|release".into()),
+    let (mode, requested_edge, legacy) = match args {
+        [edge] => ("dictation", edge.as_str(), true),
+        [mode, edge] if matches!(mode.as_str(), "dictation" | "system") => {
+            (mode.as_str(), edge.as_str(), false)
+        }
+        _ => {
+            return Err("usage: sunoto-daemon trigger [dictation|system] press|release".into());
+        }
+    };
+    let edge = match requested_edge {
+        "press" | "start" => "press",
+        "release" | "stop" => "release",
+        _ => {
+            return Err("usage: sunoto-daemon trigger [dictation|system] press|release".into());
+        }
     };
     let path = settings::control_socket_path();
     let mut stream = UnixStream::connect(&path)
         .map_err(|error| format!("cannot connect to {}: {error}", path.display()))?;
-    stream.write_all(command.as_bytes())?;
+    if legacy {
+        stream.write_all(edge.as_bytes())?;
+    } else {
+        serde_json::to_writer(
+            &mut stream,
+            &serde_json::json!({
+                "type": "trigger",
+                "mode": mode,
+                "edge": edge,
+            }),
+        )?;
+    }
     stream.write_all(b"\n")?;
     Ok(())
 }

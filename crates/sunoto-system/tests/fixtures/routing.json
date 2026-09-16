@@ -1,0 +1,35 @@
+{
+  "matched": [
+    { "transcript": "open Chrome", "intent_type": "open_target", "query": "Chrome" },
+    { "transcript": "launch Visual Studio Code", "intent_type": "open_target", "query": "Visual Studio Code" },
+    { "transcript": "start app Slack", "intent_type": "open_target", "query": "Slack" },
+    { "transcript": "find the file quarterly report", "intent_type": "find_file", "query": "quarterly report" },
+    { "transcript": "locate file tax return.pdf", "intent_type": "find_file", "query": "tax return.pdf" },
+    { "transcript": "search for quarterly report and open it", "intent_type": "open_file_by_query", "query": "quarterly report" },
+    { "transcript": "find notes then open it", "intent_type": "open_file_by_query", "query": "notes" },
+    { "transcript": "show quarterly report in Finder", "intent_type": "reveal_file_by_query", "query": "quarterly report" },
+    { "transcript": "reveal project plan", "intent_type": "reveal_file_by_query", "query": "project plan" },
+    { "transcript": "open folder Downloads", "intent_type": "open_folder", "query": "Downloads" },
+    { "transcript": "show folder screenshots", "intent_type": "open_folder", "query": "screenshots" },
+    { "transcript": "search the web for Rust async traits", "intent_type": "web_search", "query": "Rust async traits" },
+    { "transcript": "google weather tomorrow", "intent_type": "web_search", "query": "weather tomorrow" },
+    { "transcript": "look up Tokio channels online", "intent_type": "web_search", "query": "Tokio channels" },
+    { "transcript": "open website example dot com", "intent_type": "open_url", "query": "example dot com" },
+    { "transcript": "go to https://example.com", "intent_type": "open_url", "query": "https://example.com" },
+    { "transcript": "open google dot com", "intent_type": "open_target", "query": "google dot com" },
+    { "transcript": "open Chrome and go to google dot com", "intent_type": "open_browser_and_url", "query": "google dot com" }
+  ],
+  "needs_llm": [
+    "bring up my usual browser",
+    "could you get my code editor ready",
+    "where did I put the quarterly numbers"
+  ],
+  "rejected": [
+    { "transcript": "", "reason": "empty" },
+    { "transcript": "open Chrome; delete everything", "reason": "multiple_actions" },
+    { "transcript": "open Chrome and then open Terminal", "reason": "multiple_actions" },
+    { "transcript": "open Chrome after that open Mail", "reason": "multiple_actions" },
+    { "transcript": "open Chrome | sh", "reason": "multiple_actions" },
+    { "transcript": "open Chrome\nopen Terminal", "reason": "control_characters" }
+  ]
+}

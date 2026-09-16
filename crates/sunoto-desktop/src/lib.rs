@@ -14,4 +14,4 @@
 pub use sunoto_macos::*;
 
 #[cfg(not(target_os = "macos"))]
-pub use sunoto_linux::x11::*;
+pub use sunoto_linux::{system::*, x11::*};

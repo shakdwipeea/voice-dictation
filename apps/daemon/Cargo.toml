@@ -12,3 +12,4 @@ sunoto-core = { path = "../../crates/sunoto-core" }
 sunoto-desktop = { path = "../../crates/sunoto-desktop" }
 sunoto-ipc = { path = "../../crates/sunoto-ipc" }
 sunoto-polish = { path = "../../crates/sunoto-polish" }
+sunoto-system = { path = "../../crates/sunoto-system" }

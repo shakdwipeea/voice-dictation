@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 import gi
 
@@ -209,6 +209,7 @@ CSS = b"""
   min-width: 12px;
 }
 .vd-dot.vd-live { color: #ef4444; }
+.vd-dot.vd-system { color: #3b82f6; }
 .vd-meter trough {
   min-height: 4px;
   min-width: 140px;
@@ -229,9 +230,13 @@ CSS = b"""
 
 
 class Overlay:
-    """One-window overlay; thread-safe interface."""
+    """Passive recording pill plus a focusable post-recording System palette."""
 
-    def __init__(self, backend: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        backend: Optional[str] = None,
+        system_event_sink: Optional[Callable[[dict], None]] = None,
+    ) -> None:
         requested = (backend or os.environ.get("SUNOTO_OVERLAY_BACKEND") or "auto").lower()
         if requested not in OVERLAY_BACKENDS:
             log.warning("unknown overlay backend %r; using auto", requested)
@@ -247,6 +252,9 @@ class Overlay:
         self._using_layer_shell = False
         self._wayland_overlay_unavailable = False
         self._visible = False
+        self._system_event_sink = system_event_sink
+        self._palette_window: Optional[Gtk.ApplicationWindow] = None
+        self._palette_session_id: Optional[int] = None
         self._ready_evt = threading.Event()
 
     def wait_ready(self, timeout: Optional[float] = None) -> bool:
@@ -378,6 +386,16 @@ class Overlay:
     def clear_segments(self) -> None:
         pass
 
+    def show_system_palette(
+        self, session_id: int, transcript: str, suggestions: list[dict]
+    ) -> None:
+        GLib.idle_add(
+            self._do_show_system_palette, session_id, transcript, suggestions
+        )
+
+    def dismiss_system_palette(self, session_id: int) -> None:
+        GLib.idle_add(self._do_dismiss_system_palette, session_id)
+
     def shutdown(self) -> None:
         GLib.idle_add(self._do_shutdown)
 
@@ -424,6 +442,11 @@ class Overlay:
         return False
 
     def _do_set_status(self, status: str) -> bool:
+        if self._dot_label is not None:
+            if status.lower().startswith("system"):
+                self._dot_label.add_css_class("vd-system")
+            else:
+                self._dot_label.remove_css_class("vd-system")
         if self._status_label is not None:
             self._status_label.set_label(status)
             self._status_label.set_visible(bool(status))
@@ -441,7 +464,143 @@ class Overlay:
             self._x11.place()
         return False
 
+    def _do_show_system_palette(
+        self, session_id: int, transcript: str, suggestions: list[dict]
+    ) -> bool:
+        """Build a fresh palette so stale rows can never survive a session."""
+        if self.app is None:
+            return False
+        self._do_dismiss_system_palette(self._palette_session_id)
+        self._do_hide()
+        self._palette_session_id = session_id
+
+        window = Gtk.ApplicationWindow(application=self.app)
+        window.set_title("Sunoto System")
+        window.set_default_size(560, 360)
+        window.set_resizable(True)
+        window.connect("close-request", self._on_palette_close)
+        self._palette_window = window
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        root.set_margin_top(18)
+        root.set_margin_bottom(18)
+        root.set_margin_start(18)
+        root.set_margin_end(18)
+
+        heard = Gtk.Label(label=f"Heard: {transcript}")
+        heard.set_halign(Gtk.Align.START)
+        heard.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        root.append(heard)
+
+        rows = Gtk.ListBox()
+        rows.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        rows.set_activate_on_single_click(False)
+        for suggestion in suggestions:
+            suggestion_id = suggestion.get("suggestion_id")
+            title = suggestion.get("title")
+            if not isinstance(suggestion_id, str) or not isinstance(title, str):
+                continue
+            subtitle = suggestion.get("subtitle") or "Application"
+            label = Gtk.Label(label=f"{title}\n{subtitle}")
+            label.set_halign(Gtk.Align.START)
+            label.set_margin_top(8)
+            label.set_margin_bottom(8)
+            label.set_margin_start(10)
+            label.set_margin_end(10)
+            row = Gtk.ListBoxRow()
+            row.set_child(label)
+            row._sunoto_suggestion_id = suggestion_id
+            rows.append(row)
+        rows.connect("row-activated", self._on_palette_row_activated)
+        first = rows.get_row_at_index(0)
+        if first is not None:
+            rows.select_row(first)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.set_child(rows)
+        root.append(scroll)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        actions.set_halign(Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda _button: self._cancel_palette())
+        open_button = Gtk.Button(label="Open")
+        open_button.add_css_class("suggested-action")
+        open_button.connect(
+            "clicked", lambda _button: self._activate_selected_palette_row(rows)
+        )
+        actions.append(cancel)
+        actions.append(open_button)
+        root.append(actions)
+
+        from gi.repository import Gdk
+
+        keys = Gtk.EventControllerKey()
+        keys.connect(
+            "key-pressed",
+            lambda _controller, keyval, _keycode, _state: (
+                self._cancel_palette() or True
+                if keyval == Gdk.KEY_Escape
+                else False
+            ),
+        )
+        window.add_controller(keys)
+        window.set_child(root)
+        window.present()
+        rows.grab_focus()
+        return False
+
+    def _on_palette_row_activated(self, _rows, row) -> None:
+        suggestion_id = getattr(row, "_sunoto_suggestion_id", None)
+        session_id = self._palette_session_id
+        if session_id is None or not isinstance(suggestion_id, str):
+            return
+        self._close_palette()
+        self._emit_system_event({
+            "type": "system_selection",
+            "session_id": session_id,
+            "suggestion_id": suggestion_id,
+        })
+
+    def _activate_selected_palette_row(self, rows) -> None:
+        row = rows.get_selected_row()
+        if row is not None:
+            self._on_palette_row_activated(rows, row)
+
+    def _on_palette_close(self, _window) -> bool:
+        self._cancel_palette()
+        return True
+
+    def _cancel_palette(self) -> bool:
+        session_id = self._palette_session_id
+        if session_id is None:
+            return False
+        self._close_palette()
+        self._emit_system_event({
+            "type": "system_cancelled",
+            "session_id": session_id,
+        })
+        return False
+
+    def _do_dismiss_system_palette(self, session_id: Optional[int]) -> bool:
+        if session_id is not None and self._palette_session_id == session_id:
+            self._close_palette()
+        return False
+
+    def _close_palette(self) -> None:
+        self._palette_session_id = None
+        if self._palette_window is not None:
+            self._palette_window.set_visible(False)
+            self._palette_window.destroy()
+            self._palette_window = None
+
+    def _emit_system_event(self, event: dict) -> None:
+        if self._system_event_sink is not None:
+            self._system_event_sink(event)
+
     def _do_shutdown(self) -> bool:
+        self._close_palette()
         if self.app is not None:
             try:
                 self.app.release(self._hold_id)

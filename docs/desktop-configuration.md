@@ -35,6 +35,47 @@ Useful logs:
 journalctl --user -u voice-dictation.service -n 120 --no-pager
 ```
 
+## Voice Spotlight / System mode
+
+System mode is a separate push-to-talk path and remains disabled unless it is
+explicitly enabled. It searches installed applications plus approved local
+roots, presents one native palette, and never opens a result before selection.
+
+```json
+{
+  "system_mode_enabled": true,
+  "system_shortcut": "Ctrl+F2",
+  "system_search_roots": ["Desktop", "Documents", "Downloads", "workspace"]
+}
+```
+
+Relative search roots resolve below the current user's home directory;
+absolute roots are also accepted when deliberately configured. The filesystem
+root and parent traversal are rejected. Search is bounded, hidden/system-like
+subtrees are skipped, symlinks must remain inside an approved canonical root,
+and only safe document types are offered. Project folders are identified from
+common project markers rather than user-specific paths. On macOS an indexed
+Spotlight lookup feeds the same safe classifier before the bounded filesystem
+fallback; Linux uses the cancellable bounded fallback.
+
+Examples:
+
+```text
+Open Chrome
+Open who-else-is-free
+Open who-else-is-free in VS Code
+Find the file quarterly report
+Show quarterly report in Finder
+Open folder Downloads
+```
+
+Read-only inspection never authorizes execution:
+
+```bash
+target/debug/sunoto-daemon system plan "open who-else-is-free in VS Code"
+target/debug/sunoto-daemon system resolve "open who-else-is-free"
+```
+
 ## Hyprland / Wayland
 
 Wayland does not let the daemon grab global keys directly. Hyprland owns the

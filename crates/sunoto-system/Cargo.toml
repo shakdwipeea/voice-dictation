@@ -1,8 +1,10 @@
 [package]
-name = "sunoto-linux"
+name = "sunoto-system"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
-sunoto-system = { path = "../sunoto-system" }
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
