@@ -1,7 +1,7 @@
 //! X11 insertion: XTEST typing first, clipboard paste for characters XTEST
 //! cannot synthesize. The adapter restores the previous clipboard itself.
 
-use sunoto_desktop::{InsertionOutcome, UiAdapter, X11Error};
+use sunoto_desktop::{DesktopError, InsertionOutcome, UiAdapter};
 
 pub(crate) fn insert_x11(
     adapter: &mut UiAdapter,
@@ -21,7 +21,7 @@ pub(crate) fn insert_x11(
     }
     match adapter.insert_direct(text) {
         Ok(()) => Ok(InsertionOutcome::Typed),
-        Err(X11Error::UnsupportedCharacter(_)) => adapter
+        Err(DesktopError::UnsupportedCharacter(_)) => adapter
             .insert_via_clipboard(text)
             .map(|_| InsertionOutcome::Pasted)
             .map_err(|error| error.to_string()),

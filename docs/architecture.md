@@ -117,15 +117,18 @@ on Linux/CUDA at the 160 ms profile, and Parakeet-MLX final decode of about
 
 ## What is not good
 
-- **`daemon.rs` is a 3,000 line god file.** It holds the event loop, the
-  Wayland adapter, insertion ordering for three platforms, overlay
-  management, LLM orchestration, System dispatch, and the control socket.
-  The platform facade (`sunoto-desktop`) only abstracts X11 and macOS;
-  Wayland lives inline. This is the first thing to split.
-- **Duck-typed platform layer.** `sunoto-desktop` is a `cfg` re-export, not
-  a trait. Both platform crates must export identically named types, and the
-  macOS error type is literally called `X11Error`. Works, but nothing
-  enforces it.
+- **`daemon.rs` was a 3,000 line god file.** On the `macos-red-flags`
+  branch it is about 1,750 lines holding `run()` and the event match, with
+  events, health, overlay, insertion, control socket, sidecar management,
+  session stats, LLM reporting, and System dispatch in their own modules
+  and the Wayland adapter in `sunoto-linux`. The press, release, and final
+  handlers still live inside `run()`; extracting them needs an integration
+  test that drives the loop first.
+- **Duck-typed platform layer, now with a contract.** `sunoto-desktop` is
+  still a `cfg` re-export, but it defines `DesktopAdapter` and
+  `HotkeySource` traits that both platform types implement, so a missing
+  method fails there. The concrete error type is still named `X11Error`
+  behind the `DesktopError` alias.
 - **JSON arrays of i16 for audio.** 50 messages per second of 320 integers
   serialized as text. Fine at 16 kHz mono, but it is the least efficient
   part of the design and would not survive stereo or higher rates.

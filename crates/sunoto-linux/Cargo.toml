@@ -5,4 +5,5 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 sunoto-system = { path = "../sunoto-system" }

@@ -273,6 +273,7 @@ dependencies = [
 name = "sunoto-linux"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sunoto-system",
 ]
 

@@ -169,7 +169,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             let text = settings::sanitize_for_insertion(&rest[0], false);
             match ui.insert_direct(&text) {
                 Ok(()) => Ok(()),
-                Err(sunoto_desktop::X11Error::UnsupportedCharacter(_)) => {
+                Err(sunoto_desktop::DesktopError::UnsupportedCharacter(_)) => {
                     ui.insert_via_clipboard(&text)?;
                     Ok(())
                 }

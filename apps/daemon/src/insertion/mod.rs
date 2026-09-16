@@ -9,20 +9,18 @@
 //! window changed since the shortcut was released.
 
 mod macos;
-mod wayland;
 mod x11;
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use sunoto_desktop::{BubbleKind, InsertionOutcome, UiAdapter};
+use sunoto_desktop::{BubbleKind, InsertionOutcome, UiAdapter, WaylandOutcome, WaylandUiAdapter};
 
 use crate::events::DaemonEvent;
 use crate::logging;
 use crate::settings::Settings;
 
 use macos::MacosUi;
-use wayland::WaylandUiAdapter;
 use x11::insert_x11;
 
 /// Knobs the UI thread needs from settings, copied so the thread owns them.
@@ -149,7 +147,13 @@ impl UiBackend {
                     class: adapter.window_class(focus),
                 }
             }
-            Self::Wayland(adapter) => adapter.capture_focus(),
+            Self::Wayland(adapter) => {
+                let focus = adapter.capture_focus();
+                FocusSnapshot {
+                    token: focus.token,
+                    class: focus.class.map(|class| (class.clone(), class)),
+                }
+            }
             Self::Macos(ui) => {
                 let focus = ui.adapter.focused_window();
                 FocusSnapshot {
@@ -186,7 +190,17 @@ impl UiBackend {
         match self {
             Self::X11(adapter) => insert_x11(adapter, focus_at_release, text),
             Self::Macos(ui) => ui.insert(focus_at_release, text),
-            Self::Wayland(adapter) => adapter.insert(focus_at_release, text),
+            Self::Wayland(adapter) => {
+                let outcome = adapter.insert(focus_at_release, text);
+                if let Some(warning) = adapter.take_warning() {
+                    logging::warn(&warning);
+                }
+                outcome.map(|outcome| match outcome {
+                    WaylandOutcome::Typed => InsertionOutcome::Typed,
+                    WaylandOutcome::Pasted => InsertionOutcome::Pasted,
+                    WaylandOutcome::ClipboardOnly => InsertionOutcome::ClipboardOnly,
+                })
+            }
         }
     }
 

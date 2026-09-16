@@ -312,6 +312,20 @@ Two cross-crate moves:
   bubble) that the three adapters implement, replacing the name-matched
   `cfg` re-export. The macOS `X11Error` becomes `DesktopError`.
 
+**Status: done on branch `macos-red-flags` (M2, M7a, M7b), with one
+deliberate deviation.** The modules above exist (`events`, `health`,
+`overlay`, `control`, `sidecars`, `session`, `llm_report`,
+`system_dispatch`, `insertion/{mod,x11,macos}`), the Wayland adapter lives
+in `sunoto-linux` with its own outcome type, and `sunoto-desktop` now
+defines `DesktopAdapter` and `HotkeySource` traits that both platform
+adapters implement, plus the `DesktopError` alias. `daemon.rs` went from
+3,046 to about 1,750 lines. The deviation: the press, release, and final
+handlers stay inside `run()` rather than a `session.rs` state struct. They
+share about thirty locals with the watchdogs, and moving them without an
+integration test that drives the real loop would trade a readable diff for
+regression risk. That extraction should follow the first daemon-level
+integration test, not precede it.
+
 ## 3. Sequence
 
 Each milestone is shippable on its own. Estimates are working days for one
