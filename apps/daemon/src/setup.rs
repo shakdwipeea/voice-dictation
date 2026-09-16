@@ -158,7 +158,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
     let _ = fs::write(&log_path, b"");
-    Command::new("open").arg(&installed).status()?;
+    launch_app(&installed)?;
     ok(&format!("started {APP_NAME}; log: {}", log_path.display()));
 
     section("permissions");
@@ -338,7 +338,7 @@ pub fn restart() -> Result<(), Box<dyn Error>> {
         .into());
     }
     stop_running_daemons();
-    Command::new("open").arg(&installed).status()?;
+    launch_app(&installed)?;
     ok(&format!(
         "restarted {APP_NAME}; `sunoto-daemon status` shows its health"
     ));
@@ -481,19 +481,74 @@ fn codesign(bundle: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+const DAEMON_PATTERNS: [&str; 3] = [
+    "sunoto-daemon run",
+    "Sunoto.app/Contents/MacOS/sunoto-daemon",
+    "Sunoto Login.app/Contents/MacOS/sunoto-login",
+];
+
+fn daemons_running() -> bool {
+    DAEMON_PATTERNS.iter().any(|pattern| {
+        Command::new("pgrep")
+            .args(["-f", pattern])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
+/// Terminate every daemon and wait until they are really gone. Launch
+/// Services refuses to relaunch an app it still considers quitting, so a
+/// fixed sleep is not enough.
 fn stop_running_daemons() {
-    for pattern in [
-        "sunoto-daemon run",
-        "Sunoto.app/Contents/MacOS/sunoto-daemon",
-        "Sunoto Login.app/Contents/MacOS/sunoto-login",
-    ] {
+    for pattern in DAEMON_PATTERNS {
         let _ = Command::new("pkill")
             .args(["-f", pattern])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     }
-    std::thread::sleep(Duration::from_secs(1));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while daemons_running() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // Give Launch Services a moment to notice the exit.
+    std::thread::sleep(Duration::from_millis(500));
+}
+
+/// `open` the bundle and confirm a daemon process appeared.
+fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
+    let status = Command::new("open").arg(app).status()?;
+    if !status.success() {
+        return Err(format!("open {} failed ({status})", app.display()).into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !daemons_running() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if !daemons_running() {
+        return Err(format!(
+            "{} did not start; check ~/Library/Logs/sunoto/daemon.log",
+            app.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Drop this bundle's own permission records. macOS keys grants to the
+/// code signature, so a record left by an earlier build of the same bundle
+/// id matches the identifier, fails the signature check, and denies
+/// silently while the toggle shows "on". Scoped to our identifier only.
+fn reset_own_permission_records() {
+    for service in ["Accessibility", "ListenEvent"] {
+        let _ = Command::new("tccutil")
+            .args(["reset", service, BUNDLE_ID])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 fn remove_legacy_login_item(home: &Path) {
@@ -579,10 +634,16 @@ pub fn query_status() -> Option<serde_json::Value> {
     serde_json::from_str(response.trim()).ok()
 }
 
+/// How often the watcher relaunches a blocked app. A grant given in System
+/// Settings only applies to processes started after it, so a relaunch is
+/// what turns the user's toggle into a verified hotkey.
+const BLOCKED_RELAUNCH_INTERVAL: Duration = Duration::from_secs(30);
+
 fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
     let mut last: Option<(String, String, String, String, String)> = None;
     let mut panes_opened = false;
+    let mut last_relaunch = Instant::now();
     note("waiting for the app to report its own health over the control socket...");
     loop {
         if let Some(status) = query_status() {
@@ -611,12 +672,29 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
                 panes_opened = true;
                 let reason = field("hotkey_reason");
                 warn(&format!("hotkey blocked: {reason}"));
+                // Clear any record an older build left under our identifier,
+                // then relaunch so the app registers fresh entries.
+                reset_own_permission_records();
+                stop_running_daemons();
+                launch_app(app)?;
+                last_relaunch = Instant::now();
                 note(&format!(
-                    "In each pane, add {} (press + to pick it) and switch it on.",
+                    "Switch on the entry named {APP_NAME} in Input Monitoring, then in Accessibility (System Settings shows it without .app). If it is missing, press + and pick {}.",
                     app.display()
                 ));
+                note(
+                    "Grants apply to a fresh process; the app is relaunched every 30 s until the hotkey verifies.",
+                );
                 open_pane("Privacy_ListenEvent");
+                std::thread::sleep(Duration::from_secs(2));
                 open_pane("Privacy_Accessibility");
+            } else if snapshot.1 == "blocked"
+                && last_relaunch.elapsed() >= BLOCKED_RELAUNCH_INTERVAL
+            {
+                stop_running_daemons();
+                launch_app(app)?;
+                last_relaunch = Instant::now();
+                note("relaunched to pick up new grants; still waiting...");
             }
             if snapshot.0 == "mic_starting" && snapshot.3 == "ready" {
                 note("macOS should be showing the Microphone prompt; click Allow.");

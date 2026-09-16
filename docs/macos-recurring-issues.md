@@ -91,9 +91,26 @@ tail -f "$HOME/Library/Logs/sunoto/daemon.log"
 
 `Sunoto.app` is an `LSUIElement` application started by Launch Services, so
 the daemon itself is the responsible GUI process. Grant Accessibility and
-Input Monitoring to the single entry `~/Applications/Sunoto.app`. `setup`
-watches the app's own hotkey-delivery probe and opens the panes when it
-reports blocked. The older `docs/macos-gui-login-item-plan.md` describes the
+Input Monitoring to the single entry named **Sunoto** (System Settings drops
+the `.app`). `setup` watches the app's own hotkey-delivery probe; when it
+reports blocked it resets the bundle's own permission records
+(`tccutil reset Accessibility|ListenEvent com.earendil-works.sunoto`, scoped
+to that identifier), relaunches the app, opens the panes, and keeps
+relaunching every 30 s until the hotkey verifies.
+
+Two facts learned live on 2026-09-17 that the tooling now handles:
+
+- **A toggle that is on can still deny.** An older build under the same
+  bundle id leaves a record bound to the old code signature; macOS matches
+  the identifier, fails the signature check, and denies silently while the
+  switch shows on. `tccutil reset ... com.earendil-works.sunoto` reported
+  two records for exactly this reason. Removing and re-adding by hand does
+  not help until the app is relaunched.
+- **Accessibility grants apply to processes started after the grant.** The
+  running app keeps reporting blocked until it is relaunched, which is why
+  `setup` relaunches while blocked and `restart` now waits for the old
+  process to exit before `open` (Launch Services ignores `open` for an app
+  it still considers quitting). The older `docs/macos-gui-login-item-plan.md` describes the
 superseded two-process design.
 
 The working manual development launch remains:
