@@ -1,14 +1,19 @@
 mod bench;
+mod control;
 mod daemon;
 mod eval;
 mod events;
 mod health;
 mod insertion;
 mod llm_polish;
+mod llm_report;
 mod logging;
 mod overlay;
+mod session;
 mod settings;
 mod setup;
+mod sidecars;
+mod system_dispatch;
 mod system_mode;
 mod system_worker;
 
