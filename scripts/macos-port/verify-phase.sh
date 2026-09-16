@@ -183,7 +183,7 @@ phase6() {
 phase7() {
   echo "== phase 7: app bundle login item + install =="
   [ -f "install-macos.sh" ] && ok "install-macos.sh exists" || fail "install-macos.sh missing"
-  if grep -q 'sunoto-daemon" setup' install-macos.sh; then
+  if grep -q 'exec "$DAEMON_BIN" setup' install-macos.sh; then
     ok "installer delegates to sunoto-daemon setup"
   else
     fail "installer does not call sunoto-daemon setup"
