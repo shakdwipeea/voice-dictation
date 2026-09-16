@@ -38,6 +38,9 @@ pub enum InsertionOutcome {
     Typed,
     Pasted,
     ClipboardOnly,
+    /// Only the macOS adapter detects password fields today; kept here so
+    /// the daemon's outcome handling compiles on every platform.
+    SecureField,
 }
 
 #[derive(Debug)]

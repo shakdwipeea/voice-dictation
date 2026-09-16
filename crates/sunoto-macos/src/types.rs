@@ -33,6 +33,9 @@ pub enum InsertionOutcome {
     Typed,
     Pasted,
     ClipboardOnly,
+    /// The focused element is a password field; nothing was inserted and
+    /// nothing was put on the clipboard.
+    SecureField,
 }
 
 #[derive(Debug)]

@@ -25,7 +25,7 @@ use sunoto_system::{
 
 use crate::events::{ControlCommand, DaemonEvent, ModeHotkeyEvent};
 use crate::health::{DaemonHealth, HealthMonitor, health_inputs, publish_health};
-use crate::insertion::{DesktopBackend, UiCommand, desktop_backend, ui_thread};
+use crate::insertion::{DesktopBackend, UiCommand, UiOptions, desktop_backend, ui_thread};
 use crate::llm_polish;
 use crate::logging;
 use crate::overlay::{ERROR_BUBBLE_VISIBLE, UiFront, show_error, spawn_overlay};
@@ -204,7 +204,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // UI thread (insertion/clipboard/bubble on its own backend connection).
     let (ui_tx, ui_rx) = mpsc::channel::<UiCommand>();
     let ui_events = events_tx.clone();
-    let ui_handle = std::thread::spawn(move || ui_thread(ui_rx, ui_events, backend));
+    let ui_options = UiOptions {
+        clipboard_restore: settings.clipboard_restore,
+    };
+    let ui_handle = std::thread::spawn(move || ui_thread(ui_rx, ui_events, backend, ui_options));
 
     // Control socket for compositor/user-triggered push-to-talk edges.
     let control_stop = Arc::new(AtomicBool::new(false));
@@ -1347,14 +1350,24 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 report.session_id, outcome
                             ));
                         }
-                        if outcome == InsertionOutcome::ClipboardOnly {
-                            show_error(
+                        match outcome {
+                            InsertionOutcome::ClipboardOnly => show_error(
                                 &ui,
                                 "focus changed; result is in the clipboard",
                                 &mut bubble_hide_at,
-                            );
-                        } else {
-                            ui.hide();
+                            ),
+                            InsertionOutcome::SecureField => {
+                                logging::warn(&format!(
+                                    "session {}: focus is a password field; nothing inserted or copied",
+                                    report.session_id
+                                ));
+                                show_error(
+                                    &ui,
+                                    "password field: nothing inserted",
+                                    &mut bubble_hide_at,
+                                );
+                            }
+                            InsertionOutcome::Typed | InsertionOutcome::Pasted => ui.hide(),
                         }
                     }
                     Err(message) => {

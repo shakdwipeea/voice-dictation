@@ -180,6 +180,12 @@ into Preview again: the image is back. Same with a file in Finder. Dictate
 into VS Code, Chrome, Terminal, Slack, and Zed. A clipboard manager shows no
 dictated entries.
 
+**Status: implemented on branch `macos-red-flags` (M3).** The pasteboard
+snapshot, transient write, and restore round-trip passed against the real
+general pasteboard on 2026-09-17 (`cargo test -p sunoto-macos -- --ignored
+live_snapshot_write_restore_round_trip`). The per-app live checks above are
+still to be run with the restarted daemon.
+
 ### 2.6 Password fields
 
 **Fix, folded into the Accessibility work.**
@@ -196,6 +202,10 @@ dictated entries.
 **Verification.** Focus the Safari password field on a login page and
 dictate: nothing is typed and the pill says why. Focus the username field:
 normal insertion.
+
+**Status: implemented on branch `macos-red-flags` (M3), pending the live
+Safari check.** App identity now comes from `NSWorkspace`, so app-aware
+polish styles no longer need Screen Recording.
 
 ### 2.7 Transcripts in the log
 

@@ -43,6 +43,11 @@ unsafe impl Sync for CFStringConstant {}
 
 // ----- CoreGraphics event types ----------------------------------------------
 
+pub type CFTypeRef = *const c_void;
+pub type AXUIElementRef = *const c_void;
+pub type AXError = i32;
+pub const kAXErrorSuccess: AXError = 0;
+
 pub type CGEventRef = *const c_void;
 pub type CGEventTapRef = *const c_void;
 pub type CGEventSourceRef = *const c_void;
@@ -138,6 +143,16 @@ unsafe extern "C" {
     pub fn CGRequestListenEventAccess() -> bool;
     pub fn CGPreflightPostEventAccess() -> bool;
     pub fn CGRequestPostEventAccess() -> bool;
+
+    // Accessibility (HIServices, inside ApplicationServices): the focused
+    // element and its role, used to refuse dictation into password fields.
+    pub fn AXIsProcessTrusted() -> bool;
+    pub fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+    pub fn AXUIElementCopyAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: *mut CFTypeRef,
+    ) -> AXError;
 
     // CoreGraphics: window list
     pub fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFArrayRef;

@@ -4,17 +4,25 @@
 //!   per character, posted at the HID event tap. Newlines become Return only
 //!   when `allow_enter_and_tab` (the daemon's `sanitize_for_insertion` already
 //!   neutralizes control chars before we see them).
-//! - Clipboard: `pbcopy`/`pbpaste` subprocesses (no AppKit FFI).
-//! - Focus / app identity: `CGWindowListCopyWindowInfo` (CoreGraphics C API)
-//!   — the frontmost on-screen, layer-0 window's owner name. On recent macOS
-//!   owner names may be redacted without Screen Recording permission; we
-//!   degrade to `None` and the daemon's app-aware style simply doesn't apply.
+//! - Clipboard: `NSPasteboard` through the raw Objective-C runtime (see
+//!   `appkit.rs`) so the user's clipboard can be snapshotted before a paste
+//!   and restored afterwards with every type intact; `pbcopy`/`pbpaste`
+//!   remain as the fallback and for the self-test read.
+//! - Focus token: `CGWindowListCopyWindowInfo` (CoreGraphics C API), the
+//!   frontmost on-screen, layer-0 window number.
+//! - App identity: `NSWorkspace.frontmostApplication` (bundle id, name),
+//!   which needs no Screen Recording permission, with the window owner name
+//!   as the fallback.
+//! - Secure fields: the Accessibility focused element's role, so dictation
+//!   never lands in a password box.
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_long};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::accessibility;
+use crate::appkit::{self, PasteboardSnapshot};
 use crate::ffi;
 use crate::types::{BubbleKind, X11Error};
 
@@ -24,6 +32,9 @@ const POST_TAP: c_int = 0; // kCGHIDEventTap
 
 pub struct UiAdapter {
     source: ffi::CGEventSourceRef,
+    /// Pasteboard change count after our last transient write. A restore
+    /// only proceeds while the pasteboard still shows this count.
+    last_change_count: Option<isize>,
 }
 
 impl UiAdapter {
@@ -40,7 +51,10 @@ impl UiAdapter {
         if source.is_null() {
             return Err(X11Error::DisplayUnavailable);
         }
-        Ok(Self { source })
+        Ok(Self {
+            source,
+            last_change_count: None,
+        })
     }
 
     pub fn focused_window(&self) -> u64 {
@@ -51,10 +65,34 @@ impl UiAdapter {
         if window == 0 {
             return None;
         }
+        // (instance, class) mirroring X11 WM_CLASS: bundle id and localized
+        // name from NSWorkspace, which works without Screen Recording. The
+        // window owner name is the fallback when AppKit is unavailable.
+        if let Some(app) = appkit::frontmost_application() {
+            return Some(app);
+        }
         let name = owner_name_for_window(window as u32)?;
-        // Return (instance, class) mirroring X11 WM_CLASS; macOS only gives an
-        // owner name, so use it for both fields.
         Some((name.clone(), name))
+    }
+
+    /// Whether keyboard focus is in a password field. `None` means the
+    /// Accessibility query gave no answer; callers treat that as "unknown".
+    pub fn focused_is_secure_field(&self) -> Option<bool> {
+        accessibility::focused_element_is_secure()
+    }
+
+    /// Copy of the user's clipboard, taken before we overwrite it.
+    pub fn clipboard_snapshot(&self) -> Option<PasteboardSnapshot> {
+        appkit::snapshot()
+    }
+
+    /// Put a snapshot back if nothing else has written to the pasteboard
+    /// since our own write. Returns whether the restore happened.
+    pub fn restore_clipboard(&mut self, snapshot: &PasteboardSnapshot) -> bool {
+        let Some(expected) = self.last_change_count.take() else {
+            return false;
+        };
+        appkit::restore(snapshot, expected)
     }
 
     pub fn insert_direct(&self, text: &str) -> Result<(), X11Error> {
@@ -84,6 +122,13 @@ impl UiAdapter {
     }
 
     pub fn set_clipboard(&mut self, text: &str) -> Result<(), X11Error> {
+        // Preferred: NSPasteboard with the transient marker so clipboard
+        // managers skip dictated text. Fallback: pbcopy, no marker.
+        if let Some(change_count) = appkit::write_transient_text(text) {
+            self.last_change_count = Some(change_count);
+            return Ok(());
+        }
+        self.last_change_count = None;
         let mut child = Command::new("pbcopy")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())

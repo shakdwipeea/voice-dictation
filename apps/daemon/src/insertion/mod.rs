@@ -21,9 +21,15 @@ use crate::events::DaemonEvent;
 use crate::logging;
 use crate::settings::Settings;
 
-use macos::insert_macos;
+use macos::MacosUi;
 use wayland::WaylandUiAdapter;
 use x11::insert_x11;
+
+/// Knobs the UI thread needs from settings, copied so the thread owns them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiOptions {
+    pub(crate) clipboard_restore: bool,
+}
 
 pub struct UiReport {
     pub session_id: u64,
@@ -42,6 +48,9 @@ pub(crate) struct StreamSession {
     focus_ok: bool,
     /// False after a mid-stream typing error forces clipboard fallback.
     typed_ok: bool,
+    /// Focus was in a password field when the stream started: nothing is
+    /// typed and the end commit reports `SecureField` instead of pasting.
+    secure: bool,
     /// Every delta typed so far (kept for the clipboard-fallback commit and
     /// for diagnostics).
     accumulated: String,
@@ -106,21 +115,28 @@ pub(crate) struct FocusSnapshot {
 pub(crate) enum UiBackend {
     X11(UiAdapter),
     Wayland(WaylandUiAdapter),
-    // Phase 2-4: replace with a real `sunoto-macos` adapter (CGEventTap,
-    // CoreAudio, CGEvent insertion, NSPasteboard, NSWorkspace focus).
-    Macos(UiAdapter),
+    Macos(MacosUi),
 }
 
 impl UiBackend {
-    pub(crate) fn open(backend: DesktopBackend) -> Result<Self, String> {
+    pub(crate) fn open(backend: DesktopBackend, options: UiOptions) -> Result<Self, String> {
         match backend {
             DesktopBackend::X11 => UiAdapter::open()
                 .map(Self::X11)
                 .map_err(|error| format!("X11 UI unavailable: {error}")),
             DesktopBackend::Wayland => WaylandUiAdapter::open().map(Self::Wayland),
             DesktopBackend::Macos => UiAdapter::open()
-                .map(Self::Macos)
+                .map(|adapter| Self::Macos(MacosUi::new(adapter, options.clipboard_restore)))
                 .map_err(|error| format!("macOS UI unavailable: {error}")),
+        }
+    }
+
+    /// Whether keyboard focus is known to be in a password field. Only the
+    /// macOS adapter can tell today.
+    pub(crate) fn focused_is_secure_field(&self) -> bool {
+        match self {
+            Self::Macos(ui) => ui.focused_is_secure_field(),
+            Self::X11(_) | Self::Wayland(_) => false,
         }
     }
 
@@ -134,11 +150,11 @@ impl UiBackend {
                 }
             }
             Self::Wayland(adapter) => adapter.capture_focus(),
-            Self::Macos(adapter) => {
-                let focus = adapter.focused_window();
+            Self::Macos(ui) => {
+                let focus = ui.adapter.focused_window();
                 FocusSnapshot {
                     token: Some(focus.to_string()),
-                    class: adapter.window_class(focus),
+                    class: ui.adapter.window_class(focus),
                 }
             }
         }
@@ -147,7 +163,7 @@ impl UiBackend {
     pub(crate) fn show_bubble(&mut self, kind: BubbleKind, text: &str) {
         match self {
             Self::X11(adapter) => adapter.bubble_show(kind, text),
-            Self::Macos(adapter) => adapter.bubble_show(kind, text),
+            Self::Macos(ui) => ui.adapter.bubble_show(kind, text),
             Self::Wayland(_) => {
                 let _ = (kind, text);
             }
@@ -157,7 +173,7 @@ impl UiBackend {
     pub(crate) fn hide_bubble(&mut self) {
         match self {
             Self::X11(adapter) => adapter.bubble_hide(),
-            Self::Macos(adapter) => adapter.bubble_hide(),
+            Self::Macos(ui) => ui.adapter.bubble_hide(),
             Self::Wayland(_) => {}
         }
     }
@@ -169,11 +185,7 @@ impl UiBackend {
     ) -> Result<InsertionOutcome, String> {
         match self {
             Self::X11(adapter) => insert_x11(adapter, focus_at_release, text),
-            // macOS: CGEvent per-char unicode typing is unreliable across
-            // Cocoa apps (many ignore the unicode string on a synthetic
-            // event), so paste via the clipboard first and fall back to
-            // direct typing — the same ordering the Wayland path uses.
-            Self::Macos(adapter) => insert_macos(adapter, focus_at_release, text),
+            Self::Macos(ui) => ui.insert(focus_at_release, text),
             Self::Wayland(adapter) => adapter.insert(focus_at_release, text),
         }
     }
@@ -185,9 +197,8 @@ impl UiBackend {
         match expected {
             None => true,
             Some(expected) => match self {
-                Self::X11(adapter) | Self::Macos(adapter) => {
-                    adapter.focused_window().to_string() == expected
-                }
+                Self::X11(adapter) => adapter.focused_window().to_string() == expected,
+                Self::Macos(ui) => ui.adapter.focused_window().to_string() == expected,
                 Self::Wayland(adapter) => adapter.focus_matches(expected),
             },
         }
@@ -200,7 +211,11 @@ impl UiBackend {
     /// characters, which the caller handles by switching to clipboard fallback.
     pub(crate) fn type_chunk(&mut self, text: &str) -> Result<(), String> {
         match self {
-            Self::X11(adapter) | Self::Macos(adapter) => adapter
+            Self::X11(adapter) => adapter
+                .insert_direct(text)
+                .map_err(|error| error.to_string()),
+            Self::Macos(ui) => ui
+                .adapter
                 .insert_direct(text)
                 .map_err(|error| error.to_string()),
             Self::Wayland(adapter) => adapter.type_direct(text),
@@ -209,7 +224,8 @@ impl UiBackend {
 
     pub(crate) fn pump(&mut self) {
         match self {
-            Self::X11(adapter) | Self::Macos(adapter) => adapter.pump(),
+            Self::X11(adapter) => adapter.pump(),
+            Self::Macos(ui) => ui.pump(),
             Self::Wayland(_) => {}
         }
     }
@@ -220,8 +236,9 @@ pub(crate) fn ui_thread(
     commands: Receiver<UiCommand>,
     events: Sender<DaemonEvent>,
     backend: DesktopBackend,
+    options: UiOptions,
 ) {
-    let mut adapter = match UiBackend::open(backend) {
+    let mut adapter = match UiBackend::open(backend, options) {
         Ok(adapter) => adapter,
         Err(error) => {
             let _ = events.send(DaemonEvent::Fatal(error));
@@ -268,10 +285,13 @@ pub(crate) fn ui_thread(
                         focus_token: focus_at_release.take(),
                         focus_ok: false,
                         typed_ok: false,
+                        secure: false,
                         accumulated: String::new(),
                     });
                     let session = stream.as_mut().expect("stream just initialized");
-                    session.focus_ok = adapter.focus_matches(session.focus_token.as_deref());
+                    session.secure = adapter.focused_is_secure_field();
+                    session.focus_ok =
+                        !session.secure && adapter.focus_matches(session.focus_token.as_deref());
                     session.typed_ok = session.focus_ok;
                 }
                 let Some(session) = stream.as_mut() else {
@@ -301,6 +321,7 @@ pub(crate) fn ui_thread(
                     focus_token: None,
                     focus_ok: false,
                     typed_ok: false,
+                    secure: false,
                     accumulated: final_text.clone(),
                 });
                 // Decide the final outcome.
@@ -308,7 +329,10 @@ pub(crate) fn ui_thread(
                     && session.focus_ok
                     && session.typed_ok
                     && !session.accumulated.is_empty();
-                let (result, insert_duration) = if keep_typed {
+                let (result, insert_duration) = if session.secure {
+                    // Nothing was typed and nothing will be pasted.
+                    (Ok(InsertionOutcome::SecureField), started.elapsed())
+                } else if keep_typed {
                     // Text already on screen via progressive typing.
                     (Ok(InsertionOutcome::Typed), started.elapsed())
                 } else {

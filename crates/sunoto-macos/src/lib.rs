@@ -8,12 +8,15 @@
 
 #![cfg(target_os = "macos")]
 
+mod accessibility;
+mod appkit;
 mod ffi;
 mod hotkey;
 mod insertion;
 mod system;
 mod types;
 
+pub use appkit::PasteboardSnapshot;
 pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
 pub use insertion::{ProbeWindow, UiAdapter};
 pub use system::SystemPlatform;

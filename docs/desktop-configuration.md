@@ -348,6 +348,15 @@ for the stable macOS whole-utterance Parakeet backend (no partials),
   from `hypr/voice-dictation.conf` are installed.
 - Text appears late: check logs for `inserted via Pasted` versus `Typed`.
 - Text is not inserted: `ClipboardOnly` means focus changed; paste manually.
+- `SecureField` in the log and "password field: nothing inserted" in the
+  pill: keyboard focus was in a password box, so Sunoto typed nothing and
+  put nothing on the clipboard. Move focus to a normal field and dictate
+  again.
+- Clipboard after a paste (macOS): the previous contents come back about
+  300 ms later, images and files included, unless something else wrote to
+  the clipboard in between. Set `"clipboard_restore": false` for an app that
+  reads the pasteboard late. Dictated text is marked transient, so clipboard
+  managers skip it.
 - Empty result: check session `rms` in logs; low `rms` usually means wrong or
   muted microphone.
 - Nemotron/GPU status: `bash bin/gpu-status.sh`.

@@ -109,6 +109,10 @@ pub struct Settings {
     /// Injecting Enter/Tab into a focused terminal can execute commands, so
     /// both are replaced with spaces unless explicitly allowed.
     pub allow_enter_and_tab: bool,
+    /// macOS: snapshot the clipboard before a paste and put it back about
+    /// 300 ms later, if nothing else wrote to it in between. Off only for
+    /// apps that read the pasteboard late.
+    pub clipboard_restore: bool,
     /// GTK4 pill overlay (UI sidecar). When it cannot start (e.g. GTK4 is
     /// not installed) the daemon falls back to the native X11 bubble.
     pub overlay_enabled: bool,
@@ -187,6 +191,7 @@ impl Default for Settings {
             asr_device: None,
             asr_model: None,
             allow_enter_and_tab: false,
+            clipboard_restore: true,
             overlay_enabled: true,
             overlay_backend: default_overlay_backend().to_string(),
             polish_enabled: true,
