@@ -7,6 +7,13 @@
 
 use std::fmt;
 
+use sunoto_core::SessionMode;
+use sunoto_desktop::hotkey_block_reason;
+
+use crate::logging;
+use crate::overlay::UiFront;
+use crate::settings::Settings;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DaemonHealth {
     /// The global hotkey exists but macOS delivers no events to it.
@@ -102,6 +109,50 @@ impl HealthMonitor {
     pub fn current(&self) -> DaemonHealth {
         self.current.unwrap_or(DaemonHealth::LoadingAsr)
     }
+}
+
+pub(crate) fn health_inputs(
+    asr_ready: bool,
+    polish_warmed: bool,
+    blocked_modes: &[SessionMode],
+    mic_available: bool,
+) -> HealthInputs {
+    HealthInputs {
+        asr_ready,
+        polish_warmed,
+        hotkey_blocked: !blocked_modes.is_empty(),
+        mic_available,
+    }
+}
+
+/// Log a health transition and push it to the overlay. This is the only
+/// place that says "ready", so the log line means a key press will record.
+pub(crate) fn publish_health(health: DaemonHealth, ui: &mut UiFront, settings: &Settings) {
+    match health {
+        DaemonHealth::Ready => {
+            if settings.system_mode_enabled {
+                logging::info(&format!(
+                    "Sunoto ready. Hold {} to dictate or {} for System mode.",
+                    settings.shortcut, settings.system_shortcut
+                ));
+            } else {
+                logging::info(&format!(
+                    "Sunoto ready for dictation. Hold {} to dictate.",
+                    settings.shortcut
+                ));
+            }
+        }
+        DaemonHealth::HotkeyBlocked => {
+            logging::error(&format!(
+                "daemon state: {health}: {}",
+                hotkey_block_reason()
+            ));
+        }
+        other => {
+            logging::info(&format!("daemon state: {other}: {}", other.caption()));
+        }
+    }
+    ui.health(health);
 }
 
 #[cfg(test)]

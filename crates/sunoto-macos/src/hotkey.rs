@@ -423,7 +423,9 @@ impl HotkeyListener {
                             // A re-armed tap is exactly the case where
                             // "enabled" and "delivering" can disagree.
                             if probe.start(now) {
-                                eprintln!("[hotkey-diag] tap disabled by system; re-armed, probing");
+                                eprintln!(
+                                    "[hotkey-diag] tap disabled by system; re-armed, probing"
+                                );
                                 post_probe_event();
                             }
                         }

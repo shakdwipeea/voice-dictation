@@ -14,7 +14,7 @@ use sunoto_system::{
     SystemIntent, SystemPlan, SystemPlanRunner, TypedObservation,
 };
 
-use crate::daemon::DaemonEvent;
+use crate::events::DaemonEvent;
 
 pub enum SystemJob {
     DispatchFindTargets {

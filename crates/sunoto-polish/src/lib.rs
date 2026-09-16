@@ -297,10 +297,8 @@ fn detokenize(tokens: &[Token]) -> String {
                     // space. An uppercase-starting word after a period is a real
                     // sentence start ("end. Next"): keep the separating space.
                     let prev_is_period = output.ends_with('.');
-                    let next_starts_uppercase = word
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_uppercase());
+                    let next_starts_uppercase =
+                        word.chars().next().is_some_and(|c| c.is_ascii_uppercase());
                     if prev_is_period && !next_starts_uppercase {
                         // no space — intra-token period
                     } else {
@@ -761,8 +759,16 @@ mod tests {
             &defaults(),
         );
         assert!(outcome.text.contains("agents.md"), "got: {}", outcome.text);
-        assert!(!outcome.text.contains("agents. md"), "got: {}", outcome.text);
-        assert!(!outcome.text.contains("agents. Md"), "got: {}", outcome.text);
+        assert!(
+            !outcome.text.contains("agents. md"),
+            "got: {}",
+            outcome.text
+        );
+        assert!(
+            !outcome.text.contains("agents. Md"),
+            "got: {}",
+            outcome.text
+        );
     }
 
     #[test]

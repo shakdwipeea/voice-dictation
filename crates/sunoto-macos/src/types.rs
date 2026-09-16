@@ -46,8 +46,13 @@ pub enum X11Error {
     HotkeyBlocked(String),
     UnsupportedCharacter(char),
     ClipboardUnavailable,
-    SelfTestMismatch { expected: String, actual: String },
-    HotkeySelfTestMismatch { actual: Vec<HotkeyEvent> },
+    SelfTestMismatch {
+        expected: String,
+        actual: String,
+    },
+    HotkeySelfTestMismatch {
+        actual: Vec<HotkeyEvent>,
+    },
 }
 
 impl fmt::Display for X11Error {

@@ -1,9 +1,12 @@
 mod bench;
 mod daemon;
 mod eval;
+mod events;
 mod health;
+mod insertion;
 mod llm_polish;
 mod logging;
+mod overlay;
 mod settings;
 mod system_mode;
 mod system_worker;

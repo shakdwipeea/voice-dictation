@@ -415,7 +415,10 @@ impl LlmPolishClient {
                         }
                         on_chunk(&delta);
                     }
-                    LlmPolishEvent::PolishChunk { session_id: response_session, .. } => {
+                    LlmPolishEvent::PolishChunk {
+                        session_id: response_session,
+                        ..
+                    } => {
                         // Stale chunk from an earlier timed-out session.
                         crate::logging::warn(&format!(
                             "ignored stale LLM polish chunk for session {response_session}"
