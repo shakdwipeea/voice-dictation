@@ -29,6 +29,60 @@ const LEGACY_LAUNCHD_LABEL: &str = "com.earendil-works.sunoto";
 /// Name of the file inside `Contents/Resources` that tells an app-bundle
 /// launch where the repository (sidecar scripts, venvs, models) lives.
 pub const ROOT_MARKER: &str = "sunoto-root";
+/// A prebuilt (release) bundle carries the whole runtime here instead of a
+/// marker: services/, src/, a relocatable Python with both sidecars'
+/// packages, and the two venv-shaped symlinks the daemon resolves.
+pub const EMBEDDED_ROOT: &str = "Contents/Resources/root";
+/// Speech model fetched on first run; matches the daemon's default.
+const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+
+/// `.../Sunoto.app` when this executable lives in an app bundle.
+pub fn app_bundle_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;
+    let contents = macos_dir.parent()?;
+    let bundle = contents.parent()?;
+    (macos_dir.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension().is_some_and(|ext| ext == "app"))
+    .then(|| bundle.to_path_buf())
+}
+
+/// True when the bundle ships its own runtime (a release build) rather
+/// than pointing at a repository checkout.
+pub fn bundle_is_prebuilt(bundle: &Path) -> bool {
+    bundle
+        .join(EMBEDDED_ROOT)
+        .join("python/bin/python3")
+        .is_file()
+}
+
+/// Point the daemon at the bundle's runtime. A marker file wins (developer
+/// install from a checkout); otherwise the embedded root. A prebuilt bundle
+/// also keeps the Hugging Face cache under Application Support so the
+/// speech model lives next to the polish model and uninstall --purge
+/// removes both.
+pub fn apply_bundle_environment(bundle: &Path) {
+    let resources = bundle.join("Contents/Resources");
+    if std::env::var_os("SUNOTO_ROOT").is_none() {
+        let root = fs::read_to_string(resources.join(ROOT_MARKER))
+            .ok()
+            .map(|marker| PathBuf::from(marker.trim()))
+            .or_else(|| bundle_is_prebuilt(bundle).then(|| bundle.join(EMBEDDED_ROOT)));
+        if let Some(root) = root {
+            // SAFETY: called from main before any thread exists.
+            unsafe { std::env::set_var("SUNOTO_ROOT", root) };
+        }
+    }
+    if bundle_is_prebuilt(bundle)
+        && std::env::var_os("HF_HOME").is_none()
+        && let Ok(home) = std::env::var("HOME")
+    {
+        let hf_home = PathBuf::from(home).join("Library/Application Support/sunoto/hf");
+        // SAFETY: as above.
+        unsafe { std::env::set_var("HF_HOME", hf_home) };
+    }
+}
 
 const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--with-llm|--without-llm] [--timeout-secs N]
 
@@ -36,8 +90,8 @@ const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [-
   --no-login-item    install and start the app without registering it at login
   --with-llm         download the LLM polish model (about 2.7 GB) without asking
   --without-llm      skip the LLM polish model; dictation uses deterministic polish only
-  --timeout-secs N   how long to wait for the daemon to report ready (default 600;
-                     the first start also downloads the 600 MB speech model)
+  --timeout-secs N   how long to wait for the daemon to report ready (default 600)
+  --print-plist      print the bundle's Info.plist and exit (used by the release build)
 ";
 
 /// Where the LLM polish model is fetched from. The file is the same one the
@@ -76,6 +130,7 @@ fn parse_args(args: &[String]) -> Result<Args, Box<dyn Error>> {
             "--no-login-item" => parsed.login_item = false,
             "--with-llm" => parsed.llm = LlmChoice::Download,
             "--without-llm" => parsed.llm = LlmChoice::Skip,
+            "--print-plist" => {}
             "--timeout-secs" => {
                 let value = iter.next().ok_or("--timeout-secs needs a value")?;
                 parsed.timeout = Duration::from_secs(value.parse()?);
@@ -99,11 +154,20 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let daemon = std::env::current_exe()?.canonicalize()?;
     let overlay = daemon.with_file_name("sunoto-overlay");
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
-    let staging = root.join("target/release").join(format!("{APP_NAME}.app"));
     let installed = home.join("Applications").join(format!("{APP_NAME}.app"));
     let log_path = home.join("Library/Logs/sunoto/daemon.log");
+    // Prebuilt: this binary already sits in a release bundle with its
+    // runtime inside. Nothing to build; install the bundle as it is.
+    let prebuilt = app_bundle_root().filter(|bundle| bundle_is_prebuilt(bundle));
+    let staging = match &prebuilt {
+        Some(bundle) => bundle.clone(),
+        None => root.join("target/release").join(format!("{APP_NAME}.app")),
+    };
 
     section("preflight");
+    if let Some(bundle) = &prebuilt {
+        ok(&format!("prebuilt bundle: {}", bundle.display()));
+    }
     if !overlay.is_file() {
         return Err(format!(
             "overlay binary missing at {}; build it with: swiftc -O services/macos/sunoto-overlay.swift -o {}",
@@ -130,14 +194,20 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         loaded.save(&config_path)?;
         ok(&format!("config:  created {}", config_path.display()));
     }
-    preflight_asr_runtime(&root, &loaded)?;
+    let asr_python = preflight_asr_runtime(&root, &loaded)?;
     let loaded = ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?;
-    let _ = loaded;
+    if let Some(python) = asr_python.filter(|_| loaded.backend.starts_with("parakeet_mlx")) {
+        ensure_asr_model(&python, args.dry_run)?;
+    }
 
     section("bundle");
-    assemble_bundle(&staging, &daemon, &overlay, &root)?;
-    codesign(&staging)?;
-    ok(&format!("assembled and signed {}", staging.display()));
+    if prebuilt.is_none() {
+        assemble_bundle(&staging, &daemon, &overlay, &root)?;
+        codesign(&staging)?;
+        ok(&format!("assembled and signed {}", staging.display()));
+    } else {
+        ok("release bundle used as is");
+    }
     if args.dry_run {
         note("dry run: nothing installed, nothing started");
         return Ok(());
@@ -146,12 +216,30 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     section("install");
     stop_running_daemons();
     remove_legacy_login_item(&home);
-    if installed.exists() {
-        fs::remove_dir_all(&installed)?;
+    let same_place = staging
+        .canonicalize()
+        .ok()
+        .zip(installed.canonicalize().ok())
+        .is_some_and(|(a, b)| a == b);
+    if same_place {
+        ok(&format!("already at {}", installed.display()));
+    } else {
+        if installed.exists() {
+            fs::remove_dir_all(&installed)?;
+        }
+        fs::create_dir_all(installed.parent().expect("~/Applications has a parent"))?;
+        copy_dir(&staging, &installed)?;
+        ok(&format!("installed {}", installed.display()));
     }
-    fs::create_dir_all(installed.parent().expect("~/Applications has a parent"))?;
-    copy_dir(&staging, &installed)?;
-    ok(&format!("installed {}", installed.display()));
+    // A downloaded bundle carries the quarantine flag; without a Developer
+    // ID signature macOS would refuse to open it. The user chose to install
+    // it, so lift the flag on the installed copy.
+    let _ = Command::new("xattr")
+        .args(["-dr", "com.apple.quarantine"])
+        .arg(&installed)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     if args.login_item {
         register_login_item(&installed)?;
         ok(&format!("{APP_NAME} registered in Login Items"));
@@ -165,13 +253,17 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     watch_until_ready(args.timeout, &installed)
 }
 
-fn preflight_asr_runtime(root: &Path, settings: &Settings) -> Result<(), Box<dyn Error>> {
+/// Returns the ASR Python interpreter when the backend needs one.
+fn preflight_asr_runtime(
+    root: &Path,
+    settings: &Settings,
+) -> Result<Option<String>, Box<dyn Error>> {
     if !settings.backend.starts_with("parakeet_mlx") {
         note(&format!(
             "backend {}: Parakeet runtime preflight skipped",
             settings.backend
         ));
-        return Ok(());
+        return Ok(None);
     }
     let (python, _) = settings.sidecar_command()?;
     let python_path = Path::new(&python);
@@ -194,6 +286,39 @@ fn preflight_asr_runtime(root: &Path, settings: &Settings) -> Result<(), Box<dyn
         .into());
     }
     ok("ASR runtime imports: mlx + parakeet_mlx");
+    Ok(Some(python))
+}
+
+/// Fetch the speech model into the Hugging Face cache now, with progress,
+/// instead of letting the first daemon start do it silently behind a
+/// "loading speech model..." pill. No-op when it is already cached.
+fn ensure_asr_model(python: &str, dry_run: bool) -> Result<(), Box<dyn Error>> {
+    section("speech model");
+    let script = format!(
+        "from huggingface_hub import snapshot_download\nimport sys\np = snapshot_download('{ASR_MODEL_REPO}', local_files_only=True) if '--check' in sys.argv else snapshot_download('{ASR_MODEL_REPO}')\nprint(p)"
+    );
+    let cached = Command::new(python)
+        .args(["-c", &script, "--check"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if cached {
+        ok(&format!("{ASR_MODEL_REPO} already cached"));
+        return Ok(());
+    }
+    if dry_run {
+        note(&format!("would download {ASR_MODEL_REPO} (about 600 MB)"));
+        return Ok(());
+    }
+    note(&format!(
+        "downloading {ASR_MODEL_REPO} (about 600 MB, one time)..."
+    ));
+    let status = Command::new(python).args(["-c", &script]).status()?;
+    if !status.success() {
+        return Err("speech model download failed; rerun setup to resume".into());
+    }
+    ok("speech model ready");
     Ok(())
 }
 
@@ -432,7 +557,7 @@ fn assemble_bundle(
     Ok(())
 }
 
-fn info_plist() -> String {
+pub fn info_plist() -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

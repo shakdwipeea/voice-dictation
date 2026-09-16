@@ -78,10 +78,14 @@ dictionary and snippets, so results are machine-independent):
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let bundle = setup::app_bundle_root();
+    if let Some(bundle) = &bundle {
+        setup::apply_bundle_environment(bundle);
+    }
     // Launched by Launch Services from inside Sunoto.app: no arguments (or a
     // legacy -psn_ process serial). Run the daemon with the bundle's context.
     let launched_from_bundle = args.is_empty() || args[0].starts_with("-psn");
-    let code = match app_bundle_root().filter(|_| launched_from_bundle) {
+    let code = match bundle.filter(|_| launched_from_bundle) {
         Some(bundle) => match run_from_bundle(&bundle) {
             Ok(()) => 0,
             Err(error) => {
@@ -100,34 +104,14 @@ fn main() {
     std::process::exit(code);
 }
 
-/// `.../Sunoto.app` when this executable lives in an app bundle.
-fn app_bundle_root() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let macos_dir = exe.parent()?;
-    let contents = macos_dir.parent()?;
-    let bundle = contents.parent()?;
-    (macos_dir.file_name()? == "MacOS"
-        && contents.file_name()? == "Contents"
-        && bundle.extension().is_some_and(|ext| ext == "app"))
-    .then(|| bundle.to_path_buf())
-}
-
 unsafe extern "C" {
     fn dup2(from: i32, to: i32) -> i32;
 }
 
 /// Daemon start for an app-bundle launch: point stdout/stderr at the log
-/// file, learn the repository root from the bundle, then run.
+/// file, then run. The bundle environment was applied in `main`.
 fn run_from_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn Error>> {
     use std::os::unix::io::AsRawFd;
-    if std::env::var_os("SUNOTO_ROOT").is_none() {
-        let marker = bundle.join("Contents/Resources").join(setup::ROOT_MARKER);
-        if let Ok(root) = std::fs::read_to_string(&marker) {
-            // SAFETY: single-threaded at this point; no other thread reads
-            // the environment concurrently.
-            unsafe { std::env::set_var("SUNOTO_ROOT", root.trim()) };
-        }
-    }
     let log_path = std::env::var_os("SUNOTO_LOG")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -181,6 +165,10 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
         "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
         "status" => setup::print_status(rest.iter().any(|arg| arg == "--json")),
+        "setup" if rest.iter().any(|arg| arg == "--print-plist") => {
+            print!("{}", setup::info_plist());
+            Ok(())
+        }
         "setup" => setup::run(rest),
         "restart" => setup::restart(),
         "log" => setup::follow_log(),

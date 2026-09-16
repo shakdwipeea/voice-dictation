@@ -27,6 +27,8 @@ pub enum DaemonHealth {
     /// Everything else is up but the microphone has never delivered audio.
     /// On a fresh install this is the Microphone permission prompt.
     MicStarting,
+    /// The microphone was released while idle and is reopening for a press.
+    MicReopening,
     Ready,
 }
 
@@ -62,6 +64,7 @@ impl DaemonHealth {
             Self::LoadingAsr => "loading_asr",
             Self::WarmingPolish => "warming_polish",
             Self::MicStarting => "mic_starting",
+            Self::MicReopening => "mic_reopening",
             Self::Ready => "ready",
         }
     }
@@ -75,6 +78,7 @@ impl DaemonHealth {
             Self::LoadingAsr => "loading speech model...",
             Self::WarmingPolish => "warming polish...",
             Self::MicStarting => "waiting for microphone access",
+            Self::MicReopening => "microphone starting...",
             Self::Ready => "",
         }
     }
@@ -96,6 +100,8 @@ pub struct HealthInputs {
     pub polish_warmed: bool,
     pub hotkey_blocked: bool,
     pub mic: MicState,
+    /// The daemon itself asked for the mic to reopen after an idle release.
+    pub mic_reopening: bool,
 }
 
 impl HealthInputs {
@@ -112,6 +118,8 @@ impl HealthInputs {
             DaemonHealth::LoadingAsr
         } else if !self.polish_warmed {
             DaemonHealth::WarmingPolish
+        } else if self.mic == MicState::Starting && self.mic_reopening {
+            DaemonHealth::MicReopening
         } else if self.mic == MicState::Starting {
             DaemonHealth::MicStarting
         } else {
@@ -148,12 +156,14 @@ pub(crate) fn health_inputs(
     polish_warmed: bool,
     blocked_modes: &[SessionMode],
     mic: MicState,
+    mic_reopening: bool,
 ) -> HealthInputs {
     HealthInputs {
         asr_ready,
         polish_warmed,
         hotkey_blocked: !blocked_modes.is_empty(),
         mic,
+        mic_reopening,
     }
 }
 
@@ -197,6 +207,7 @@ mod tests {
             polish_warmed: true,
             hotkey_blocked: false,
             mic: MicState::Capturing,
+            mic_reopening: false,
         }
     }
 
@@ -207,6 +218,7 @@ mod tests {
             polish_warmed: false,
             hotkey_blocked: true,
             mic: MicState::Unavailable,
+            mic_reopening: false,
         };
         assert_eq!(inputs.health(), DaemonHealth::HotkeyBlocked);
     }
@@ -218,6 +230,7 @@ mod tests {
             polish_warmed: false,
             hotkey_blocked: false,
             mic: MicState::Starting,
+            mic_reopening: false,
         };
         assert_eq!(inputs.health(), DaemonHealth::LoadingAsr);
         inputs.asr_ready = true;
@@ -226,6 +239,11 @@ mod tests {
         assert_eq!(inputs.health(), DaemonHealth::MicStarting);
         inputs.mic = MicState::Capturing;
         assert_eq!(inputs.health(), DaemonHealth::Ready);
+        // Reopening after an idle release is not a permission problem.
+        inputs.mic = MicState::Starting;
+        inputs.mic_reopening = true;
+        assert_eq!(inputs.health(), DaemonHealth::MicReopening);
+        inputs.mic_reopening = false;
         // An idle release is not a problem.
         inputs.mic = MicState::Idle;
         assert_eq!(inputs.health(), DaemonHealth::Ready);
@@ -258,6 +276,7 @@ mod tests {
             DaemonHealth::LoadingAsr,
             DaemonHealth::WarmingPolish,
             DaemonHealth::MicStarting,
+            DaemonHealth::MicReopening,
         ] {
             assert!(!health.caption().is_empty());
             assert!(health.caption().len() <= 36, "{health}");

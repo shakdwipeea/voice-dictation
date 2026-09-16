@@ -11,21 +11,29 @@ and release—the transcript is inserted into the focused application.
 
 ## macOS
 
-### Install with Homebrew
+### Install (Apple silicon, no developer tools needed)
+
+Paste this in Terminal:
 
 ```bash
-brew tap shakdwipeea/sunoto
-brew install --HEAD sunoto
-sunoto setup
+curl -fsSL https://raw.githubusercontent.com/shakdwipeea/voice-dictation/master/install-macos.sh | bash
 ```
 
-`sunoto setup` builds `Sunoto.app`, registers it as a Login Item, starts it,
-offers to download the 2.7 GB polish model, and waits until the app reports
-ready. The tap is documented in [packaging/homebrew](packaging/homebrew/README.md).
+It downloads the latest prebuilt `Sunoto.app` (the daemon, the overlay, and
+the Python runtime are inside), verifies the checksum, installs it in
+`~/Applications`, registers it as a Login Item, starts it, fetches the
+speech model, offers the 2.7 GB polish model, and then watches the app's
+own health until it is ready. Nothing needs `sudo`. To skip the question
+about the polish model, append `-s -- --with-llm` or `-s -- --without-llm`.
 
-### Install from a checkout
+Releases are built by [the release workflow](.github/workflows/release.yml)
+from [packaging/macos/build-app.sh](packaging/macos/build-app.sh); a
+Homebrew formula also exists in [packaging/homebrew](packaging/homebrew/README.md).
 
-From the repository root:
+### Install from a checkout (developers)
+
+From the repository root, with Rust, the Xcode command line tools, and the
+Python runtimes set up:
 
 ```bash
 bash install-macos.sh

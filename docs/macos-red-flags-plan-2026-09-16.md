@@ -110,6 +110,18 @@ today; the formula automates it.
 this with the probe from §2.1 and walks the user through re-granting. It is
 one guided click per upgrade, not a mystery.
 
+**Stage 1b: a prebuilt app and a one-line installer (chosen 2026-09-17).**
+The owner wanted an install that needs no developer tools. `packaging/
+macos/build-app.sh` produces a self-contained `Sunoto.app` (daemon, overlay,
+a relocatable CPython 3.12 with parakeet-mlx and llama-cpp-python compiled
+for Metal, and the sidecar scripts under `Contents/Resources/root`), zipped
+with a checksum; `.github/workflows/release.yml` builds it on an Apple
+silicon runner for every `v*` tag. `install-macos.sh` run through `curl |
+bash` downloads the latest release, verifies it, installs it in
+`~/Applications`, lifts the quarantine flag, and hands over to `setup`,
+which now also prefetches the speech model with progress. From a checkout
+the same script still builds from source.
+
 **Stage 2: a signed cask.** With an Apple Developer ID, the same bundle is
 signed and notarized, shipped as a cask, and grants survive upgrades. The
 formula and cask share the bundle layout, so stage 2 is a signing step and a

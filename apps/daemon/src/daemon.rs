@@ -487,6 +487,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             llm_post_asr_warmed,
                             &blocked_modes,
                             mic,
+                            capture_requested_at.is_some(),
                         )) {
                             publish_health(next, &mut ui, &settings);
                         }
@@ -1444,6 +1445,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             llm_post_asr_warmed,
             &blocked_modes,
             mic,
+            capture_requested_at.is_some(),
         )) {
             publish_health(next, &mut ui, &settings);
         }
