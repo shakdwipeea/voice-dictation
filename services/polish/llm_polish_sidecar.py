@@ -947,15 +947,22 @@ def keepalive_loop(llm: Llama, interval: float) -> None:
     polish arriving mid-ping is bounded by the ping's remaining wall time.
     Exits cleanly when `_keepalive_stop` is set on shutdown.
     """
+    was_active = False
     while not _keepalive_stop.is_set():
         if not _keepalive_active.is_set():
+            was_active = False
             # Idle window: no pings, no GPU work. Poll cheaply for a start.
             if _keepalive_stop.wait(0.1):
                 return
             continue
-        # Sleep in small slices so shutdown is responsive.
-        if _keepalive_stop.wait(interval):
-            return
+        if was_active:
+            # Sleep in small slices so shutdown is responsive.
+            if _keepalive_stop.wait(interval):
+                return
+        # The first ping after the window opens fires at once: after an idle
+        # stretch it is the cold one (~2 s), and it must run while the user
+        # is still speaking, not collide with the polish after release.
+        was_active = True
         if not _keepalive_ready or not _keepalive_active.is_set():
             continue
         # trylock: skip this cycle if the main thread is mid-polish; never

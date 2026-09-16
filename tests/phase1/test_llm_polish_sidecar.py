@@ -601,6 +601,31 @@ class KeepaliveTests(unittest.TestCase):
         llm_polish_sidecar._keepalive_stop.clear()
         llm_polish_sidecar._keepalive_active.clear()
 
+    def test_first_ping_fires_immediately_when_the_window_opens(self):
+        """After keepalive_start the first ping must not wait a full
+        interval: the cold ramp has to overlap the recording."""
+        llm_polish_sidecar._keepalive_ready = True
+        llm_polish_sidecar._keepalive_text = "Hey, how are you doing?"
+        llm = FakeLlama("OK")
+        llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.clear()
+        t = threading.Thread(
+            target=llm_polish_sidecar.keepalive_loop,
+            args=(llm, 5.0),  # long interval: only an immediate ping can show up
+            daemon=True,
+        )
+        t.start()
+        time.sleep(0.05)
+        llm_polish_sidecar._keepalive_active.set()
+        time.sleep(0.3)
+        self.assertEqual(len(llm.calls), 1)
+        llm_polish_sidecar._keepalive_stop.set()
+        t.join(timeout=2.0)
+        llm_polish_sidecar._keepalive_ready = False
+        llm_polish_sidecar._keepalive_text = None
+        llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.clear()
+
     def test_keepalive_always_env_keeps_the_window_open(self):
         with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_KEEPALIVE_ALWAYS": "1"}):
             llm_polish_sidecar._keepalive_active.set()
