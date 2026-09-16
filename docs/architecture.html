@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sunoto Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --paper: #f3f5f8;
+    --panel: #ffffff;
+    --ink: #1a2027;
+    --ink-2: #4c5866;
+    --ink-3: #7b8794;
+    --line: #d3dae2;
+    --line-soft: #e6ebf0;
+    --rec: #d64545;
+    --rec-soft: #fbe9e9;
+    --side: #2f6fb0;
+    --side-soft: #e6eff9;
+    --good: #2e7d4f;
+    --good-soft: #e5f3ea;
+    --bad: #b8522a;
+    --bad-soft: #f8ebe4;
+    --code-bg: #eaeef3;
+    --display: "Sora", "Avenir Next", "Segoe UI", sans-serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #12161b;
+      --panel: #1a2027;
+      --ink: #e8ecf0;
+      --ink-2: #b4bdc7;
+      --ink-3: #7f8a96;
+      --line: #313a45;
+      --line-soft: #262e38;
+      --rec: #ef6b6b;
+      --rec-soft: #3a2224;
+      --side: #6aa3e0;
+      --side-soft: #1d2b3c;
+      --good: #6fc48f;
+      --good-soft: #1c2f24;
+      --bad: #e58a62;
+      --bad-soft: #35241b;
+      --code-bg: #232b34;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #12161b;
+    --panel: #1a2027;
+    --ink: #e8ecf0;
+    --ink-2: #b4bdc7;
+    --ink-3: #7f8a96;
+    --line: #313a45;
+    --line-soft: #262e38;
+    --rec: #ef6b6b;
+    --rec-soft: #3a2224;
+    --side: #6aa3e0;
+    --side-soft: #1d2b3c;
+    --good: #6fc48f;
+    --good-soft: #1c2f24;
+    --bad: #e58a62;
+    --bad-soft: #35241b;
+    --code-bg: #232b34;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 80px;
+  }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+  h2 { font-size: 22px; font-weight: 600; margin-top: 56px; margin-bottom: 14px; padding-top: 18px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; font-weight: 600; margin-top: 30px; margin-bottom: 8px; }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; max-width: 70ch; }
+  li { margin-bottom: 6px; }
+  li strong { font-weight: 600; }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 14px; }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 62ch; margin-top: 18px; }
+
+  /* the overlay pill, drawn as the product draws it */
+  .pill {
+    display: inline-flex; align-items: center; gap: 10px;
+    height: 34px; padding: 0 14px; border-radius: 17px;
+    background: var(--ink); color: var(--paper);
+    margin-top: 22px;
+  }
+  .pill .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--rec); }
+  .pill .meter { width: 150px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.18); overflow: hidden; }
+  .pill .meter i { display: block; height: 100%; width: 42%; background: var(--paper); border-radius: 3px; }
+  .pill-note { font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin-top: 8px; }
+
+  figure { margin: 18px 0 22px; }
+  .fig-scroll { overflow-x: auto; padding-bottom: 4px; }
+  figure svg { display: block; max-width: 100%; height: auto; min-width: 640px; font-family: var(--body); }
+  figure svg.wide { min-width: 720px; }
+  figcaption { font-size: 14px; color: var(--ink-2); margin-top: 10px; max-width: 70ch; }
+  .svg-text { fill: var(--ink); font-size: 12px; }
+  .svg-sub { fill: var(--ink-3); font-size: 11px; }
+  .svg-lbl { fill: var(--ink-2); font-size: 11px; font-family: var(--mono); }
+  .svg-box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+  .svg-side { fill: var(--side-soft); stroke: var(--side); stroke-width: 1.2; }
+  .svg-loop { fill: var(--rec-soft); stroke: var(--rec); stroke-width: 1.6; }
+  .svg-daemon { fill: none; stroke: var(--ink-2); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .svg-arrow { fill: none; stroke: var(--ink-2); stroke-width: 1.3; }
+  .svg-arrow-side { fill: none; stroke: var(--side); stroke-width: 1.3; }
+  .svg-seg { stroke: var(--line); stroke-width: 1; }
+
+  .three { counter-reset: n; list-style: none; padding: 0; max-width: none; display: grid; gap: 12px; grid-template-columns: repeat(3, 1fr); }
+  .three li { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin: 0; font-size: 15px; }
+  .three li b { display: block; font-family: var(--display); font-weight: 600; margin-bottom: 6px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0 18px; }
+  .tbl { overflow-x: auto; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); }
+  th { font-family: var(--display); font-weight: 600; font-size: 13px; color: var(--ink-2); border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td code { white-space: nowrap; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .verdict { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 16px; }
+  .verdict > div { border-radius: 6px; padding: 16px 18px; }
+  .verdict .good { background: var(--good-soft); }
+  .verdict .bad { background: var(--bad-soft); }
+  .verdict h3 { margin-top: 0; margin-bottom: 10px; }
+  .verdict .good h3 { color: var(--good); }
+  .verdict .bad h3 { color: var(--bad); }
+  .verdict ul { padding-left: 18px; font-size: 14.5px; max-width: none; }
+  .verdict li { margin-bottom: 9px; }
+
+  table.score th { white-space: normal; }
+  table.score tbody th { font-family: var(--display); font-size: 14px; color: var(--ink); width: 15%; }
+  table.score td { width: 42.5%; font-size: 13.5px; }
+  table.score .th-good { color: var(--good); }
+  table.score .th-bad { color: var(--bad); }
+  table.score tbody td:nth-child(2) { border-left: 3px solid var(--good-soft); }
+  table.score tbody td:nth-child(3) { border-left: 3px solid var(--bad-soft); }
+  ol.plan { max-width: 72ch; }
+  ol.plan li { margin-bottom: 10px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 14px; margin-bottom: 14px; }
+  .kv dt { font-family: var(--mono); color: var(--ink-2); }
+  .kv dd { margin: 0; }
+  .num-line { font-family: var(--mono); font-size: 14px; color: var(--ink-2); margin: 8px 0 16px; }
+
+  @media (max-width: 720px) {
+    .three { grid-template-columns: 1fr; }
+    .verdict { grid-template-columns: 1fr; }
+    h2 { margin-top: 44px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .pill .meter i { animation: lvl 1.6s ease-in-out infinite alternate; }
+    @keyframes lvl { from { width: 22%; } to { width: 68%; } }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">voice-dictation · commit b5234d7b + working tree · 2026-09-16</div>
+  <h1>Sunoto architecture</h1>
+  <p class="lede">A local push-to-talk dictation daemon. Hold <code>Ctrl+F1</code>, speak, release, and the text lands in the focused window. One Rust binary owns the hotkey, microphone, session state, cleanup and insertion. The speech model, the LLM cleanup pass and the on-screen overlay are child processes talking newline-delimited JSON over stdin and stdout. Nothing leaves the machine.</p>
+  <div class="pill" aria-hidden="true"><span class="dot"></span><span class="meter"><i></i></span></div>
+  <div class="pill-note">the recording overlay: dot + level meter, 214×34, nothing else while you speak</div>
+
+  <h2>The big picture</h2>
+  <figure>
+    <div class="fig-scroll">
+    <svg class="wide" viewBox="0 0 1000 640" role="img" aria-label="Hotkey and microphone feed a single Rust event loop, which streams audio to an ASR sidecar, runs deterministic polish, optionally calls an LLM polish sidecar, sends frames to an overlay sidecar over a bounded channel, and inserts text into the focused application through a UI thread.">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g style="color: var(--ink-2)">
+
+      <!-- daemon boundary -->
+      <rect x="210" y="30" width="440" height="500" rx="8" class="svg-daemon"/>
+      <text x="224" y="52" class="svg-text" style="font-weight:600">sunoto-daemon</text>
+      <text x="335" y="52" class="svg-sub">Rust · apps/daemon · one process</text>
+
+      <!-- inputs -->
+      <rect x="20" y="62" width="150" height="56" rx="5" class="svg-box"/>
+      <text x="95" y="84" class="svg-text" text-anchor="middle" style="font-weight:600">Hotkey</text>
+      <text x="95" y="102" class="svg-sub" text-anchor="middle">XGrabKey · CGEventTap</text>
+
+      <rect x="20" y="152" width="150" height="56" rx="5" class="svg-box"/>
+      <text x="95" y="174" class="svg-text" text-anchor="middle" style="font-weight:600">Compositor / CLI</text>
+      <text x="95" y="192" class="svg-sub" text-anchor="middle">Wayland: no global grab</text>
+
+      <rect x="20" y="292" width="150" height="56" rx="5" class="svg-box"/>
+      <text x="95" y="314" class="svg-text" text-anchor="middle" style="font-weight:600">Microphone</text>
+      <text x="95" y="332" class="svg-sub" text-anchor="middle">parec · CoreAudio FFI</text>
+
+      <!-- bridge threads -->
+      <rect x="232" y="66" width="168" height="48" rx="5" class="svg-box"/>
+      <text x="316" y="86" class="svg-text" text-anchor="middle">hotkey thread</text>
+      <text x="316" y="102" class="svg-sub" text-anchor="middle">wait(250 ms) loop</text>
+
+      <rect x="232" y="156" width="168" height="48" rx="5" class="svg-box"/>
+      <text x="316" y="176" class="svg-text" text-anchor="middle">control socket</text>
+      <text x="316" y="192" class="svg-sub" text-anchor="middle">trigger · polish · plan_system</text>
+
+      <rect x="232" y="296" width="168" height="48" rx="5" class="svg-box"/>
+      <text x="316" y="316" class="svg-text" text-anchor="middle">capture thread</text>
+      <text x="316" y="332" class="svg-sub" text-anchor="middle">16 kHz i16 · 20 ms frames</text>
+
+      <!-- event loop -->
+      <rect x="432" y="66" width="196" height="138" rx="6" class="svg-loop"/>
+      <text x="530" y="90" class="svg-text" text-anchor="middle" style="font-weight:600">main event loop</text>
+      <text x="530" y="110" class="svg-sub" text-anchor="middle">50 ms tick · owns all policy</text>
+      <text x="530" y="128" class="svg-sub" text-anchor="middle">SessionMachine (sunoto-core)</text>
+      <text x="530" y="146" class="svg-sub" text-anchor="middle">Idle → Recording → Transcribing</text>
+      <text x="530" y="164" class="svg-sub" text-anchor="middle">300 ms pre-roll ring</text>
+      <text x="530" y="182" class="svg-sub" text-anchor="middle">watchdogs · sidecar respawn</text>
+
+      <!-- polish -->
+      <rect x="432" y="246" width="196" height="56" rx="5" class="svg-box"/>
+      <text x="530" y="268" class="svg-text" text-anchor="middle" style="font-weight:600">sunoto-polish</text>
+      <text x="530" y="286" class="svg-sub" text-anchor="middle">deterministic · in-process</text>
+
+      <!-- UI thread -->
+      <rect x="432" y="410" width="196" height="64" rx="5" class="svg-box"/>
+      <text x="530" y="432" class="svg-text" text-anchor="middle" style="font-weight:600">UI thread</text>
+      <text x="530" y="449" class="svg-sub" text-anchor="middle">focus re-check → insert</text>
+      <text x="530" y="465" class="svg-sub" text-anchor="middle">sunoto-linux · sunoto-macos</text>
+
+      <!-- sidecars -->
+      <rect x="700" y="62" width="280" height="72" rx="5" class="svg-side"/>
+      <text x="840" y="84" class="svg-text" text-anchor="middle" style="font-weight:600">ASR sidecar · Python</text>
+      <text x="840" y="102" class="svg-sub" text-anchor="middle">parakeet-mlx (Metal) · nemotron (CUDA)</text>
+      <text x="840" y="120" class="svg-sub" text-anchor="middle">mock · restarts with 0.5–5 s backoff</text>
+
+      <rect x="700" y="238" width="280" height="72" rx="5" class="svg-side"/>
+      <text x="840" y="260" class="svg-text" text-anchor="middle" style="font-weight:600">LLM polish sidecar · Python</text>
+      <text x="840" y="278" class="svg-sub" text-anchor="middle">llama.cpp · Phi-4-mini Q5 GGUF</text>
+      <text x="840" y="296" class="svg-sub" text-anchor="middle">1-token keepalive every 1 s</text>
+
+      <rect x="700" y="406" width="280" height="72" rx="5" class="svg-side"/>
+      <text x="840" y="428" class="svg-text" text-anchor="middle" style="font-weight:600">Overlay sidecar</text>
+      <text x="840" y="446" class="svg-sub" text-anchor="middle">Swift NSPanel (macOS) · GTK4 (Linux)</text>
+      <text x="840" y="464" class="svg-sub" text-anchor="middle">pill + meter · System palette</text>
+
+      <!-- focused app -->
+      <rect x="432" y="566" width="196" height="50" rx="5" class="svg-box" style="stroke: var(--ink)"/>
+      <text x="530" y="596" class="svg-text" text-anchor="middle" style="font-weight:600">focused application</text>
+
+      <!-- arrows: inputs -> bridges -->
+      <line x1="170" y1="90" x2="230" y2="90" class="svg-arrow" marker-end="url(#arr)"/>
+      <line x1="170" y1="180" x2="230" y2="180" class="svg-arrow" marker-end="url(#arr)"/>
+      <text x="200" y="176" class="svg-lbl" text-anchor="middle">unix sock</text>
+      <line x1="170" y1="320" x2="230" y2="320" class="svg-arrow" marker-end="url(#arr)"/>
+
+      <!-- bridges -> loop -->
+      <line x1="400" y1="90" x2="430" y2="90" class="svg-arrow" marker-end="url(#arr)"/>
+      <line x1="400" y1="180" x2="430" y2="180" class="svg-arrow" marker-end="url(#arr)"/>
+      <polyline points="400,320 416,320 416,150 430,150" class="svg-arrow" marker-end="url(#arr)"/>
+      <text x="410" y="240" class="svg-lbl" text-anchor="end" transform="rotate(-90 410 240)">frames</text>
+
+      <!-- loop <-> ASR -->
+      <line x1="628" y1="84" x2="698" y2="84" class="svg-arrow-side" marker-end="url(#arr)"/>
+      <text x="663" y="78" class="svg-lbl" text-anchor="middle">audio_chunk</text>
+      <line x1="700" y1="112" x2="630" y2="112" class="svg-arrow-side" marker-end="url(#arr)"/>
+      <text x="663" y="128" class="svg-lbl" text-anchor="middle">partial · final</text>
+
+      <!-- loop -> polish -->
+      <line x1="530" y1="204" x2="530" y2="244" class="svg-arrow" marker-end="url(#arr)"/>
+      <text x="538" y="228" class="svg-lbl">final text</text>
+
+      <!-- polish <-> LLM -->
+      <line x1="628" y1="262" x2="698" y2="262" class="svg-arrow-side" marker-end="url(#arr)"/>
+      <text x="663" y="256" class="svg-lbl" text-anchor="middle">polish{text}</text>
+      <line x1="700" y1="290" x2="630" y2="290" class="svg-arrow-side" marker-end="url(#arr)"/>
+      <text x="663" y="306" class="svg-lbl" text-anchor="middle">OK | EDIT: …</text>
+
+      <!-- polish -> UI thread -->
+      <line x1="530" y1="302" x2="530" y2="408" class="svg-arrow" marker-end="url(#arr)"/>
+      <text x="538" y="346" class="svg-lbl">clean text,</text>
+      <text x="538" y="362" class="svg-lbl">Enter/Tab → space</text>
+
+      <!-- loop -> overlay via bounded channel -->
+      <polyline points="628,190 664,190 664,442 698,442" class="svg-arrow-side" marker-end="url(#arr)"/>
+      <text x="672" y="372" class="svg-lbl" text-anchor="middle" transform="rotate(-90 672 372)">chan(64) · try_send · drops</text>
+
+      <!-- UI thread -> app -->
+      <line x1="530" y1="474" x2="530" y2="564" class="svg-arrow" marker-end="url(#arr)"/>
+      <text x="538" y="508" class="svg-lbl">paste → type</text>
+      <text x="538" y="524" class="svg-lbl">→ clipboard park</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Every OS event and every sidecar line becomes one <code>DaemonEvent</code> on one channel. The red box is the only place decisions are made. Blue boxes are separate processes; if one dies, the daemon restarts it or degrades, and never goes down with it.</figcaption>
+  </figure>
+
+  <ol class="three">
+    <li><b>One loop owns policy</b><code>daemon.rs</code> decides everything. The other threads are bridges that turn an OS event or a stdout line into an event on one channel.</li>
+    <li><b>Sidecars are processes</b>ASR, LLM and overlay each speak a tiny NDJSON protocol. A crash means restart with backoff, never a daemon crash.</li>
+    <li><b>Text in, text out</b>Dictation never executes anything. The separate System mode is fenced by a different hotkey, a different session mode, and a type system with no "run a string" variant.</li>
+  </ol>
+
+  <h2>A dictation session</h2>
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 1000 210" role="img" aria-label="Timeline of one session: idle with pre-roll, press starts recording, release starts transcribing with an adaptive watchdog, final text arrives, deterministic and LLM polish run, then paste.">
+      <g style="color: var(--ink-2)">
+      <!-- state bar -->
+      <rect x="20" y="60" width="110" height="34" rx="4" class="svg-box"/>
+      <text x="75" y="82" class="svg-text" text-anchor="middle">Idle</text>
+      <rect x="130" y="60" width="270" height="34" rx="4" class="svg-loop"/>
+      <text x="265" y="82" class="svg-text" text-anchor="middle" style="font-weight:600">Recording</text>
+      <rect x="400" y="60" width="180" height="34" rx="4" class="svg-box"/>
+      <text x="490" y="82" class="svg-text" text-anchor="middle" style="font-weight:600">Transcribing</text>
+      <rect x="580" y="60" width="150" height="34" rx="4" class="svg-side"/>
+      <text x="655" y="82" class="svg-text" text-anchor="middle">polish</text>
+      <rect x="730" y="60" width="130" height="34" rx="4" class="svg-side"/>
+      <text x="795" y="82" class="svg-text" text-anchor="middle">LLM polish</text>
+      <rect x="860" y="60" width="120" height="34" rx="4" class="svg-box" style="stroke: var(--ink)"/>
+      <text x="920" y="82" class="svg-text" text-anchor="middle">insert</text>
+
+      <!-- event ticks -->
+      <line x1="130" y1="50" x2="130" y2="104" class="svg-arrow"/>
+      <text x="130" y="42" class="svg-lbl" text-anchor="middle">press</text>
+      <text x="130" y="122" class="svg-sub" text-anchor="middle">refused until ASR ready + LLM warm</text>
+      <text x="130" y="138" class="svg-sub" text-anchor="middle">300 ms pre-roll flushed first</text>
+
+      <line x1="400" y1="50" x2="400" y2="104" class="svg-arrow"/>
+      <text x="400" y="42" class="svg-lbl" text-anchor="middle">release</text>
+      <text x="400" y="122" class="svg-sub" text-anchor="middle">focus captured here</text>
+      <text x="400" y="138" class="svg-sub" text-anchor="middle">watchdog = 8 s + 3 × recorded</text>
+
+      <line x1="580" y1="50" x2="580" y2="104" class="svg-arrow"/>
+      <text x="580" y="42" class="svg-lbl" text-anchor="middle">final</text>
+      <text x="580" y="122" class="svg-sub" text-anchor="middle">stale ids dropped</text>
+      <text x="580" y="138" class="svg-sub" text-anchor="middle">→ Idle immediately</text>
+
+      <text x="795" y="122" class="svg-sub" text-anchor="middle">OK: ~250 ms</text>
+      <text x="795" y="138" class="svg-sub" text-anchor="middle">EDIT: 400–900 ms</text>
+
+      <text x="920" y="122" class="svg-sub" text-anchor="middle">focus moved?</text>
+      <text x="920" y="138" class="svg-sub" text-anchor="middle">→ clipboard only</text>
+
+      <!-- streaming note -->
+      <text x="265" y="122" class="svg-sub" text-anchor="middle">320 samples / 20 ms → sidecar</text>
+      <text x="265" y="138" class="svg-sub" text-anchor="middle">partials + meter to overlay</text>
+
+      <text x="20" y="190" class="svg-sub">Session state lives in sunoto-core. Polish and insertion happen after the machine is already back in Idle, so a new press can start while the previous text is still being pasted.</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Measured: release-to-insertion p50 of about 110 ms on Linux/CUDA at the 160 ms profile. Parakeet-MLX final decode about 240 ms on an M1 Pro. LLM polish adds 250 ms for clean text once warm.</figcaption>
+  </figure>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Step</th><th>What happens</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Idle</td><td>Mic is always open. Frames go into a 300 ms pre-roll ring so the first syllable is not lost.</td><td><code>sunoto-core::AudioPreRoll</code></td></tr>
+      <tr><td>Press</td><td>Refused if ASR is not ready or the LLM has not warmed. Else <code>Idle → Recording{id}</code>, pre-roll flushed as the first <code>audio_chunk</code>.</td><td><code>daemon.rs</code> hotkey arm</td></tr>
+      <tr><td>Recording</td><td>Each 20 ms frame is forwarded as a JSON array of 320 i16 samples and mirrored to the overlay as peak/rms. Streaming backends return <code>partial</code>.</td><td><code>daemon.rs</code>, ASR sidecar</td></tr>
+      <tr><td>Release</td><td><code>Recording → Transcribing</code>. Focus captured now. Watchdog set to 8000 ms + 3.0 × recorded ms. <code>finish_session</code> sent.</td><td><code>daemon.rs</code></td></tr>
+      <tr><td>Final</td><td><code>final{text}</code> arrives. Stale ids dropped. <code>Transcribing → Idle</code>.</td><td><code>sunoto-core::SessionMachine</code></td></tr>
+      <tr><td>Polish 1</td><td>normalize → resolve "no wait, I mean" swaps → strip fillers → dictionary → snippets → style (terminal vs prose by window class) → normalize.</td><td><code>crates/sunoto-polish</code></td></tr>
+      <tr><td>Polish 2</td><td>LLM constrained by a GBNF grammar to <code>OK</code> (1 token) or <code>EDIT: …</code>. Only merges mid-utterance self-corrections. Content-loss guard reverts if 3+ content words vanish. Any error → deterministic text is used.</td><td><code>llm_polish.rs</code>, <code>llm_polish_sidecar.py</code></td></tr>
+      <tr><td>Insert</td><td>Focus moved since release → clipboard, and the overlay says so. Else paste first on macOS and Wayland, type first on X11, the other as fallback. Enter and Tab become spaces unless configured.</td><td>UI thread, platform crates</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Verdict</h2>
+  <div class="verdict">
+    <div class="good">
+      <h3>What is good</h3>
+      <ul>
+        <li><strong>Small, boring core.</strong> Three third-party crates in the whole workspace: serde, serde_json, url. CoreAudio, CGEvent, Xlib and XTEST are hand-written FFI. Nothing to upgrade, nothing to audit.</li>
+        <li><strong>Pure, tested state machine.</strong> <code>sunoto-core</code> has zero deps and encodes the invariants that bite: stale finals cannot overwrite a live session, failure always returns to Idle, ids never repeat, System results cannot reach the insert path.</li>
+        <li><strong>Latency path protected by construction.</strong> Overlay writes are <code>try_send</code> on a bounded channel and drop instead of block. LLM warm-up runs after ASR is ready because they share the GPU. A 1-token keepalive each second stops Metal cold-ramping, which turned a 4 s prefill into 200 ms.</li>
+        <li><strong>Graded failure.</strong> ASR crash → restart with 0.5 to 5 s backoff. Overlay never came up → native bubble, no respawn loop. LLM warm-up failed → dictation continues without it. Hotkey grab failed → daemon stays up, control socket still works.</li>
+        <li><strong>Protocol hygiene.</strong> Every real sidecar dups stdout and points fd 1 at stderr so library chatter cannot corrupt the stream. Unparseable lines become <code>Garbage</code> events. Newer fields are <code>Option</code> with <code>serde(default)</code>.</li>
+        <li><strong>Explicit safety.</strong> Enter/Tab neutralized so a terminal never runs dictated text. Focus re-checked before insertion. System mode: no shell, no AppleScript, no <code>Exec</code> parsing, HTTP(S) only, every action needs a palette selection.</li>
+        <li><strong>Instrumented.</strong> One log line per session with the full timing breakdown. <code>bench</code> and <code>eval</code> subcommands write JSON.</li>
+      </ul>
+    </div>
+    <div class="bad">
+      <h3>What is not good</h3>
+      <ul>
+        <li><strong><code>daemon.rs</code> is a 3,000 line god file.</strong> Event loop, the Wayland adapter, insertion order for three platforms, overlay management, LLM orchestration, System dispatch and the control socket all live there. The facade only abstracts X11 and macOS. Split this first.</li>
+        <li><strong>Duck-typed platform layer.</strong> <code>sunoto-desktop</code> is a <code>cfg</code> re-export, not a trait. Both platform crates must export identically named types. The macOS error type is called <code>X11Error</code>.</li>
+        <li><strong>JSON arrays of i16 for audio.</strong> 50 messages a second of 320 integers as text. Fine at 16 kHz mono, would not survive stereo or higher rates.</li>
+        <li><strong>No protocol version.</strong> The handshake is <code>health → ready</code>. Compatibility rests on everyone remembering <code>serde(default)</code>.</li>
+        <li><strong>Clipboard differs per platform.</strong> X11 saves and restores the previous clipboard. macOS and Wayland overwrite it permanently.</li>
+        <li><strong>macOS reliability is TCC folklore.</strong> The CGEventTap goes inert when the binary is rebuilt or launched from launchd. The fix is a bash login item that stays the daemon's parent. <code>check</code> can pass while the tap is dead. Most recurring bug in the project.</li>
+        <li><strong>Transcripts logged in full</strong> at info level, every final and every polish stage. A privacy problem for a dictation tool, listed as a release blocker.</li>
+        <li><strong>Python runtime sprawl.</strong> Three venvs, one built by hand, plus system Python for the mock and GTK overlay.</li>
+        <li><strong>Tests stop at the process boundary.</strong> No integration test drives the real daemon. <code>system_worker.rs</code> has zero tests. Linux System mode never ran on a Linux desktop. Two planning docs disagree on whether System mode exists.</li>
+        <li><strong>No spoken punctuation or numbers.</strong> "New line", "period", "twenty three" are not interpreted.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Functionality scorecard</h2>
+  <p>Same judgement, but per feature a user touches rather than per crate.</p>
+  <div class="tbl">
+  <table class="score">
+    <thead><tr><th>Feature</th><th class="th-good">Works well</th><th class="th-bad">Weak or missing</th></tr></thead>
+    <tbody>
+      <tr><th>Push-to-talk hotkey</th><td>No silence timeout. Works in every app. Listen-only tap, so the key still reaches the app. Two independent shortcuts for dictation and System mode.</td><td>On macOS the tap can be silently dead after a rebuild or a launchd launch while the log says "ready". Only F-keys, space, return, tab, esc are valid key names on macOS. Wayland needs the user to edit compositor bindings.</td></tr>
+      <tr><th>Audio capture</th><td>Mic is always open so a 300 ms pre-roll catches the first word. Follows the default input device when it changes. Refuses speaker-loopback "monitor" sources. Logs rms/peak so a muted mic is diagnosable.</td><td>Always-on capture costs energy and is a privacy optic. Resampling is linear interpolation. Audio crosses to Python as JSON integers. No visual mic indicator when idle.</td></tr>
+      <tr><th>Transcription</th><td>Fully local. Streaming partials on the macOS default. About 240 ms final on an M1 Pro with 1.2 % WER on the sample set. Adaptive timeout so long utterances are not cut. CUDA backend refuses to load into a nearly full GPU.</td><td>English only. Press is silently ignored for 2 to 3 s after start (16 to 32 s on Nemotron) with no "warming up" indicator. A timed-out session cannot be cancelled on the sidecar. Model install is a manual <code>pip install</code>. Linux default is the mock backend.</td></tr>
+      <tr><th>Deterministic polish</th><td>Resolves "next Tuesday, no wait, Wednesday" swaps and "scratch that". Strips fillers. User dictionary and snippets. Drops the trailing period in terminals. Idempotent, never panics.</td><td>No spoken commands ("new line", "comma", "all caps"). No spoken-number handling. Dictionary and snippets are edited by hand in JSON. Swap rules are conservative and defer harder cases to the LLM.</td></tr>
+      <tr><th>LLM polish</th><td>Narrow, grammar-enforced scope: <code>OK</code> or <code>EDIT:</code>. Clean text costs one token, about 250 ms. Falls back to deterministic text on any error. Keepalive removed the multi-second GPU cold ramp.</td><td>Blocks the hotkey until warm-up finishes. Pings the GPU every second forever, including on battery. Edits add 400 to 900 ms. The 3 GB model is downloaded by hand into a hand-built venv. Content-loss guard misses short clause drops. Not validated on Linux.</td></tr>
+      <tr><th>Text insertion</th><td>Focus captured at release and re-checked before insert, so text never lands in the wrong window. Paste-first works across Cocoa apps. Enter and Tab neutralized so a terminal never executes dictation. When focus moved, text is parked on the clipboard and the overlay says so.</td><td>Clipboard is overwritten on macOS and Wayland with no restore. No detection of password or secure fields. No undo. App-aware styling needs Screen Recording permission and degrades silently without it.</td></tr>
+      <tr><th>Overlay</th><td>Minimal by design: dot and meter while recording, text only for status. Click-through, all Spaces, never blocks the daemon.</td><td>No "warming up", "blocked", or "mic muted" states. No menu bar icon, settings window, or history. Nothing visible when the hotkey is inert. Disabled entirely on Wayland without layer-shell.</td></tr>
+      <tr><th>Configuration and CLI</th><td>One JSON file with validated defaults. <code>config show</code>, <code>config init</code>, <code>check</code>, <code>selftest</code>, <code>bench</code>, <code>eval</code>, <code>polish</code>.</td><td>No GUI. Restart required to apply changes. <code>check</code> on macOS passes when the tap is dead. Behaviour also depends on four environment variables.</td></tr>
+      <tr><th>Install and lifecycle</th><td>One script per platform. The macOS login item preserves the process context the event tap needs. systemd unit with memory limits on Linux.</td><td>macOS builds from source and runs out of the working tree. Needs Rust, <code>swiftc</code>, Homebrew Python 3.12 and three venvs. Permissions granted to two paths. No signed bundle, updater, or uninstaller. Rebuilding invalidates permission grants.</td></tr>
+      <tr><th>Logging and diagnostics</th><td>One line per session with every latency stage. Audio stats alongside empty transcripts.</td><td>Full transcripts and every polish stage are logged at info level. Log location changes with how the daemon was launched.</td></tr>
+      <tr><th>System mode</th><td>Strong safety model: typed intents only, no shell, one-time selection tokens revalidated before execution, multi-action input rejected.</td><td>Off by default. Only "open application" is proven live. The LLM router is a stub. Never run on a real Linux desktop.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>macOS first: path to a normal-user package</h2>
+  <p>The engine is done. What a non-developer hits is permissions, warm-up, and the build-from-source install. Each step below is useful on its own and none requires the later ones.</p>
+
+  <h3>Phase A. Code-only fixes, no Apple account needed</h3>
+  <ol class="plan">
+    <li><strong>Truthful readiness.</strong> After the tap is created, post a synthetic <code>flagsChanged</code> event through <code>CGEventPost</code> and confirm the tap callback sees it within a second. If not, display "Hotkey blocked: grant Input Monitoring to Sunoto" instead of "ready". Make <code>check</code> run the same probe.</li>
+    <li><strong>Warm-up state in the overlay.</strong> Show the pill with a neutral dot and "loading speech model" until the ASR sidecar is ready, and "warming polish" until the LLM is warm. A press during warm-up shows that state instead of being ignored.</li>
+    <li><strong>Clipboard restore.</strong> Read <code>pbpaste</code> before <code>pbcopy</code>, paste, wait about 300 ms for the target to consume it, then write the previous contents back. X11 already does this.</li>
+    <li><strong>Secure-field guard.</strong> Ask Accessibility for the focused element's role. If it is <code>AXSecureTextField</code>, refuse to insert and say "password field, text left on clipboard".</li>
+    <li><strong>Transcript-safe logs.</strong> Log length and a hash by default. Add <code>log_transcripts: true</code> for debugging.</li>
+  </ol>
+
+  <h3>Phase B. Packaging decisions the user has to make</h3>
+  <ol class="plan" start="6">
+    <li><strong>One real app bundle.</strong> Daemon, Swift overlay and a bundled Python runtime inside <code>Sunoto.app</code>, signed with a Developer ID and notarized. A stable signing identity is what makes TCC grants survive updates and removes the whole "grant to two paths, re-grant after rebuild" class of bugs. Needs an Apple Developer account.</li>
+    <li><strong>Bundle the Python runtime.</strong> python-build-standalone plus <code>parakeet-mlx</code> and <code>llama-cpp-python</code> wheels inside the bundle. Download the ASR model (about 600 MB) and the LLM (about 3 GB) on first run with a progress bar. Decide whether the LLM download is default or opt-in; without it the app still dictates in Fast mode.</li>
+    <li><strong>Menu bar app.</strong> Fold the Swift overlay into a small menu bar app that shows state (ready, warming, blocked, recording), opens the right permissions pane, toggles LLM polish, and opens the log. Replaces the bash login item.</li>
+    <li><strong>First-run onboarding.</strong> Walk through Microphone, Accessibility and Input Monitoring one at a time and verify each live with the probes from step 1. Never say "ready" until a synthetic press actually starts a recording.</li>
+    <li><strong>DMG plus automated release gate.</strong> Drag-to-Applications DMG. A CI job on a macOS runner that builds, signs, notarizes, launches, grants permissions with <code>tccutil</code> where possible, and runs the live probes.</li>
+  </ol>
+  <p>Steps 1 to 5 are a few days of Rust and Swift with no external dependency. Steps 6 to 10 turn the project into something a normal user can install. Step 6 is the one that actually kills the recurring macOS bugs.</p>
+
+  <h2>Reference</h2>
+
+  <h3>Crates and services</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Unit</th><th>Lines</th><th>Job</th><th>Deps</th></tr></thead>
+    <tbody>
+      <tr><td><code>apps/daemon</code></td><td class="num">~7,500</td><td>CLI, event loop, settings, LLM client, bench/eval, System worker</td><td>serde, serde_json, all crates</td></tr>
+      <tr><td><code>sunoto-core</code></td><td class="num">358</td><td><code>SessionMachine</code>, <code>SessionMode</code>, <code>AudioPreRoll</code>. Pure.</td><td>none</td></tr>
+      <tr><td><code>sunoto-ipc</code></td><td class="num">464</td><td>NDJSON enums, <code>SidecarClient</code> spawn + reader thread</td><td>serde, serde_json</td></tr>
+      <tr><td><code>sunoto-audio</code></td><td class="num">1,548</td><td>Capture. Linux spawns <code>parec</code>; macOS is raw CoreAudio IOProc FFI with in-Rust downmix and linear resample to 16 kHz</td><td>none</td></tr>
+      <tr><td><code>sunoto-polish</code></td><td class="num">1,120</td><td>Deterministic text pipeline, 26 tests</td><td>serde</td></tr>
+      <tr><td><code>sunoto-desktop</code></td><td class="num">18</td><td><code>cfg</code> facade re-exporting the platform crate</td><td>platform crates</td></tr>
+      <tr><td><code>sunoto-linux</code></td><td class="num">~2,700</td><td><code>XGrabKey</code>, XTEST typing, in-process CLIPBOARD owner with restore, native bubble, GIO System executor, compile stubs</td><td>sunoto-system</td></tr>
+      <tr><td><code>sunoto-macos</code></td><td class="num">~2,400</td><td><code>CGEventTap</code> on its own run loop with self re-arm, <code>pbcopy</code>+Cmd+V, CGEvent typing, <code>CGWindowList</code> focus, NSWorkspace via raw <code>objc_msgSend</code></td><td>sunoto-system</td></tr>
+      <tr><td><code>sunoto-system</code></td><td class="num">~4,400</td><td>Typed intents, router, policy, capability contracts, dispatcher, bounded runner, URL and filesystem rules. 59 tests + routing corpus</td><td>serde, serde_json, url</td></tr>
+      <tr><td><code>services/asr/*.py</code></td><td class="num">~2,100</td><td>Five ASR backends behind one <code>SidecarServer</code></td><td>NeMo/torch or parakeet-mlx</td></tr>
+      <tr><td><code>services/polish/*.py</code></td><td class="num">~1,700</td><td>LLM polish sidecar and prompt/parsing module</td><td>llama-cpp-python</td></tr>
+      <tr><td><code>sunoto-overlay.swift</code></td><td class="num">572</td><td>AppKit pill + System palette, built with <code>swiftc</code></td><td>none</td></tr>
+      <tr><td><code>src/voice_dictation/*.py</code></td><td class="num">~700</td><td>GTK4 overlay, layer-shell on Wayland, override-redirect on X11</td><td>PyGObject, python-xlib</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Threads in the daemon</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Thread</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td>main</td><td><code>recv_timeout(50 ms)</code> loop; owns <code>SessionMachine</code>; watchdogs every tick</td></tr>
+      <tr><td>UI</td><td>second desktop connection; focus capture, insertion, clipboard, native bubble</td></tr>
+      <tr><td>control socket</td><td>non-blocking <code>UnixListener</code>, 25 ms poll</td></tr>
+      <tr><td>hotkey ×1 or ×2</td><td>one per shortcut; <code>wait(250 ms)</code> loop</td></tr>
+      <tr><td>capture</td><td>bridges audio events; restart backoff 250 / 500 / 1000 / 2000 / 4000 ms</td></tr>
+      <tr><td>ASR reader</td><td>parses sidecar stdout</td></tr>
+      <tr><td>overlay reader + writer</td><td>writer drains <code>sync_channel(64)</code></td></tr>
+      <tr><td>LLM reader</td><td>parses polish sidecar stdout</td></tr>
+      <tr><td>SystemWorker</td><td>blocking native discovery and execution for System mode</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Signals: raw <code>libc::signal</code> for SIGINT and SIGTERM setting an <code>AtomicBool</code>.</p>
+
+  <h3>Protocols</h3>
+  <p>One JSON object per line, tagged by <code>type</code>, snake_case.</p>
+  <dl class="kv">
+    <dt>ASR in</dt><dd><code>health</code>, <code>start_session{session_id, profile_ms}</code>, <code>audio_chunk{session_id, samples: [i16]}</code>, <code>finish_session</code>, <code>cancel_session</code></dd>
+    <dt>ASR out</dt><dd><code>ready{backend}</code>, <code>session_started</code>, <code>partial{text}</code>, <code>final{text}</code>, <code>error{session_id?, message}</code></dd>
+    <dt>Overlay in</dt><dd><code>show</code>, <code>hide</code>, <code>recording{elapsed_s, peak, rms, segments}</code>, <code>status{text}</code>, <code>segment</code>, <code>clear</code>, <code>system_palette{…}</code>, <code>dismiss_system_palette</code>, <code>shutdown</code>. Palette payloads carry no paths or bundle ids by design.</dd>
+    <dt>Overlay out</dt><dd><code>ready</code>, <code>system_selection{suggestion_id}</code>, <code>system_cancelled</code></dd>
+    <dt>LLM in</dt><dd><code>polish{session_id, text}</code>, <code>warmup{texts}</code>, <code>shutdown</code></dd>
+    <dt>LLM out</dt><dd><code>ready{load_ms, warmup_ms}</code>, <code>polished{text, latency_ms, …}</code>, <code>polish_chunk{sequence, delta}</code>, <code>warmed</code>, <code>error</code></dd>
+    <dt>Control socket</dt><dd><code>$XDG_RUNTIME_DIR/sunoto/daemon.sock</code> or <code>$TMPDIR/sunoto-$USER-daemon.sock</code>. Accepts bare <code>press</code>/<code>release</code>, <code>trigger{mode, edge}</code>, <code>polish{text}</code>, <code>plan_system{text, dry_run: true}</code>. This is how Hyprland keybindings reach the daemon.</dd>
+  </dl>
+
+  <h3>Config defaults</h3>
+  <p><code>~/Library/Application Support/sunoto/config.json</code> on macOS, <code>~/.config/sunoto/config.json</code> on Linux. A missing file means all defaults.</p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Key</th><th>Default</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td><code>shortcut</code></td><td><code>Ctrl+F1</code></td><td>needs at least one modifier</td></tr>
+      <tr><td><code>backend</code></td><td>macOS <code>parakeet_mlx_streaming</code>, Linux <code>mock</code></td><td>also <code>nemotron</code>, <code>nemotron_offline</code>, <code>parakeet_mlx_offline</code></td></tr>
+      <tr><td><code>profile_ms</code></td><td class="num">macOS 560, Linux 160</td><td>80 / 160 / 560 / 1120; maps to encoder right-context</td></tr>
+      <tr><td><code>preroll_ms</code></td><td class="num">300</td><td></td></tr>
+      <tr><td><code>final_timeout_ms</code> / <code>_rtf</code></td><td class="num">8000 / 3.0</td><td>adaptive watchdog</td></tr>
+      <tr><td><code>microphone</code></td><td><code>auto</code></td><td>re-checks default source every 1 s and follows it</td></tr>
+      <tr><td><code>allow_enter_and_tab</code></td><td>false</td><td>otherwise both become space</td></tr>
+      <tr><td><code>overlay_backend</code></td><td>macOS <code>macos</code>, else <code>auto</code></td><td><code>auto</code>, <code>x11</code>, <code>wayland</code>, <code>macos</code>, <code>mock</code></td></tr>
+      <tr><td><code>polish_enabled</code></td><td>true</td><td>deterministic pipeline</td></tr>
+      <tr><td><code>llm_polish_enabled</code></td><td>true</td><td></td></tr>
+      <tr><td><code>llm_polish_model</code></td><td><code>phi4_mini</code></td><td>Q5_K_M GGUF under <code>models/llm-polish-hf/</code></td></tr>
+      <tr><td><code>llm_polish_mode</code></td><td><code>constrained_one_call</code></td><td>also <code>one_pass_minimal</code>, <code>two_step</code></td></tr>
+      <tr><td><code>llm_polish_timeout_ms</code></td><td class="num">10000</td><td></td></tr>
+      <tr><td><code>llm_polish_keepalive_secs</code></td><td class="num">1.0</td><td>0 disables</td></tr>
+      <tr><td><code>llm_polish_stream_insert</code></td><td>false</td><td>types LLM deltas live</td></tr>
+      <tr><td><code>system_mode_enabled</code></td><td>false</td><td></td></tr>
+      <tr><td><code>system_shortcut</code></td><td><code>Ctrl+F2</code></td><td>must differ from <code>shortcut</code></td></tr>
+      <tr><td><code>system_search_roots</code></td><td>Desktop, Documents, Downloads, workspace</td><td>under <code>$HOME</code>, max 16, no <code>/</code> or <code>..</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>ASR backends</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>Backend</th><th>Model</th><th>Mode</th><th>Device</th><th>Partials</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>mock</code></td><td>none</td><td>canned</td><td>–</td><td>optional</td><td>Linux default; tests</td></tr>
+      <tr><td><code>parakeet_mlx_streaming</code></td><td>parakeet-tdt-0.6b-v3</td><td>streaming, final re-decoded from whole buffer</td><td>Metal / MLX</td><td>yes</td><td>macOS default; 560 ms chunks; ~250 ms final</td></tr>
+      <tr><td><code>parakeet_mlx_offline</code></td><td>same</td><td>whole utterance</td><td>Metal</td><td>no</td><td>p50 240 ms, WER 1.18 %</td></tr>
+      <tr><td><code>nemotron</code></td><td>nemotron-speech-streaming-en-0.6b</td><td>cache-aware streaming</td><td>CUDA</td><td>yes</td><td>refuses to load under 4500 MiB free VRAM; ~3.6 GiB resident</td></tr>
+      <tr><td><code>nemotron_offline</code></td><td>same</td><td>whole utterance</td><td>CPU / MPS</td><td>no</td><td>superseded on macOS</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Venvs: <code>.venv-nemotron</code> (Linux CUDA), <code>.venv-nemotron-mac</code> (all mac ASR), <code>.venv-llm-polish-mac</code> (LLM, built by hand). Mock and GTK overlay use system Python.</p>
+
+  <h3>Platform matrix</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th></th><th>X11</th><th>Wayland (Hyprland)</th><th>macOS</th></tr></thead>
+    <tbody>
+      <tr><th>Hotkey</th><td><code>XGrabKey</code> ×4 lock-mask combos, in-process</td><td>none; compositor execs <code>sunoto-daemon trigger</code> → unix socket</td><td><code>CGEventTap</code> listen-only on its own thread, re-armed on timeout and after sleep</td></tr>
+      <tr><th>Focus token</th><td>window id + WM_CLASS</td><td><code>hyprctl activewindow</code> address</td><td><code>CGWindowList</code> first layer-0 window, skipping Window Server and Dock</td></tr>
+      <tr><th>Insert order</th><td>XTEST type → clipboard paste</td><td><code>wl-copy</code> + <code>wtype</code> paste (Ctrl+Shift+V in terminals) → type → clipboard</td><td><code>pbcopy</code> + Cmd+V → CGEvent type → clipboard</td></tr>
+      <tr><th>Clipboard restored</th><td>yes, daemon owns CLIPBOARD</td><td>no</td><td>no</td></tr>
+      <tr><th>Overlay</th><td>GTK4 override-redirect, parked off-screen to hide</td><td>GTK4 layer-shell; disabled if layer-shell missing</td><td>Swift <code>NSPanel</code>, status-bar level, click-through</td></tr>
+      <tr><th>Launch</th><td>systemd user unit, <code>MemoryMax=14G</code></td><td>same</td><td><code>Sunoto Login.app</code>: a bash login item that stays parent of the daemon so TCC keeps the tap alive</td></tr>
+      <tr><th>Permissions</th><td>none</td><td>none</td><td>Accessibility, Input Monitoring, Microphone for both the app and the bare binary</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>System mode in five lines</h3>
+  <p>Separate hotkey, off by default. Transcript → deterministic router → one of 9 typed intents, or <code>NeedsLlm</code>, or <code>Rejected</code> (multi-action input like <code>open Chrome; rm -rf</code> is rejected, not split). Policy today is always "present suggestions"; there is no auto-execute variant. Native resolvers (NSWorkspace + <code>mdfind</code> on macOS, GAppInfo + GIO on Linux) return opaque ids; the palette shows titles only; a one-time selection token is revalidated against the filesystem before <code>NSWorkspace openURL</code> or <code>gio launch</code> runs. Six capabilities: application find/open, target find/open, url.open, web.search. No shell, no AppleScript, no LLM planner connected yet.</p>
+
+  <h3>Tests</h3>
+  <p><code>make test</code> runs the Rust workspace (about 230 tests, clippy with <code>-D warnings</code>) plus Python <code>unittest</code> suites: phase0 (16, tooling), phase1 (88, sidecar protocols with fake engines, no GPU), phase2 (10, corpus and stream parser), ui (8, overlay dispatch without GTK). <code>make phase2-eval</code> scores the deterministic pipeline against 32 scripted cases. There is no integration test of the running daemon.</p>
+
+  <h3>Where to start reading</h3>
+  <ol>
+    <li><code>crates/sunoto-core/src/lib.rs</code> for the state machine and its tests.</li>
+    <li><code>crates/sunoto-ipc/src/lib.rs</code> for the protocols.</li>
+    <li><code>apps/daemon/src/daemon.rs</code>: <code>run</code>, then the <code>Hotkey</code>, <code>Audio</code> and <code>Sidecar(Final)</code> event arms.</li>
+    <li><code>services/asr/nemotron_sidecar.py::SidecarServer</code> for the Python side of the protocol, reused by every backend.</li>
+    <li><code>docs/macos-recurring-issues.md</code> before touching anything on macOS.</li>
+  </ol>
+</div>
+</body>
+</html>
