@@ -23,6 +23,31 @@ Typical real-ASR config:
 }
 ```
 
+Idle and privacy keys (all optional):
+
+```json
+{
+  "capture_idle_stop_secs": 120,
+  "clipboard_restore": true,
+  "log_transcripts": true,
+  "llm_polish_keepalive_secs": 1.0,
+  "llm_polish_keepalive_always": false
+}
+```
+
+- `capture_idle_stop_secs`: the microphone is released after this long with
+  no dictation and reopened on the next press. While you are actively
+  dictating it stays open so the 300 ms pre-roll catches the first word.
+  `0` keeps it open permanently.
+- `clipboard_restore` (macOS): put the previous clipboard back about 300 ms
+  after a paste.
+- `log_transcripts`: `false` replaces transcript text in the log with its
+  length and a short hash.
+- `llm_polish_keepalive_secs`: GPU ping interval while a dictation session
+  is in flight (press until 20 s after the polish result). `0` disables.
+- `llm_polish_keepalive_always`: ping all day, as before 2026-09-17. Costs
+  battery; only for profiling.
+
 Restart after config changes:
 
 ```bash

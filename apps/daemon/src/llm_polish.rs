@@ -154,8 +154,17 @@ pub struct LlmPolishClient {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum LlmPolishRequest<'a> {
-    Polish { session_id: u64, text: &'a str },
-    Warmup { texts: &'a [&'a str] },
+    Polish {
+        session_id: u64,
+        text: &'a str,
+    },
+    Warmup {
+        texts: &'a [&'a str],
+    },
+    /// Open the keepalive window: the sidecar pings the GPU every
+    /// `llm_polish_keepalive_secs` until `KeepaliveStop`.
+    KeepaliveStart,
+    KeepaliveStop,
     Shutdown,
 }
 
@@ -607,6 +616,17 @@ impl LlmPolishClient {
                 }
             }
         }
+    }
+
+    /// Start pinging the GPU. Sent on key press so the model is warm by the
+    /// time the transcript arrives; fire-and-forget, no reply expected.
+    pub fn keepalive_start(&mut self) -> Result<(), String> {
+        self.send(&LlmPolishRequest::KeepaliveStart)
+    }
+
+    /// Stop pinging. Sent a grace period after the session ends.
+    pub fn keepalive_stop(&mut self) -> Result<(), String> {
+        self.send(&LlmPolishRequest::KeepaliveStop)
     }
 
     fn send(&mut self, request: &LlmPolishRequest<'_>) -> Result<(), String> {

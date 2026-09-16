@@ -216,6 +216,10 @@ polish styles no longer need Screen Recording.
    place of the text.
 3. Flip the default to `false` in the release that ships the signed cask.
 
+**Status: done on branch `macos-red-flags` (M4).** `log_transcripts` covers
+the final transcript, every deterministic polish stage, and the LLM polish
+input and output lines.
+
 ### 2.8 Always-on microphone and LLM keepalive
 
 Two separate mechanisms are behind this flag, and both can be narrowed
@@ -252,6 +256,13 @@ working set during recording and the first prefill after that costs about
 **Verification.** Idle for three minutes: no orange dot, no GPU activity in
 Activity Monitor. Press and dictate: transcript is complete, polish latency
 within the current numbers. `bench --post-asr-llm` p50 unchanged.
+
+**Status: implemented on branch `macos-red-flags` (M4).** The daemon logs
+`microphone capture started ... (N ms after the press)` on the first press
+after idle; that number is the measurement step 1 asked for and decides
+whether 120 s stays the default. The keepalive window is press until 20 s
+after the last activity; `llm_polish_keepalive_always` restores the old
+behaviour. Live checks pending the daemon restart.
 
 ### 2.9 Modularize `daemon.rs`
 

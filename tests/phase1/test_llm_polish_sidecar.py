@@ -547,6 +547,7 @@ class KeepaliveTests(unittest.TestCase):
         llm_polish_sidecar._keepalive_counter = 0
         llm = FakeLlama("OK")
         llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.set()
         # Hold the lock as a real polish would; fire the loop with a tiny
         # interval so multiple cycles elapse while locked.
         with llm_polish_sidecar._llm_lock:
@@ -566,6 +567,54 @@ class KeepaliveTests(unittest.TestCase):
         llm_polish_sidecar._keepalive_ready = False
         llm_polish_sidecar._keepalive_text = None
         llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.clear()
+
+    def test_keepalive_loop_is_silent_until_a_session_starts(self):
+        """With no session in flight the loop must not touch the GPU at all;
+        keepalive_start opens the window and keepalive_stop closes it."""
+        llm_polish_sidecar._keepalive_ready = True
+        llm_polish_sidecar._keepalive_text = "Hey, how are you doing?"
+        llm = FakeLlama("OK")
+        llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.clear()
+        t = threading.Thread(
+            target=llm_polish_sidecar.keepalive_loop,
+            args=(llm, 0.02),
+            daemon=True,
+        )
+        t.start()
+        time.sleep(0.15)
+        self.assertEqual(len(llm.calls), 0)
+        with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_KEEPALIVE_ALWAYS": ""}):
+            llm_polish_sidecar.handle_request(llm, {"type": "keepalive_start"})
+            time.sleep(0.15)
+            self.assertGreaterEqual(len(llm.calls), 1)
+            llm_polish_sidecar.handle_request(llm, {"type": "keepalive_stop"})
+            time.sleep(0.05)
+            settled = len(llm.calls)
+            time.sleep(0.15)
+            self.assertEqual(len(llm.calls), settled)
+        llm_polish_sidecar._keepalive_stop.set()
+        t.join(timeout=2.0)
+        llm_polish_sidecar._keepalive_ready = False
+        llm_polish_sidecar._keepalive_text = None
+        llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.clear()
+
+    def test_keepalive_always_env_keeps_the_window_open(self):
+        with patch.dict(os.environ, {"SUNOTO_LLM_POLISH_KEEPALIVE_ALWAYS": "1"}):
+            llm_polish_sidecar._keepalive_active.set()
+            llm_polish_sidecar.keepalive_stop()
+            self.assertTrue(llm_polish_sidecar._keepalive_active.is_set())
+        llm_polish_sidecar._keepalive_active.clear()
+
+    def test_handle_request_rejects_unknown_and_returns_false_on_shutdown(self):
+        llm = FakeLlama("OK")
+        self.assertFalse(llm_polish_sidecar.handle_request(llm, {"type": "shutdown"}))
+        with self.assertRaises(ValueError):
+            llm_polish_sidecar.handle_request(llm, {"type": "nope"})
+        with self.assertRaises(ValueError):
+            llm_polish_sidecar.handle_request(llm, ["not", "an", "object"])
 
     def test_keepalive_loop_exits_on_stop(self):
         """Setting _keepalive_stop must wake the loop and let the thread exit
@@ -573,6 +622,7 @@ class KeepaliveTests(unittest.TestCase):
         llm_polish_sidecar._keepalive_ready = True
         llm = FakeLlama("OK")
         llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.set()
         t = threading.Thread(
             target=llm_polish_sidecar.keepalive_loop,
             args=(llm, 30.0),  # long sleep; stop must preempt it
@@ -585,6 +635,7 @@ class KeepaliveTests(unittest.TestCase):
         self.assertFalse(t.is_alive())
         llm_polish_sidecar._keepalive_ready = False
         llm_polish_sidecar._keepalive_stop.clear()
+        llm_polish_sidecar._keepalive_active.clear()
 
 
 if __name__ == "__main__":

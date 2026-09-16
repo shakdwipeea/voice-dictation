@@ -855,6 +855,12 @@ _keepalive_counter = 0
 _llm_lock = threading.Lock()
 # Signals the keepalive thread to exit on shutdown.
 _keepalive_stop = threading.Event()
+# Set while a dictation session is in flight (daemon sends keepalive_start on
+# press and keepalive_stop a grace period after the polish result). While it
+# is clear the keepalive thread does no GPU work at all: pinging an idle
+# machine every second only costs battery, since the cold ramp it defeats
+# happens when ASR runs, and ASR only runs inside a session.
+_keepalive_active = threading.Event()
 KEEPALIVE_FALLBACK_TEXT = "Hey, how are you doing?"
 # Cap generated tokens for keepalive pings. The ping's job is to warm the
 # prefill + decode paths, not to produce a real rewrite. Warmth comes from the
@@ -864,6 +870,22 @@ KEEPALIVE_FALLBACK_TEXT = "Hey, how are you doing?"
 # Real polish decode stays fast because real calls always prefill fresh transcript
 # tokens (keeping Metal high-power).
 KEEPALIVE_MAX_TOKENS = 1
+
+
+def keepalive_always() -> bool:
+    """Legacy behaviour: ping whenever idle, not only during sessions."""
+    value = os.environ.get("SUNOTO_LLM_POLISH_KEEPALIVE_ALWAYS", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def keepalive_start() -> None:
+    _keepalive_active.set()
+
+
+def keepalive_stop() -> None:
+    if keepalive_always():
+        return
+    _keepalive_active.clear()
 
 
 def keepalive_interval_s() -> float:
@@ -926,10 +948,15 @@ def keepalive_loop(llm: Llama, interval: float) -> None:
     Exits cleanly when `_keepalive_stop` is set on shutdown.
     """
     while not _keepalive_stop.is_set():
+        if not _keepalive_active.is_set():
+            # Idle window: no pings, no GPU work. Poll cheaply for a start.
+            if _keepalive_stop.wait(0.1):
+                return
+            continue
         # Sleep in small slices so shutdown is responsive.
         if _keepalive_stop.wait(interval):
             return
-        if not _keepalive_ready:
+        if not _keepalive_ready or not _keepalive_active.is_set():
             continue
         # trylock: skip this cycle if the main thread is mid-polish; never
         # block the keepalive thread waiting on the main thread (that would
@@ -1007,10 +1034,43 @@ def warmup(llm: Llama, texts: list[str]) -> None:
     )
 
 
+def handle_request(llm: Llama, request: object) -> bool:
+    """Dispatch one decoded stdin request. Returns False on shutdown."""
+    if not isinstance(request, dict):
+        raise ValueError("request is not an object")
+    request_type = request.get("type")
+    if request_type == "shutdown":
+        return False
+    if request_type == "keepalive_start":
+        keepalive_start()
+        return True
+    if request_type == "keepalive_stop":
+        keepalive_stop()
+        return True
+    if request_type == "warmup":
+        texts = request.get("texts")
+        if not isinstance(texts, list) or not all(
+            isinstance(text, str) for text in texts
+        ):
+            raise ValueError("warmup requires texts as a list of strings")
+        warmup(llm, texts)
+        return True
+    if request_type != "polish":
+        raise ValueError(f"unknown request type: {request_type!r}")
+    session_id = request.get("session_id")
+    text = request.get("text")
+    if not isinstance(session_id, int) or not isinstance(text, str):
+        raise ValueError("polish requires integer session_id and string text")
+    polish(llm, session_id, text)
+    return True
+
+
 def main() -> int:
     llm = load_model()
     interval = keepalive_interval_s()
     keepalive_thread: threading.Thread | None = None
+    if keepalive_always():
+        _keepalive_active.set()
     if interval > 0:
         # Background keepalive fires pings on its own; the main loop just
         # blocks on stdin and handles requests. The shared `_llm_lock`
@@ -1033,26 +1093,8 @@ def main() -> int:
             request: object = None
             try:
                 request = json.loads(line)
-                if not isinstance(request, dict):
-                    raise ValueError("request is not an object")
-                request_type = request.get("type")
-                if request_type == "shutdown":
+                if not handle_request(llm, request):
                     return 0
-                if request_type == "warmup":
-                    texts = request.get("texts")
-                    if not isinstance(texts, list) or not all(
-                        isinstance(text, str) for text in texts
-                    ):
-                        raise ValueError("warmup requires texts as a list of strings")
-                    warmup(llm, texts)
-                    continue
-                if request_type != "polish":
-                    raise ValueError(f"unknown request type: {request_type!r}")
-                session_id = request.get("session_id")
-                text = request.get("text")
-                if not isinstance(session_id, int) or not isinstance(text, str):
-                    raise ValueError("polish requires integer session_id and string text")
-                polish(llm, session_id, text)
             except Exception as error:
                 emit(
                     {

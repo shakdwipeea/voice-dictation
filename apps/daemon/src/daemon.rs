@@ -29,7 +29,7 @@ use crate::insertion::{DesktopBackend, UiCommand, UiOptions, desktop_backend, ui
 use crate::llm_polish;
 use crate::logging;
 use crate::overlay::{ERROR_BUBBLE_VISIBLE, UiFront, show_error, spawn_overlay};
-use crate::settings::{self, Settings, sanitize_for_insertion};
+use crate::settings::{self, Settings, sanitize_for_insertion, transcript_for_log};
 use crate::system_worker::{SystemJob, SystemWorker, SystemWorkerEvent};
 
 const SAMPLES_PER_MS: usize = 16;
@@ -102,6 +102,9 @@ impl PendingSystemSelection {
 }
 const SIDECAR_BACKOFF_START: Duration = Duration::from_millis(500);
 const SIDECAR_BACKOFF_CAP: Duration = Duration::from_secs(5);
+/// How long after a session ends the LLM keepalive keeps pinging, so a quick
+/// follow-up dictation still finds a warm GPU.
+const KEEPALIVE_GRACE: Duration = Duration::from_secs(20);
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -229,8 +232,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     // Persistent microphone capture bridged into the event channel.
     let capture_stop = Arc::new(AtomicBool::new(false));
-    let capture_handle =
-        spawn_capture_thread(&settings, events_tx.clone(), Arc::clone(&capture_stop))?;
+    let capture_wanted = Arc::new(AtomicBool::new(true));
+    let capture_handle = spawn_capture_thread(
+        &settings,
+        events_tx.clone(),
+        Arc::clone(&capture_stop),
+        Arc::clone(&capture_wanted),
+    )?;
 
     // Status UI: GTK overlay sidecar when enabled and startable, X11 bubble
     // otherwise. The overlay is cosmetic — any failure degrades, never aborts.
@@ -287,6 +295,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut health = HealthMonitor::default();
     let mut blocked_modes: Vec<SessionMode> = Vec::new();
     let mut mic_available = true;
+    // Quiet-idle bookkeeping: the mic is released and the LLM keepalive
+    // window closed after a stretch with no session.
+    let mut last_activity = Instant::now();
+    let mut capture_idle = false;
+    let mut capture_requested_at: Option<Instant> = None;
+    let mut keepalive_active = false;
     let mut active_system_resolution: Option<u64> = None;
     let mut pending_system: Option<PendingSystemSelection> = None;
     let mut exit_error: Option<String> = None;
@@ -353,6 +367,25 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         system_worker.activate_session(session_id);
                     }
                     last_pressed_at = Some(Instant::now());
+                    last_activity = Instant::now();
+                    if capture_idle {
+                        // The mic was released while idle; reopen it now.
+                        // This first session gets no pre-roll; every later
+                        // one does until the next idle stretch.
+                        capture_idle = false;
+                        capture_wanted.store(true, Ordering::SeqCst);
+                        capture_requested_at = Some(Instant::now());
+                        logging::info("microphone starting after idle; keep holding the key");
+                    }
+                    if mode == SessionMode::Dictation
+                        && let Some(client) = llm_polish.as_mut()
+                    {
+                        if let Err(error) = client.keepalive_start() {
+                            logging::warn(&format!("LLM keepalive start failed: {error}"));
+                        } else {
+                            keepalive_active = true;
+                        }
+                    }
                     logging::info(&format!(
                         "session {session_id}: recording ({})",
                         mode_label(mode)
@@ -405,6 +438,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 mode,
                 edge: HotkeyEvent::Released,
             })) => {
+                last_activity = Instant::now();
                 if let SessionAction::FinishRequested {
                     session_id, mode, ..
                 } = machine.release_mode(mode)
@@ -523,10 +557,18 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 description,
             })) => {
                 let description = description.unwrap_or_else(|| "<unknown>".to_string());
+                let after_request = capture_requested_at
+                    .take()
+                    .map(|at| format!(" ({}ms after the press)", at.elapsed().as_millis()))
+                    .unwrap_or_default();
                 logging::info(&format!(
-                    "microphone capture started: {description} (PulseAudio source: {device})"
+                    "microphone capture started: {description} (source: {device}){after_request}"
                 ));
                 mic_available = true;
+            }
+            Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) if capture_idle => {
+                // Expected: we released the mic ourselves.
+                logging::info(&format!("microphone released while idle: {reason}"));
             }
             Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) => {
                 logging::warn(&format!("microphone capture stopped: {reason}"));
@@ -626,9 +668,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             ));
                         } else {
                             logging::info(&format!(
-                                "session {session_id}: final transcript: {text:?}"
+                                "session {session_id}: final transcript: {}",
+                                transcript_for_log(&text, settings.log_transcripts)
                             ));
                         }
+                        last_activity = Instant::now();
                         audio_stats = None;
                         if let Some(timing) = timing.as_mut() {
                             timing.final_at = Some(Instant::now());
@@ -781,8 +825,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             let outcome = polish(&text, &config);
                             for stage in &outcome.trace {
                                 logging::info(&format!(
-                                    "session {session_id}: polish {}: {:?} -> {:?}",
-                                    stage.stage, stage.before, stage.after
+                                    "session {session_id}: polish {}: {} -> {}",
+                                    stage.stage,
+                                    transcript_for_log(&stage.before, settings.log_transcripts),
+                                    transcript_for_log(&stage.after, settings.log_transcripts)
                                 ));
                             }
                             outcome.text
@@ -824,14 +870,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     let streamed = outcome.diagnostics.streamed == Some(true);
                                     let chunks = outcome.diagnostics.stream_chunks.unwrap_or(0);
                                     logging::info(&format!(
-                                        "session {session_id}: llm polish accepted in {}ms (ttft {}ms, streamed={} {}chunks){}: {:?} -> {:?}",
+                                        "session {session_id}: llm polish accepted in {}ms (ttft {}ms, streamed={} {}chunks){}: {} -> {}",
                                         outcome.latency_ms,
                                         ttft.map(|ms| ms.to_string()).unwrap_or_else(|| "?".into()),
                                         streamed,
                                         chunks,
                                         format_llm_diagnostics(&outcome.diagnostics),
-                                        llm_input,
-                                        outcome.text
+                                        transcript_for_log(&llm_input, settings.log_transcripts),
+                                        transcript_for_log(&outcome.text, settings.log_transcripts)
                                     ));
                                     if stream_insert && dispatched.get() {
                                         // Progressive insertion already typed
@@ -1428,6 +1474,30 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
 
         // Watchdogs and deferred work, evaluated on every loop pass.
+        if matches!(machine.state(), SessionState::Idle) {
+            let idle_for = last_activity.elapsed();
+            if keepalive_active
+                && idle_for >= KEEPALIVE_GRACE
+                && let Some(client) = llm_polish.as_mut()
+            {
+                keepalive_active = false;
+                if let Err(error) = client.keepalive_stop() {
+                    logging::warn(&format!("LLM keepalive stop failed: {error}"));
+                }
+            }
+            if settings.capture_idle_stop_secs > 0
+                && !capture_idle
+                && idle_for >= Duration::from_secs(settings.capture_idle_stop_secs)
+            {
+                capture_idle = true;
+                capture_wanted.store(false, Ordering::SeqCst);
+                preroll.clear();
+                logging::info(&format!(
+                    "microphone released after {}s idle; it reopens on the next press",
+                    settings.capture_idle_stop_secs
+                ));
+            }
+        }
         if let Some(next) = health.refresh(health_inputs(
             sidecar_ready,
             llm_post_asr_warmed,
@@ -2076,6 +2146,7 @@ fn spawn_capture_thread(
     settings: &Settings,
     events: Sender<DaemonEvent>,
     stop: Arc<AtomicBool>,
+    wanted: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, Box<dyn Error>> {
     let device = settings.microphone.clone();
     Ok(std::thread::spawn(move || {
@@ -2088,6 +2159,17 @@ fn spawn_capture_thread(
         let mut attempt = 0usize;
         let mut capture: Option<sunoto_audio::CaptureHandle> = None;
         while !stop.load(Ordering::SeqCst) {
+            if !wanted.load(Ordering::SeqCst) {
+                // Idle: release the device so the mic indicator goes away
+                // and no audio is captured. Reopened as soon as `wanted`
+                // flips back.
+                if let Some(h) = capture.take() {
+                    h.stop();
+                    attempt = 0;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
             if capture.is_none() {
                 match start_capture(CaptureConfig {
                     device: device.clone(),

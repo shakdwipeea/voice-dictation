@@ -145,14 +145,26 @@ pub struct Settings {
     /// Maximum wall-clock time for LLM polish startup and each request before
     /// falling back.
     pub llm_polish_timeout_ms: u64,
-    /// LLM keepalive heartbeat interval, seconds. A ping fires when the sidecar
-    /// stdin is idle for this long, keeping Metal prefill kernels warm so the
-    /// first polish after an ASR recording is fast (ASR and polish share one
-    /// GPU; without a mid-recording ping, ASR evicts the LLM's kernel working
-    /// set and the post-ASR polish pays a ~3s cold ramp). ~1s is required to
+    /// LLM keepalive heartbeat interval, seconds. While a dictation session
+    /// is in flight (key press until 20 s after the polish result) the
+    /// sidecar pings the GPU this often, keeping Metal prefill kernels warm so
+    /// the polish right after ASR is fast (ASR and polish share one GPU;
+    /// without a mid-recording ping, ASR evicts the LLM's kernel working set
+    /// and the post-ASR polish pays a ~3s cold ramp). ~1s is required to
     /// reliably fire during a short recording's final-generate window; 0
     /// disables. Override at runtime with `SUNOTO_LLM_POLISH_KEEPALIVE_S`.
     pub llm_polish_keepalive_secs: f64,
+    /// Ping all day instead of only around sessions. Costs battery; only for
+    /// profiling the old behaviour.
+    pub llm_polish_keepalive_always: bool,
+    /// Release the microphone after this many seconds without a session and
+    /// reopen it on the next key press. While active, capture stays on so
+    /// the 300 ms pre-roll catches the first word. 0 keeps the mic open
+    /// permanently (the pre-roll then also covers the first press).
+    pub capture_idle_stop_secs: u64,
+    /// Write transcripts and polish stages to the log. Off replaces the text
+    /// with its length and a short hash.
+    pub log_transcripts: bool,
     /// Progressive LLM-polish insertion (default off). When on, the sidecar
     /// streams decoded tokens as `polish_chunk` deltas and the daemon types
     /// them into the focused window as they arrive (CGEvent keypresses, the
@@ -203,6 +215,9 @@ impl Default for Settings {
             llm_polish_mode: DEFAULT_LLM_POLISH_MODE.to_string(),
             llm_polish_timeout_ms: 10_000,
             llm_polish_keepalive_secs: 1.0,
+            llm_polish_keepalive_always: false,
+            capture_idle_stop_secs: 120,
+            log_transcripts: true,
             llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
         }
@@ -351,6 +366,12 @@ impl Settings {
             "SUNOTO_LLM_POLISH_KEEPALIVE_S".to_string(),
             format!("{}", self.llm_polish_keepalive_secs),
         ));
+        if self.llm_polish_keepalive_always {
+            envs.push((
+                "SUNOTO_LLM_POLISH_KEEPALIVE_ALWAYS".to_string(),
+                "1".to_string(),
+            ));
+        }
         if self.llm_polish_stream_insert {
             envs.push(("SUNOTO_LLM_POLISH_STREAM".to_string(), "1".to_string()));
         }
@@ -627,6 +648,21 @@ pub fn repo_root() -> PathBuf {
 
 /// Remove control characters that could trigger actions in the focused
 /// application (Enter submitting a form or running a shell line).
+/// Transcript text as it should appear in the log: verbatim when
+/// `log_transcripts` is on, otherwise its length and a short hash so
+/// sessions can still be correlated.
+pub fn transcript_for_log(text: &str, log_transcripts: bool) -> String {
+    if log_transcripts {
+        return format!("{text:?}");
+    }
+    let mut hash: u32 = 2166136261;
+    for byte in text.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16777619);
+    }
+    format!("<{} chars, {hash:08x}>", text.chars().count())
+}
+
 pub fn sanitize_for_insertion(text: &str, allow_enter_and_tab: bool) -> String {
     text.trim()
         .chars()
@@ -649,6 +685,32 @@ pub fn sanitize_for_insertion(text: &str, allow_enter_and_tab: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_for_log_is_verbatim_or_length_and_hash() {
+        assert_eq!(transcript_for_log("hello there", true), "\"hello there\"");
+        let redacted = transcript_for_log("hello there", false);
+        assert!(redacted.starts_with("<11 chars, "));
+        assert!(!redacted.contains("hello"));
+        assert_eq!(redacted, transcript_for_log("hello there", false));
+        assert_ne!(redacted, transcript_for_log("hello where", false));
+    }
+
+    #[test]
+    fn quiet_idle_defaults() {
+        let settings = Settings::default();
+        assert_eq!(settings.capture_idle_stop_secs, 120);
+        assert!(!settings.llm_polish_keepalive_always);
+        assert!(settings.log_transcripts);
+        assert!(settings.clipboard_restore);
+        assert!(
+            !settings
+                .llm_polish_command()
+                .2
+                .iter()
+                .any(|(key, _)| key == "SUNOTO_LLM_POLISH_KEEPALIVE_ALWAYS")
+        );
+    }
 
     #[test]
     fn missing_settings_file_yields_defaults() {
