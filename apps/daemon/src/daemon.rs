@@ -24,7 +24,7 @@ use sunoto_system::{
 };
 
 use crate::events::{ControlCommand, DaemonEvent, ModeHotkeyEvent};
-use crate::health::{DaemonHealth, HealthMonitor, health_inputs, publish_health};
+use crate::health::{DaemonHealth, HealthMonitor, MicState, health_inputs, publish_health};
 use crate::insertion::{DesktopBackend, UiCommand, UiOptions, desktop_backend, ui_thread};
 use crate::llm_polish;
 use crate::logging;
@@ -292,9 +292,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut respawn_at: Option<Instant> = None;
     let mut respawn_backoff = SIDECAR_BACKOFF_START;
     let mut llm_post_asr_warmed = llm_polish.is_none();
+    let started_at = Instant::now();
     let mut health = HealthMonitor::default();
     let mut blocked_modes: Vec<SessionMode> = Vec::new();
-    let mut mic_available = true;
+    let mut hotkey_verified = false;
+    let mut mic = MicState::Starting;
     // Quiet-idle bookkeeping: the mic is released and the LLM keepalive
     // window closed after a stretch with no session.
     let mut last_activity = Instant::now();
@@ -326,6 +328,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             })) => {
                 let was_blocked = blocked_modes.contains(&mode);
                 blocked_modes.retain(|blocked| *blocked != mode);
+                hotkey_verified = true;
                 if was_blocked {
                     logging::info(&format!("{} shortcut delivery restored", mode_label(mode)));
                 } else {
@@ -373,6 +376,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         // This first session gets no pre-roll; every later
                         // one does until the next idle stretch.
                         capture_idle = false;
+                        mic = MicState::Starting;
                         capture_wanted.store(true, Ordering::SeqCst);
                         capture_requested_at = Some(Instant::now());
                         logging::info("microphone starting after idle; keep holding the key");
@@ -564,7 +568,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 logging::info(&format!(
                     "microphone capture started: {description} (source: {device}){after_request}"
                 ));
-                mic_available = true;
+                mic = MicState::Capturing;
             }
             Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) if capture_idle => {
                 // Expected: we released the mic ourselves.
@@ -572,7 +576,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             }
             Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) => {
                 logging::warn(&format!("microphone capture stopped: {reason}"));
-                mic_available = false;
+                mic = MicState::Unavailable;
                 if matches!(machine.state(), SessionState::Recording { .. }) {
                     logging::warn("microphone lost mid-dictation; the session keeps running");
                 }
@@ -591,7 +595,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             sidecar_ready,
                             llm_post_asr_warmed,
                             &blocked_modes,
-                            mic_available,
+                            mic,
                         )) {
                             publish_health(next, &mut ui, &settings);
                         }
@@ -1462,6 +1466,51 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            Ok(DaemonEvent::ControlStatus { mut response }) => {
+                let current = health.current();
+                let hotkey = if !blocked_modes.is_empty() {
+                    "blocked"
+                } else if hotkey_verified {
+                    "verified"
+                } else {
+                    "unknown"
+                };
+                let polish = if llm_polish.is_none() {
+                    if settings.llm_polish_enabled {
+                        "disabled_after_failure"
+                    } else {
+                        "disabled"
+                    }
+                } else if llm_post_asr_warmed {
+                    "ready"
+                } else {
+                    "warming"
+                };
+                let payload = serde_json::json!({
+                    "type": "status",
+                    "ok": true,
+                    "health": current.name(),
+                    "detail": current.caption(),
+                    "ready": current.is_ready(),
+                    "hotkey": hotkey,
+                    "hotkey_reason": if hotkey == "blocked" { hotkey_block_reason() } else { String::new() },
+                    "microphone": mic.name(),
+                    "asr": if sidecar_ready { "ready" } else { "loading" },
+                    "asr_backend": settings.backend,
+                    "polish": polish,
+                    "overlay": if ui.overlay_active() { "ready" } else if ui.overlay.is_some() { "starting" } else { "native" },
+                    "session": match machine.state() {
+                        SessionState::Idle => "idle",
+                        SessionState::Recording { .. } => "recording",
+                        SessionState::Transcribing { .. } => "transcribing",
+                    },
+                    "shortcut": settings.shortcut,
+                    "pid": std::process::id(),
+                    "uptime_s": started_at.elapsed().as_secs(),
+                });
+                let _ = serde_json::to_writer(&mut response, &payload);
+                let _ = response.write_all(b"\n");
+            }
             Ok(DaemonEvent::Fatal(message)) => {
                 exit_error = Some(message);
                 break;
@@ -1490,6 +1539,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 && idle_for >= Duration::from_secs(settings.capture_idle_stop_secs)
             {
                 capture_idle = true;
+                mic = MicState::Idle;
                 capture_wanted.store(false, Ordering::SeqCst);
                 preroll.clear();
                 logging::info(&format!(
@@ -1502,7 +1552,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             sidecar_ready,
             llm_post_asr_warmed,
             &blocked_modes,
-            mic_available,
+            mic,
         )) {
             publish_health(next, &mut ui, &settings);
         }
@@ -2088,6 +2138,13 @@ fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEvent>) -> bo
                 mode: mode.into(),
                 edge: edge.into(),
             }),
+            Ok(ControlCommand::Status) => {
+                return events
+                    .send(DaemonEvent::ControlStatus {
+                        response: reader.into_inner(),
+                    })
+                    .is_ok();
+            }
             Err(_) => {
                 let mut stream = reader.into_inner();
                 let _ = serde_json::to_writer(

@@ -18,13 +18,39 @@ use crate::settings::Settings;
 pub enum DaemonHealth {
     /// The global hotkey exists but macOS delivers no events to it.
     HotkeyBlocked,
-    /// Microphone capture is not running (device lost, permission missing).
+    /// Microphone capture stopped (device lost, permission revoked).
     MicUnavailable,
     /// The ASR sidecar has not reported ready.
     LoadingAsr,
     /// ASR is up; the LLM polish sidecar is still running its warm-up.
     WarmingPolish,
+    /// Everything else is up but the microphone has never delivered audio.
+    /// On a fresh install this is the Microphone permission prompt.
+    MicStarting,
     Ready,
+}
+
+/// What the capture thread is doing, as far as the loop knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicState {
+    /// Capture requested, no `Started` event yet.
+    Starting,
+    Capturing,
+    /// Released on purpose after an idle stretch; reopens on the next press.
+    Idle,
+    /// Capture stopped without us asking.
+    Unavailable,
+}
+
+impl MicState {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Capturing => "capturing",
+            Self::Idle => "idle",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 impl DaemonHealth {
@@ -35,6 +61,7 @@ impl DaemonHealth {
             Self::MicUnavailable => "mic_unavailable",
             Self::LoadingAsr => "loading_asr",
             Self::WarmingPolish => "warming_polish",
+            Self::MicStarting => "mic_starting",
             Self::Ready => "ready",
         }
     }
@@ -47,6 +74,7 @@ impl DaemonHealth {
             Self::MicUnavailable => "microphone unavailable",
             Self::LoadingAsr => "loading speech model...",
             Self::WarmingPolish => "warming polish...",
+            Self::MicStarting => "waiting for microphone access",
             Self::Ready => "",
         }
     }
@@ -67,21 +95,25 @@ pub struct HealthInputs {
     pub asr_ready: bool,
     pub polish_warmed: bool,
     pub hotkey_blocked: bool,
-    pub mic_available: bool,
+    pub mic: MicState,
 }
 
 impl HealthInputs {
     /// Priority order: what the user must fix first comes first. A blocked
     /// hotkey needs a settings change; everything else resolves on its own.
+    /// A microphone that never starts is reported last, after the model has
+    /// loaded, because on a cold start it is usually just slower than us.
     pub fn health(self) -> DaemonHealth {
         if self.hotkey_blocked {
             DaemonHealth::HotkeyBlocked
-        } else if !self.mic_available {
+        } else if self.mic == MicState::Unavailable {
             DaemonHealth::MicUnavailable
         } else if !self.asr_ready {
             DaemonHealth::LoadingAsr
         } else if !self.polish_warmed {
             DaemonHealth::WarmingPolish
+        } else if self.mic == MicState::Starting {
+            DaemonHealth::MicStarting
         } else {
             DaemonHealth::Ready
         }
@@ -115,13 +147,13 @@ pub(crate) fn health_inputs(
     asr_ready: bool,
     polish_warmed: bool,
     blocked_modes: &[SessionMode],
-    mic_available: bool,
+    mic: MicState,
 ) -> HealthInputs {
     HealthInputs {
         asr_ready,
         polish_warmed,
         hotkey_blocked: !blocked_modes.is_empty(),
-        mic_available,
+        mic,
     }
 }
 
@@ -164,7 +196,7 @@ mod tests {
             asr_ready: true,
             polish_warmed: true,
             hotkey_blocked: false,
-            mic_available: true,
+            mic: MicState::Capturing,
         }
     }
 
@@ -174,26 +206,31 @@ mod tests {
             asr_ready: false,
             polish_warmed: false,
             hotkey_blocked: true,
-            mic_available: false,
+            mic: MicState::Unavailable,
         };
         assert_eq!(inputs.health(), DaemonHealth::HotkeyBlocked);
     }
 
     #[test]
-    fn startup_order_is_mic_then_asr_then_polish_then_ready() {
+    fn startup_order_is_asr_then_polish_then_mic_then_ready() {
         let mut inputs = HealthInputs {
             asr_ready: false,
             polish_warmed: false,
             hotkey_blocked: false,
-            mic_available: false,
+            mic: MicState::Starting,
         };
-        assert_eq!(inputs.health(), DaemonHealth::MicUnavailable);
-        inputs.mic_available = true;
         assert_eq!(inputs.health(), DaemonHealth::LoadingAsr);
         inputs.asr_ready = true;
         assert_eq!(inputs.health(), DaemonHealth::WarmingPolish);
         inputs.polish_warmed = true;
+        assert_eq!(inputs.health(), DaemonHealth::MicStarting);
+        inputs.mic = MicState::Capturing;
         assert_eq!(inputs.health(), DaemonHealth::Ready);
+        // An idle release is not a problem.
+        inputs.mic = MicState::Idle;
+        assert_eq!(inputs.health(), DaemonHealth::Ready);
+        inputs.mic = MicState::Unavailable;
+        assert_eq!(inputs.health(), DaemonHealth::MicUnavailable);
     }
 
     #[test]
@@ -220,6 +257,7 @@ mod tests {
             DaemonHealth::MicUnavailable,
             DaemonHealth::LoadingAsr,
             DaemonHealth::WarmingPolish,
+            DaemonHealth::MicStarting,
         ] {
             assert!(!health.caption().is_empty());
             assert!(health.caption().len() <= 36, "{health}");

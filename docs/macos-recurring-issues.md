@@ -81,18 +81,20 @@ Two things matter, and BOTH are required:
    zero events). A process launched from Terminal inherits Terminal's GUI/TCC
    session context and the tap stays enabled (`tap is_enabled=1`).
 
-For automatic startup, install the GUI-context Login Item:
+For automatic startup, install `Sunoto.app` (since 2026-09-17 the daemon is
+the bundle's own executable; the bash `sunoto-login` wrapper is gone):
 ```sh
-bash install-macos.sh
-open "$HOME/Applications/Sunoto Login.app"
+bash install-macos.sh                 # builds, then sunoto-daemon setup
+target/release/sunoto-daemon status   # live health over the control socket
 tail -f "$HOME/Library/Logs/sunoto/daemon.log"
 ```
 
-The launcher is an `LSUIElement` application started by Launch Services. It
-stays alive as the bare daemon's parent, preserving the responsible GUI
-process context that launchd lacks. Grant Accessibility and Input Monitoring
-to both `~/Applications/Sunoto Login.app` and the bare daemon on first install.
-See `docs/macos-gui-login-item-plan.md`.
+`Sunoto.app` is an `LSUIElement` application started by Launch Services, so
+the daemon itself is the responsible GUI process. Grant Accessibility and
+Input Monitoring to the single entry `~/Applications/Sunoto.app`. `setup`
+watches the app's own hotkey-delivery probe and opens the panes when it
+reports blocked. The older `docs/macos-gui-login-item-plan.md` describes the
+superseded two-process design.
 
 The working manual development launch remains:
 ```sh
@@ -101,9 +103,9 @@ nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &
 tail -f /tmp/sunoto-bare.log   # wait for "ASR sidecar ready"
 ```
 
-The legacy launchd plist (`com.earendil-works.sunoto.plist`) points at the bare
-binary, but **the launchd-launched tap is inert due to TCC context**.
-`install-macos.sh` now removes that plist and installs the GUI Login Item.
+The legacy launchd plist (`com.earendil-works.sunoto.plist`) has been
+deleted from the repo; **a launchd-launched tap is inert due to TCC context**.
+`sunoto-daemon setup` boots out and removes any copy still installed.
 
 To get the bare binary's TCC grant in place (one-time, per machine):
 

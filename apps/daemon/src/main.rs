@@ -8,6 +8,7 @@ mod llm_polish;
 mod logging;
 mod overlay;
 mod settings;
+mod setup;
 mod system_mode;
 mod system_worker;
 
@@ -37,6 +38,9 @@ Commands:
   trigger [dictation|system] press|release
                             send a mode-aware push-to-talk edge to the daemon
   run                       run the dictation daemon
+  status [--json]           show the running daemon's health
+  setup [OPTIONS]           macOS: build Sunoto.app, register it at login, start it,
+                            and wait until it reports ready (see setup --help)
   bench [OPTIONS]           measure release-to-insertion latency percentiles
   eval [OPTIONS]            measure the pipeline's zero-edit rate on a corpus
   config show               print the effective settings as JSON
@@ -66,14 +70,78 @@ dictionary and snippets, so results are machine-independent):
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = match dispatch(&args) {
-        Ok(()) => 0,
-        Err(error) => {
-            logging::error(&error.to_string());
-            1
-        }
+    // Launched by Launch Services from inside Sunoto.app: no arguments (or a
+    // legacy -psn_ process serial). Run the daemon with the bundle's context.
+    let launched_from_bundle = args.is_empty() || args[0].starts_with("-psn");
+    let code = match app_bundle_root().filter(|_| launched_from_bundle) {
+        Some(bundle) => match run_from_bundle(&bundle) {
+            Ok(()) => 0,
+            Err(error) => {
+                logging::error(&error.to_string());
+                1
+            }
+        },
+        None => match dispatch(&args) {
+            Ok(()) => 0,
+            Err(error) => {
+                logging::error(&error.to_string());
+                1
+            }
+        },
     };
     std::process::exit(code);
+}
+
+/// `.../Sunoto.app` when this executable lives in an app bundle.
+fn app_bundle_root() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;
+    let contents = macos_dir.parent()?;
+    let bundle = contents.parent()?;
+    (macos_dir.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension().is_some_and(|ext| ext == "app"))
+    .then(|| bundle.to_path_buf())
+}
+
+unsafe extern "C" {
+    fn dup2(from: i32, to: i32) -> i32;
+}
+
+/// Daemon start for an app-bundle launch: point stdout/stderr at the log
+/// file, learn the repository root from the bundle, then run.
+fn run_from_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    use std::os::unix::io::AsRawFd;
+    if std::env::var_os("SUNOTO_ROOT").is_none() {
+        let marker = bundle.join("Contents/Resources").join(setup::ROOT_MARKER);
+        if let Ok(root) = std::fs::read_to_string(&marker) {
+            // SAFETY: single-threaded at this point; no other thread reads
+            // the environment concurrently.
+            unsafe { std::env::set_var("SUNOTO_ROOT", root.trim()) };
+        }
+    }
+    let log_path = std::env::var_os("SUNOTO_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            PathBuf::from(home).join("Library/Logs/sunoto/daemon.log")
+        });
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    // SAFETY: dup2 on our own open descriptors; the File stays open for the
+    // process lifetime so the descriptors remain valid.
+    unsafe {
+        dup2(log.as_raw_fd(), 1);
+        dup2(log.as_raw_fd(), 2);
+    }
+    std::mem::forget(log);
+    logging::info(&format!("Sunoto starting from {}", bundle.display()));
+    daemon::run(load_settings(&[])?)
 }
 
 fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -104,6 +172,8 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
         "system" => system_mode::run_cli(rest),
         "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
+        "status" => setup::print_status(rest.iter().any(|arg| arg == "--json")),
+        "setup" => setup::run(rest),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
         "eval" => eval::run(parse_eval_args(rest)),
         "config" => config(rest),

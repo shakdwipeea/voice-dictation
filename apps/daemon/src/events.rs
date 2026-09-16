@@ -34,6 +34,10 @@ pub enum DaemonEvent {
         text: String,
         response: UnixStream,
     },
+    /// Live health for `sunoto-daemon status` and `setup`.
+    ControlStatus {
+        response: UnixStream,
+    },
     Fatal(String),
 }
 
@@ -51,6 +55,7 @@ pub(crate) enum ControlCommand {
         mode: ControlMode,
         edge: ControlEdge,
     },
+    Status,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

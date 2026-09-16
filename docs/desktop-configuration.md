@@ -301,13 +301,19 @@ target/release/sunoto-daemon config init
 target/release/sunoto-daemon config show
 ```
 
-For automatic startup, install the GUI Login Item so Sunoto starts through
-Launch Services with a responsible GUI/TCC context:
+For automatic startup, install `Sunoto.app` as a Login Item. The daemon is
+the bundle's executable, so Launch Services starts it with a responsible
+GUI/TCC context and there is a single entry to grant permissions to:
 
 ```bash
-bash install-macos.sh
-open "$HOME/Applications/Sunoto Login.app"
+bash install-macos.sh          # build, then: sunoto-daemon setup
+target/release/sunoto-daemon status
 ```
+
+`setup` accepts `--dry-run` (assemble `target/release/Sunoto.app` only),
+`--no-login-item`, and `--timeout-secs N`. It waits until the app reports
+`ready` over the control socket and opens the right Privacy & Security pane
+when the hotkey probe reports the tap is blocked.
 
 For manual development, run the daemon from a terminal:
 

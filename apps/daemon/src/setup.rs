@@ -1,0 +1,519 @@
+//! `sunoto-daemon setup`: build the app bundle, register it as a Login Item,
+//! start it, and watch the running daemon's own health until it is ready.
+//!
+//! Why the daemon is the bundle's executable: macOS attaches Input
+//! Monitoring and Accessibility grants to the process that uses them, and
+//! disables a CGEventTap whose process has no responsible GUI context. With
+//! the daemon launched directly by Launch Services there is exactly one
+//! identity to grant ("Sunoto") and no wrapper process to keep alive.
+//!
+//! Why readiness is read over the control socket: permissions are per
+//! identity, so a check run from a terminal would report the terminal's
+//! grants, not the app's. The app reports its own probe results (hotkey
+//! delivery, microphone capture, model load), and setup prints them.
+
+use std::error::Error;
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use crate::settings::{self, Settings};
+
+pub const BUNDLE_ID: &str = "com.earendil-works.sunoto";
+pub const APP_NAME: &str = "Sunoto";
+const LEGACY_LOGIN_ITEM: &str = "Sunoto Login";
+const LEGACY_LAUNCHD_LABEL: &str = "com.earendil-works.sunoto";
+/// Name of the file inside `Contents/Resources` that tells an app-bundle
+/// launch where the repository (sidecar scripts, venvs, models) lives.
+pub const ROOT_MARKER: &str = "sunoto-root";
+
+const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--timeout-secs N]
+
+  --dry-run          assemble target/release/Sunoto.app only; install nothing
+  --no-login-item    install and start the app without registering it at login
+  --timeout-secs N   how long to wait for the daemon to report ready (default 240)
+";
+
+struct Args {
+    dry_run: bool,
+    login_item: bool,
+    timeout: Duration,
+}
+
+fn parse_args(args: &[String]) -> Result<Args, Box<dyn Error>> {
+    let mut parsed = Args {
+        dry_run: false,
+        login_item: true,
+        timeout: Duration::from_secs(240),
+    };
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--dry-run" => parsed.dry_run = true,
+            "--no-login-item" => parsed.login_item = false,
+            "--timeout-secs" => {
+                let value = iter.next().ok_or("--timeout-secs needs a value")?;
+                parsed.timeout = Duration::from_secs(value.parse()?);
+            }
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown setup option {other}\n{USAGE}").into()),
+        }
+    }
+    Ok(parsed)
+}
+
+pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
+    if !cfg!(target_os = "macos") {
+        return Err("setup is macOS-only for now; on Linux use install.sh".into());
+    }
+    let args = parse_args(args)?;
+    let root = settings::repo_root();
+    let daemon = std::env::current_exe()?.canonicalize()?;
+    let overlay = daemon.with_file_name("sunoto-overlay");
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
+    let staging = root.join("target/release").join(format!("{APP_NAME}.app"));
+    let installed = home.join("Applications").join(format!("{APP_NAME}.app"));
+    let log_path = home.join("Library/Logs/sunoto/daemon.log");
+
+    section("preflight");
+    if !overlay.is_file() {
+        return Err(format!(
+            "overlay binary missing at {}; build it with: swiftc -O services/macos/sunoto-overlay.swift -o {}",
+            overlay.display(),
+            overlay.display()
+        )
+        .into());
+    }
+    ok(&format!("daemon:  {}", daemon.display()));
+    ok(&format!("overlay: {}", overlay.display()));
+    let config_path = settings::config_path();
+    let loaded = Settings::load(&config_path)?;
+    if config_path.is_file() {
+        ok(&format!(
+            "config:  {} (left untouched)",
+            config_path.display()
+        ));
+    } else if args.dry_run {
+        note(&format!(
+            "config:  {} would be created",
+            config_path.display()
+        ));
+    } else {
+        loaded.save(&config_path)?;
+        ok(&format!("config:  created {}", config_path.display()));
+    }
+    preflight_asr_runtime(&root, &loaded)?;
+
+    section("bundle");
+    assemble_bundle(&staging, &daemon, &overlay, &root)?;
+    codesign(&staging)?;
+    ok(&format!("assembled and signed {}", staging.display()));
+    if args.dry_run {
+        note("dry run: nothing installed, nothing started");
+        return Ok(());
+    }
+
+    section("install");
+    stop_running_daemons();
+    remove_legacy_login_item(&home);
+    if installed.exists() {
+        fs::remove_dir_all(&installed)?;
+    }
+    fs::create_dir_all(installed.parent().expect("~/Applications has a parent"))?;
+    copy_dir(&staging, &installed)?;
+    ok(&format!("installed {}", installed.display()));
+    if args.login_item {
+        register_login_item(&installed)?;
+        ok(&format!("{APP_NAME} registered in Login Items"));
+    }
+    fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
+    let _ = fs::write(&log_path, b"");
+    Command::new("open").arg(&installed).status()?;
+    ok(&format!("started {APP_NAME}; log: {}", log_path.display()));
+
+    section("permissions");
+    watch_until_ready(args.timeout, &installed)
+}
+
+fn preflight_asr_runtime(root: &Path, settings: &Settings) -> Result<(), Box<dyn Error>> {
+    if !settings.backend.starts_with("parakeet_mlx") {
+        note(&format!(
+            "backend {}: Parakeet runtime preflight skipped",
+            settings.backend
+        ));
+        return Ok(());
+    }
+    let (python, _) = settings.sidecar_command()?;
+    let python_path = Path::new(&python);
+    if !python_path.is_file() || python == "python3" {
+        return Err(format!(
+            "ASR Python runtime missing under {}; run: brew install python@3.12 && bash services/asr/setup_macos_runtime.sh && .venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx",
+            root.display()
+        )
+        .into());
+    }
+    let status = Command::new(&python)
+        .args(["-c", "import mlx, parakeet_mlx"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(format!(
+            "{python} cannot import mlx and parakeet_mlx; repair .venv-nemotron-mac"
+        )
+        .into());
+    }
+    ok("ASR runtime imports: mlx + parakeet_mlx");
+    Ok(())
+}
+
+fn assemble_bundle(
+    staging: &Path,
+    daemon: &Path,
+    overlay: &Path,
+    root: &Path,
+) -> Result<(), Box<dyn Error>> {
+    if staging.exists() {
+        fs::remove_dir_all(staging)?;
+    }
+    let macos_dir = staging.join("Contents/MacOS");
+    let resources = staging.join("Contents/Resources");
+    fs::create_dir_all(&macos_dir)?;
+    fs::create_dir_all(&resources)?;
+    fs::copy(daemon, macos_dir.join("sunoto-daemon"))?;
+    fs::copy(overlay, macos_dir.join("sunoto-overlay"))?;
+    fs::write(resources.join(ROOT_MARKER), format!("{}\n", root.display()))?;
+    fs::write(staging.join("Contents/Info.plist"), info_plist())?;
+    let lint = Command::new("plutil")
+        .args(["-lint", "Contents/Info.plist"])
+        .current_dir(staging)
+        .stdout(Stdio::null())
+        .status()?;
+    if !lint.success() {
+        return Err("generated Info.plist failed plutil -lint".into());
+    }
+    Ok(())
+}
+
+fn info_plist() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>sunoto-daemon</string>
+    <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
+    <key>CFBundleName</key><string>{APP_NAME}</string>
+    <key>CFBundleDisplayName</key><string>{APP_NAME}</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>{version}</string>
+    <key>CFBundleVersion</key><string>{version}</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Sunoto records microphone audio while you hold the push-to-talk shortcut.</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Sunoto listens for the global push-to-talk shortcut while you use other applications.</string>
+</dict>
+</plist>
+"#,
+        version = env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn codesign(bundle: &Path) -> Result<(), Box<dyn Error>> {
+    // Ad-hoc, with a stable identifier. Every rebuild still changes the
+    // cdhash, so permission grants do not survive an upgrade; that is the
+    // documented limit until a Developer ID signs the bundle.
+    let status = Command::new("codesign")
+        .args([
+            "--force",
+            "--deep",
+            "--sign",
+            "-",
+            "--identifier",
+            BUNDLE_ID,
+        ])
+        .arg(bundle)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    if !status.success() {
+        return Err("codesign failed".into());
+    }
+    Ok(())
+}
+
+fn stop_running_daemons() {
+    for pattern in [
+        "sunoto-daemon run",
+        "Sunoto.app/Contents/MacOS/sunoto-daemon",
+        "Sunoto Login.app/Contents/MacOS/sunoto-login",
+    ] {
+        let _ = Command::new("pkill")
+            .args(["-f", pattern])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    std::thread::sleep(Duration::from_secs(1));
+}
+
+fn remove_legacy_login_item(home: &Path) {
+    let uid = Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let _ = Command::new("launchctl")
+        .args(["bootout", &format!("gui/{uid}/{LEGACY_LAUNCHD_LABEL}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = fs::remove_file(
+        home.join("Library/LaunchAgents")
+            .join(format!("{LEGACY_LAUNCHD_LABEL}.plist")),
+    );
+    let legacy_app = home
+        .join("Applications")
+        .join(format!("{LEGACY_LOGIN_ITEM}.app"));
+    if legacy_app.exists() {
+        let _ = fs::remove_dir_all(&legacy_app);
+        note(&format!("removed {}", legacy_app.display()));
+    }
+    let script = format!(
+        r#"tell application "System Events"
+    try
+        delete every login item whose name is "{LEGACY_LOGIN_ITEM}"
+    end try
+end tell"#
+    );
+    let _ = Command::new("osascript")
+        .args(["-e", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn register_login_item(app: &Path) -> Result<(), Box<dyn Error>> {
+    let script = format!(
+        r#"on run argv
+    set appPath to item 1 of argv
+    tell application "System Events"
+        try
+            delete every login item whose name is "{APP_NAME}"
+        end try
+        make login item at end with properties {{name:"{APP_NAME}", path:appPath, hidden:true}}
+    end tell
+end run"#
+    );
+    let status = Command::new("osascript")
+        .args(["-e", &script])
+        .arg(app)
+        .stdout(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err("could not register the Login Item (System Events refused)".into());
+    }
+    Ok(())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<(), Box<dyn Error>> {
+    // `cp -R` keeps the executable bits and the code signature intact; a
+    // manual walk would need to reproduce both.
+    let status = Command::new("cp").arg("-R").arg(from).arg(to).status()?;
+    if !status.success() {
+        return Err(format!("cannot copy {} to {}", from.display(), to.display()).into());
+    }
+    Ok(())
+}
+
+/// Ask the running daemon for its health once. `None` while the socket is
+/// not there yet or the daemon is not answering.
+pub fn query_status() -> Option<serde_json::Value> {
+    let path = settings::control_socket_path();
+    let mut stream = UnixStream::connect(path).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.write_all(b"{\"type\":\"status\"}\n").ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    serde_json::from_str(response.trim()).ok()
+}
+
+fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
+    let mut last: Option<(String, String, String, String, String)> = None;
+    let mut panes_opened = false;
+    note("waiting for the app to report its own health over the control socket...");
+    loop {
+        if let Some(status) = query_status() {
+            let field = |key: &str| {
+                status
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?")
+                    .to_string()
+            };
+            let snapshot = (
+                field("health"),
+                field("hotkey"),
+                field("microphone"),
+                field("asr"),
+                field("polish"),
+            );
+            if last.as_ref() != Some(&snapshot) {
+                note(&format!(
+                    "hotkey: {} | microphone: {} | speech model: {} | polish: {} => {}",
+                    snapshot.1, snapshot.2, snapshot.3, snapshot.4, snapshot.0
+                ));
+                last = Some(snapshot.clone());
+            }
+            if snapshot.1 == "blocked" && !panes_opened {
+                panes_opened = true;
+                let reason = field("hotkey_reason");
+                warn(&format!("hotkey blocked: {reason}"));
+                note(&format!(
+                    "In each pane, add {} (press + to pick it) and switch it on.",
+                    app.display()
+                ));
+                open_pane("Privacy_ListenEvent");
+                open_pane("Privacy_Accessibility");
+            }
+            if snapshot.0 == "mic_starting" && snapshot.3 == "ready" {
+                note("macOS should be showing the Microphone prompt; click Allow.");
+            }
+            if status
+                .get("ready")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                ok(&format!(
+                    "{APP_NAME} is ready. Hold {} in any app, speak, release.",
+                    field("shortcut")
+                ));
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            let summary = last
+                .map(|(health, hotkey, mic, asr, polish)| {
+                    format!(
+                        "last state: {health} (hotkey {hotkey}, microphone {mic}, speech model {asr}, polish {polish})"
+                    )
+                })
+                .unwrap_or_else(|| "the app never answered on the control socket".to_string());
+            return Err(format!(
+                "{APP_NAME} did not become ready within {}s; {summary}. Check ~/Library/Logs/sunoto/daemon.log",
+                timeout.as_secs()
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn open_pane(anchor: &str) {
+    let _ = Command::new("open")
+        .arg(format!(
+            "x-apple.systempreferences:com.apple.preference.security?{anchor}"
+        ))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn section(title: &str) {
+    println!("== {title} ==");
+}
+
+fn note(message: &str) {
+    println!("  {message}");
+}
+
+fn ok(message: &str) {
+    println!("  \u{2713} {message}");
+}
+
+fn warn(message: &str) {
+    println!("  ! {message}");
+}
+
+/// Print the running daemon's health in one screen.
+pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
+    let Some(status) = query_status() else {
+        return Err(format!(
+            "no daemon is answering on {}",
+            settings::control_socket_path().display()
+        )
+        .into());
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+        return Ok(());
+    }
+    if status.get("type").and_then(serde_json::Value::as_str) != Some("status") {
+        let error = status
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unexpected reply");
+        return Err(format!(
+            "the running daemon did not answer the status command ({error}); it is probably an older build. Restart it after reinstalling."
+        )
+        .into());
+    }
+    let field = |key: &str| {
+        status
+            .get(key)
+            .map(|value| match value {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|| "?".to_string())
+    };
+    println!("health:        {} {}", field("health"), field("detail"));
+    println!("hotkey:        {} ({})", field("hotkey"), field("shortcut"));
+    if field("hotkey") == "blocked" {
+        println!("               {}", field("hotkey_reason"));
+    }
+    println!("microphone:    {}", field("microphone"));
+    println!("speech model:  {} ({})", field("asr"), field("asr_backend"));
+    println!("polish:        {}", field("polish"));
+    println!("overlay:       {}", field("overlay"));
+    println!("session:       {}", field("session"));
+    println!("pid / uptime:  {} / {}s", field("pid"), field("uptime_s"));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_plist_names_the_daemon_as_the_executable() {
+        let plist = info_plist();
+        assert!(plist.contains("<key>CFBundleExecutable</key><string>sunoto-daemon</string>"));
+        assert!(plist.contains(BUNDLE_ID));
+        assert!(plist.contains("<key>LSUIElement</key><true/>"));
+        assert!(plist.contains("NSMicrophoneUsageDescription"));
+    }
+
+    #[test]
+    fn setup_args_parse_flags_and_reject_unknown() {
+        let args = parse_args(&["--dry-run".into(), "--timeout-secs".into(), "9".into()]).unwrap();
+        assert!(args.dry_run);
+        assert!(args.login_item);
+        assert_eq!(args.timeout, Duration::from_secs(9));
+        let args = parse_args(&["--no-login-item".into()]).unwrap();
+        assert!(!args.login_item);
+        assert!(parse_args(&["--bogus".into()]).is_err());
+        assert!(parse_args(&["--timeout-secs".into()]).is_err());
+    }
+}

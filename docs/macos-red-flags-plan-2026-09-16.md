@@ -145,6 +145,15 @@ daemon's parent.
 three grants, one dictation, under five minutes, no terminal beyond the two
 commands.
 
+**Status: implemented on branch `macos-red-flags` (M5), except the
+Microphone permission is still requested by macOS on first capture rather
+than checked up front.** `sunoto-daemon setup` assembles `Sunoto.app` with
+the daemon as its executable, registers the Login Item, starts the app, and
+polls the new `status` control command until the app reports ready; a
+blocked hotkey opens the two panes. `setup --dry-run` verified 2026-09-17.
+The live install on this machine is left to the owner because it replaces
+the running daemon and needs the permission clicks.
+
 ### 2.5 Clipboard overwrite
 
 **What was investigated.**

@@ -19,9 +19,10 @@ From the repository root:
 bash install-macos.sh
 ```
 
-This builds Sunoto, installs **Sunoto Login** in
-`~/Applications`, registers it as a macOS Login Item, and starts it. It also
-preserves an existing configuration.
+This builds Sunoto, installs **Sunoto.app** in `~/Applications`, registers it
+as a macOS Login Item, starts it, and then prints the app's own health report
+until it is ready: hotkey verified, microphone capturing, speech model loaded.
+An existing configuration is preserved.
 
 The default backend is Parakeet-MLX on Apple Silicon. If the installer reports
 that the ASR environment is missing, set it up once and rerun the installer:
@@ -32,26 +33,30 @@ brew install python@3.12 && bash services/asr/setup_macos_runtime.sh && .venv-ne
 
 ### Grant permissions once
 
-In **System Settings → Privacy & Security**, grant both **Accessibility** and
-**Input Monitoring** to:
+When the installer reports `hotkey: blocked`, it opens the two panes that
+need a grant. In **System Settings → Privacy & Security**, add
+`~/Applications/Sunoto.app` under both **Accessibility** and
+**Input Monitoring** and switch it on. Allow **Microphone** access when macOS
+asks. The installer keeps watching and prints `Sunoto is ready` once the app
+confirms all three live. There is exactly one entry to grant.
 
-- `~/Applications/Sunoto Login.app`
-- `target/release/sunoto-daemon`
-
-Allow **Microphone** access when macOS asks. Then open Sunoto again:
+Later, check on it any time with:
 
 ```bash
-open "$HOME/Applications/Sunoto Login.app"
+target/release/sunoto-daemon status
 ```
-
-Wait for `Sunoto ready for dictation`, then hold **Ctrl+F1**, speak, and
-release.
 
 ### Logs and restart
 
 ```bash
 tail -f "$HOME/Library/Logs/sunoto/daemon.log"
-open "$HOME/Applications/Sunoto Login.app"
+open "$HOME/Applications/Sunoto.app"
+```
+
+`open` on the already-running app is a no-op; to restart, quit it first:
+
+```bash
+pkill -f "Sunoto.app/Contents/MacOS/sunoto-daemon"; open "$HOME/Applications/Sunoto.app"
 ```
 
 The configuration file is:

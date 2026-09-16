@@ -181,18 +181,27 @@ phase6() {
 }
 
 phase7() {
-  echo "== phase 7: GUI login item + install =="
+  echo "== phase 7: app bundle login item + install =="
   [ -f "install-macos.sh" ] && ok "install-macos.sh exists" || fail "install-macos.sh missing"
-  [ -x "services/macos/sunoto-login" ] && ok "GUI login launcher exists" || fail "GUI login launcher missing"
-  if grep -q 'make login item' install-macos.sh && grep -q 'Sunoto Login.app' install-macos.sh; then
-    ok "installer registers Sunoto Login.app"
+  if grep -q 'sunoto-daemon" setup' install-macos.sh; then
+    ok "installer delegates to sunoto-daemon setup"
   else
-    fail "installer does not register GUI login item"
+    fail "installer does not call sunoto-daemon setup"
   fi
-  if grep -q 'launchctl bootout' install-macos.sh; then
-    ok "installer removes obsolete LaunchAgent"
+  if grep -q 'make login item' apps/daemon/src/setup.rs && grep -q 'CFBundleExecutable</key><string>sunoto-daemon' apps/daemon/src/setup.rs; then
+    ok "setup registers Sunoto.app with the daemon as its executable"
   else
-    fail "installer does not remove obsolete LaunchAgent"
+    fail "setup does not build the daemon-as-executable bundle"
+  fi
+  if grep -q 'launchctl' apps/daemon/src/setup.rs && grep -q 'Sunoto Login' apps/daemon/src/setup.rs; then
+    ok "setup removes the legacy LaunchAgent and login launcher"
+  else
+    fail "setup does not clean up legacy launchers"
+  fi
+  if [ -x target/release/sunoto-daemon ] && target/release/sunoto-daemon setup --dry-run >/tmp/sunoto-setup-dry.out 2>&1; then
+    ok "setup --dry-run assembles and signs target/release/Sunoto.app"
+  else
+    fail "setup --dry-run failed (see /tmp/sunoto-setup-dry.out)"
   fi
   manual "Login Item registration and live GUI/TCC event tap require an interactive session"
 }

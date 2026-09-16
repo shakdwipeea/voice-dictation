@@ -522,7 +522,13 @@ impl Settings {
         let src = repo_root().join("src");
         if cfg!(target_os = "macos") && self.overlay_backend == "macos" {
             let root = repo_root();
-            let binary = root.join("target/release/sunoto-overlay");
+            // Inside Sunoto.app the overlay sits next to the daemon; a
+            // development run finds it in target/release.
+            let sibling = std::env::current_exe()
+                .ok()
+                .map(|exe| exe.with_file_name("sunoto-overlay"))
+                .filter(|path| path.is_file());
+            let binary = sibling.unwrap_or_else(|| root.join("target/release/sunoto-overlay"));
             if binary.is_file() {
                 return (
                     binary.to_string_lossy().into_owned(),

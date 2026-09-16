@@ -119,9 +119,13 @@ Where it lands depends on how the daemon was launched:
 
 | Launch method | Log location |
 | --- | --- |
-| launchd (`install-macos.sh`) | `~/Library/Logs/sunoto/daemon.log` |
+| `Sunoto.app` login item (`install-macos.sh` / `sunoto-daemon setup`) | `~/Library/Logs/sunoto/daemon.log` |
 | `nohup ... > FILE 2>&1 &` | that file (we use `/tmp/sunoto-daemon.log`) |
 | foreground in a terminal | the terminal |
+
+`target/release/sunoto-daemon status` asks the running daemon (whichever way
+it was launched) for its health over the control socket: hotkey delivery,
+microphone, speech model, polish, session state.
 
 Watch live with `tail -f`. Key per-session lines: `session N: recording`,
 `session N: sent to ASR: ...ms audio, ... samples, rms=R, peak=P, timeout Tms`,
@@ -131,16 +135,19 @@ muted; check System Settings → Sound → Input.
 
 ### Restarting the macOS daemon
 
-- **Working launch (use this for actual dictation):** run the **bare binary**
-  from a terminal, NOT via launchd —
-  `nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &`.
-  launchd agents have no responsible process, so TCC disables the event tap
-  (`tap disabled by system`); a terminal-launched process inherits the GUI/TCC
-  context and the tap stays enabled. See recurring-issues §1.
-- launchd (auto-start only; hotkey will be inert):
-  `launchctl bootout gui/$(id -u)/com.earendil-works.sunoto` then
-  `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.earendil-works.sunoto.plist`
-  (or `launchctl kickstart -k gui/$(id -u)/com.earendil-works.sunoto`).
+- **Installed launch (what users run):** `Sunoto.app` in `~/Applications`,
+  whose executable is the daemon itself, started by Launch Services as a
+  Login Item. Install or reinstall with `bash install-macos.sh` (builds, then
+  runs `sunoto-daemon setup`, which waits for the app's own ready report).
+  Restart: `pkill -f "Sunoto.app/Contents/MacOS/sunoto-daemon"; open
+  ~/Applications/Sunoto.app`. Permissions (Accessibility, Input Monitoring,
+  Microphone) are granted to the one entry `Sunoto.app`; an ad-hoc rebuild
+  changes its signature, so re-grant after reinstalling.
+- **Development launch:** run the **bare binary** from a terminal, NOT via
+  launchd — `nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log
+  2>&1 &`. launchd agents have no responsible process, so TCC disables the
+  event tap; a terminal-launched process inherits the GUI/TCC context. Never
+  run this while `Sunoto.app` is running.
 - **Never have two daemons running at once** — they fight over the control
   socket (`/var/folders/.../sunoto-antash-daemon.sock`) and the CGEventTap.
   Before starting one, kill the other and check `ps aux | grep sunoto-daemon`.
