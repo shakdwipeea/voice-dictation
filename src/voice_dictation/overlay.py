@@ -210,6 +210,7 @@ CSS = b"""
 }
 .vd-dot.vd-live { color: #ef4444; }
 .vd-dot.vd-system { color: #3b82f6; }
+.vd-dot.vd-attention { color: #8b949e; }
 .vd-meter trough {
   min-height: 4px;
   min-width: 140px;
@@ -380,6 +381,11 @@ class Overlay:
     def set_status(self, status: str) -> None:
         GLib.idle_add(self._do_set_status, status)
 
+    def set_state(self, name: str, detail: str) -> None:
+        """Daemon health for the idle pill. `ready` hides it; anything else
+        shows the pill with the detail as caption and a neutral dot."""
+        GLib.idle_add(self._do_set_state, name, detail)
+
     def add_segment(self, text: str) -> None:
         pass
 
@@ -440,6 +446,17 @@ class Overlay:
             else:
                 self._dot_label.remove_css_class("vd-live")
         return False
+
+    def _do_set_state(self, name: str, detail: str) -> bool:
+        if name == "ready":
+            if self._dot_label is not None:
+                self._dot_label.remove_css_class("vd-attention")
+            self._do_set_status("")
+            return self._do_hide()
+        if self._dot_label is not None:
+            self._dot_label.add_css_class("vd-attention")
+        self._do_set_status(detail or name)
+        return self._do_show()
 
     def _do_set_status(self, status: str) -> bool:
         if self._dot_label is not None:

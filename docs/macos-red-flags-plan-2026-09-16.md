@@ -39,17 +39,22 @@ sidecar alone.
 3. `HotkeyListener::open` waits up to 1 s for `probe_seen`. Failure returns
    a new `X11Error::HotkeyBlocked` variant with the human message "Input
    Monitoring is not granted to <path>".
-4. Repeat the probe every 30 s from the existing tap-enabled poll loop, and
-   after every re-arm. A failed probe flips the daemon health state to
-   `HotkeyBlocked`, and a later success flips it back. This also catches the
-   post-sleep and screen-lock cases.
+4. Repeat the probe after every re-arm (both the timeout callback and the
+   once-a-second `CGEventTapIsEnabled` check). Not periodically: a posted
+   event counts as user input and would keep the display from sleeping.
+   Re-arms are exactly the post-sleep and screen-lock cases, so they are
+   covered. A failed probe flips the daemon health state to `HotkeyBlocked`,
+   and a later success flips it back.
 5. `sunoto-daemon check` runs the same probe and fails if it fails. It stops
    being a false positive.
 
-**Verification.** Revoke Input Monitoring in System Settings while the
-daemon runs: the overlay must show "Hotkey blocked" within 30 s and the log
-must not say ready. Grant it again: state returns to ready without a
-restart. Existing `selftest hotkey` still passes.
+**Verification.** Run `check` with a binary that has no grant: it must fail
+with the reason within about a second (verified 2026-09-17 on the debug and
+freshly rebuilt release binaries). Start the daemon from the login item with
+grants in place: the log must show "shortcut verified" before "ready".
+Existing `selftest hotkey` still passes.
+
+**Status: done on branch `macos-red-flags` (M1).**
 
 ### 2.2 Says ready when it is not
 
@@ -70,6 +75,9 @@ restart. Existing `selftest hotkey` still passes.
 **Verification.** Cold start: the pill appears at once with "loading speech
 model", then "warming polish", then disappears. Pressing during each state
 shows the caption.
+
+**Status: done on branch `macos-red-flags` (M1), pending a live cold-start
+check after the daemon is restarted from the login item.**
 
 ### 2.3 Homebrew install
 

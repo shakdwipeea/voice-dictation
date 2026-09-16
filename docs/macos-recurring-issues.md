@@ -18,8 +18,11 @@ code-signature problem, NOT a logic bug.
 
 - You hold Ctrl+F1; nothing happens. No `session N: recording` line in the log.
 - The log may still show `ASR sidecar ready: ... Hold Ctrl+F1 to dictate.`
-- `./target/release/sunoto-daemon check` says `global hotkey grab: ok` (lies —
-  see below).
+- Before 2026-09-17, `./target/release/sunoto-daemon check` said
+  `global hotkey grab: ok` even with an inert tap. It now posts a probe event
+  through the tap and fails with the reason when nothing comes back, and the
+  running daemon logs `shortcut is not receiving events` and shows
+  "hotkey blocked" in the pill instead of "ready".
 
 ### Proof the daemon is healthy (run this first)
 
@@ -42,8 +45,10 @@ physical-keyboard event tap. Stop here; it's §1, not the ASR.
   (requested via `CGRequestListenEventAccess`).
 - `CGEventTapCreate` can return **non-null** even without the permission, but
   macOS then **immediately disables the tap** — it receives zero events. This
-  is the "inert tap". `check` only verifies the tap is *created*, not that
-  events flow, so `check` gives a **false positive**.
+  is the "inert tap". Since 2026-09-17 the listener proves delivery with a
+  tagged, no-op `flagsChanged` event posted through the tap at startup and
+  after every re-arm; `check`, `selftest`, and the daemon's health state all
+  use that verdict, so "ready" is only ever reported when events flow.
 - TCC grants are bound to the binary's **code signature (cdhash)** at grant
   time. The daemon is **adhoc-signed**, so **every `cargo build` produces a new
   cdhash and invalidates the previous grant**.
@@ -150,7 +155,9 @@ has not recurred for a while.
   &` from a terminal.
 - Do not `tccutil reset ListenEvent com.earendil-works.sunoto` expecting a
   re-prompt — the launchd/background context suppresses it.
-- Do not trust `sunoto-daemon check` alone to rule out this issue.
+- `sunoto-daemon check` now fails on an inert tap; if it passes, the tap is
+  delivering events in that launch context. Note that the context matters:
+  a grant for the login-item launch does not cover a terminal launch.
 - Do not rebuild the app bundle and assume TCC still applies.
 
 ---

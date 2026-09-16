@@ -78,6 +78,10 @@ pub const kCGSessionEventTapTimeout: CGEventType = 0xfffffffe;
 
 // CGEventField for the unicode string payload.
 pub const kCGKeyboardEventKeycode: u32 = 9;
+// CGEventField: 64-bit user data attached to an event by its source. Survives
+// the trip through the window server, so the hotkey delivery probe can tag
+// the event it posts and recognise it in the tap callback.
+pub const kCGEventSourceUserData: u32 = 42;
 
 // ----- CGWindowList (frontmost window / app identity) ------------------------
 
@@ -112,8 +116,12 @@ unsafe extern "C" {
         keyCode: CGKeyCode,
         keyDown: c_int,
     ) -> CGEventRef;
+    pub fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
+    pub fn CGEventSetType(event: CGEventRef, type_: CGEventType);
     pub fn CGEventSetFlags(event: CGEventRef, flags: u64);
     pub fn CGEventGetFlags(event: CGEventRef) -> u64;
+    pub fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
+    pub fn CGEventSourceFlagsState(stateID: c_int) -> u64;
     pub fn CGEventKeyboardSetUnicodeString(
         event: CGEventRef,
         maxStringLength: c_long,

@@ -14,6 +14,16 @@ use std::time::Duration;
 pub enum HotkeyEvent {
     Pressed,
     Released,
+    /// Delivery-probe verdicts. Only the macOS CGEventTap listener emits
+    /// these; XGrabKey either succeeds or fails at open time.
+    Blocked,
+    Available,
+}
+
+/// Explanation for a blocked hotkey. X11 never reports one, so this only
+/// exists to keep the daemon's call sites platform-agnostic.
+pub fn hotkey_block_reason() -> String {
+    "the X11 shortcut grab is active".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +139,13 @@ impl Drop for HotkeyListener {
 impl HotkeyListener {
     pub fn open(_shortcut: &Shortcut) -> Result<Self, X11Error> {
         Err(X11Error::DisplayUnavailable)
+    }
+
+    /// X11 has no delivery ambiguity: `XGrabKey` either succeeded at open
+    /// time or the listener does not exist. Kept for call-site parity with
+    /// the macOS probe.
+    pub fn verify_delivery(&self, _timeout: Duration) -> Result<(), X11Error> {
+        Ok(())
     }
 
     pub fn wait(&self, _timeout: Duration) -> Option<HotkeyEvent> {

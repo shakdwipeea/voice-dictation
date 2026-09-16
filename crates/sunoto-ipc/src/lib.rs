@@ -30,6 +30,14 @@ pub enum OverlayRequest {
     Status {
         text: String,
     },
+    /// Daemon health for the idle pill: `loading_asr`, `warming_polish`,
+    /// `hotkey_blocked`, `mic_unavailable`, or `ready`. Anything but `ready`
+    /// shows the pill with a neutral dot and `detail` as the caption; `ready`
+    /// hides it. Sent on every transition and whenever the overlay comes up.
+    State {
+        name: String,
+        detail: String,
+    },
     Segment {
         text: String,
     },

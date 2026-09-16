@@ -14,7 +14,7 @@ mod insertion;
 mod system;
 mod types;
 
-pub use hotkey::HotkeyListener;
+pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
 pub use insertion::{ProbeWindow, UiAdapter};
 pub use system::SystemPlatform;
 pub use types::{BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, X11Error};

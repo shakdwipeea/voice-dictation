@@ -14,6 +14,11 @@ use crate::ffi;
 pub enum HotkeyEvent {
     Pressed,
     Released,
+    /// The tap exists but macOS is not delivering events to it. Emitted once
+    /// per transition by the delivery probe; see `hotkey_block_reason()`.
+    Blocked,
+    /// A probe event came back through the tap: real presses will too.
+    Available,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +42,8 @@ pub enum X11Error {
     EventPostingPermission,
     XTestUnavailable,
     HotkeyUnavailable(String),
+    /// The tap was created but the delivery probe never came back.
+    HotkeyBlocked(String),
     UnsupportedCharacter(char),
     ClipboardUnavailable,
     SelfTestMismatch { expected: String, actual: String },
@@ -63,6 +70,9 @@ impl fmt::Display for X11Error {
             Self::XTestUnavailable => write!(f, "CGEvent posting is unavailable"),
             Self::HotkeyUnavailable(shortcut) => {
                 write!(f, "cannot resolve the {shortcut} hotkey")
+            }
+            Self::HotkeyBlocked(reason) => {
+                write!(f, "hotkey events are not being delivered: {reason}")
             }
             Self::UnsupportedCharacter(character) => {
                 write!(f, "macOS insertion does not support {character:?}")

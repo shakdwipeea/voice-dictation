@@ -24,6 +24,9 @@ class StubOverlay:
     def set_status(self, status):
         self.calls.append(("status", status))
 
+    def set_state(self, name, detail):
+        self.calls.append(("state", name, detail))
+
     def add_segment(self, text):
         self.calls.append(("segment", text))
 
@@ -68,6 +71,16 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(self.overlay.calls, [
             ("status", "transcribing"), ("segment", "hello"), ("clear",),
         ])
+
+    def test_state_maps_name_and_detail(self):
+        self.assertTrue(
+            dispatch(self.overlay, {"type": "state", "name": "loading_asr", "detail": "loading speech model"})
+        )
+        self.assertTrue(dispatch(self.overlay, {"type": "state", "name": "ready"}))
+        self.assertEqual(
+            self.overlay.calls,
+            [("state", "loading_asr", "loading speech model"), ("state", "ready", "")],
+        )
 
     def test_shutdown_stops_loop_without_calling_overlay(self):
         self.assertFalse(dispatch(self.overlay, {"type": "shutdown"}))

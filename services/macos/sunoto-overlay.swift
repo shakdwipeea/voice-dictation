@@ -10,6 +10,12 @@ private final class PillView: NSView {
     var status: String = "" {
         didSet { needsDisplay = true }
     }
+    /// True while the pill is showing daemon health (loading, warming,
+    /// blocked) rather than a capture. Draws a neutral dot so a user never
+    /// mistakes "not ready" for "recording".
+    var attention: Bool = false {
+        didSet { needsDisplay = true }
+    }
 
     override var isFlipped: Bool { true }
 
@@ -30,9 +36,14 @@ private final class PillView: NSView {
 
         let dotRect = NSRect(x: pillRect.minX + 14, y: pillRect.minY + (pillRect.height - 10) / 2.0, width: 10, height: 10)
         let systemMode = status.lowercased().hasPrefix("system")
-        let dotColor = systemMode
-            ? NSColor.controlAccentColor
-            : NSColor(calibratedRed: 0.94, green: 0.26, blue: 0.26, alpha: 1.0)
+        let dotColor: NSColor
+        if attention {
+            dotColor = NSColor(calibratedWhite: 0.55, alpha: 1.0)
+        } else if systemMode {
+            dotColor = NSColor.controlAccentColor
+        } else {
+            dotColor = NSColor(calibratedRed: 0.94, green: 0.26, blue: 0.26, alpha: 1.0)
+        }
         dotColor.setFill()
         NSBezierPath(ovalIn: dotRect).fill()
 
@@ -488,10 +499,25 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         case "recording":
             let peak = number(message["peak"])
             let rms = number(message["rms"])
+            pill.attention = false
             pill.level = min(1.0, max(0.0, CGFloat(peak * 8.0), CGFloat(rms * 35.0)))
         case "status":
+            pill.attention = false
             pill.status = (message["text"] as? String) ?? ""
             resizeForStatus()
+        case "state":
+            let name = (message["name"] as? String) ?? ""
+            if name == "ready" {
+                pill.attention = false
+                pill.status = ""
+                hide()
+            } else {
+                pill.attention = true
+                pill.level = 0
+                pill.status = (message["detail"] as? String) ?? name
+                resizeForStatus()
+                show()
+            }
         case "system_palette":
             guard let sessionID = uint64(message["session_id"]),
                   let transcript = message["transcript"] as? String,

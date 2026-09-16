@@ -1,6 +1,7 @@
 mod bench;
 mod daemon;
 mod eval;
+mod health;
 mod llm_polish;
 mod logging;
 mod settings;
@@ -273,8 +274,15 @@ fn config(args: &[String]) -> Result<(), Box<dyn Error>> {
 fn check(args: &[String]) -> Result<(), Box<dyn Error>> {
     let loaded = load_settings(args)?;
     let shortcut = Shortcut::parse(&loaded.shortcut)?;
-    drop(HotkeyListener::open(&shortcut)?);
-    println!("global hotkey grab: ok ({})", loaded.shortcut);
+    let listener = HotkeyListener::open(&shortcut)?;
+    // Creating the tap is not enough on macOS: a stale or missing Input
+    // Monitoring grant leaves it silently inert. Prove delivery end to end.
+    listener.verify_delivery(Duration::from_secs(2))?;
+    drop(listener);
+    println!(
+        "global hotkey grab: ok ({}); event delivery verified",
+        loaded.shortcut
+    );
     let ui = UiAdapter::open()?;
     println!("UI/insertion connection: ok");
     match ui.window_class(ui.focused_window()) {
@@ -310,6 +318,7 @@ fn selftest() -> Result<(), Box<dyn Error>> {
     ui.selftest_window_class()?;
     println!("focused window-class lookup self-test: passed");
     let listener = HotkeyListener::open(&Shortcut::default())?;
+    listener.verify_delivery(Duration::from_secs(2))?;
     listener.selftest_push_to_talk()?;
     println!("push-to-talk self-test (modifier released first): passed");
     Ok(())
@@ -319,6 +328,7 @@ fn selftest_hotkey(args: &[String]) -> Result<(), Box<dyn Error>> {
     let loaded = load_settings(args)?;
     let shortcut = Shortcut::parse(&loaded.shortcut)?;
     let listener = HotkeyListener::open(&shortcut)?;
+    listener.verify_delivery(Duration::from_secs(2))?;
     listener.selftest_push_to_talk()?;
     println!(
         "push-to-talk hotkey self-test: passed ({})",

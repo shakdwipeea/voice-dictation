@@ -15,6 +15,7 @@ use sunoto_audio::{AudioEvent, CaptureConfig, start_capture};
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState};
 use sunoto_desktop::{
     BubbleKind, HotkeyEvent, HotkeyListener, InsertionOutcome, Shortcut, UiAdapter, X11Error,
+    hotkey_block_reason,
 };
 use sunoto_ipc::{
     OverlayRequest, OverlaySuggestion, SidecarClient, SidecarEvent, SidecarMessage, SidecarRequest,
@@ -25,6 +26,7 @@ use sunoto_system::{
     SystemIntent, TargetHint, ValidatedHttpUrl, route_deterministically,
 };
 
+use crate::health::{DaemonHealth, HealthInputs, HealthMonitor};
 use crate::llm_polish;
 use crate::logging;
 use crate::settings::{self, Settings, sanitize_for_insertion};
@@ -777,11 +779,42 @@ struct UiFront {
     bubble: Sender<UiCommand>,
     overlay: Option<OverlayHandle>,
     overlay_ready: bool,
+    /// Non-ready daemon health currently shown as the idle pill. While set,
+    /// `hide()` returns to this state instead of clearing the screen, so a
+    /// transient error bubble never erases "hotkey blocked".
+    attention: Option<DaemonHealth>,
 }
 
 impl UiFront {
     fn overlay_active(&self) -> bool {
         self.overlay.is_some() && self.overlay_ready
+    }
+
+    /// Publish daemon health. `Ready` clears the idle pill; anything else
+    /// shows it with a neutral dot and the health caption.
+    fn health(&mut self, health: DaemonHealth) {
+        self.attention = if health.is_ready() {
+            None
+        } else {
+            Some(health)
+        };
+        self.send_state(health);
+    }
+
+    fn send_state(&self, health: DaemonHealth) {
+        if self.overlay_active() {
+            self.overlay_send(OverlayRequest::State {
+                name: health.name().to_string(),
+                detail: health.caption().to_string(),
+            });
+        } else if health.is_ready() {
+            let _ = self.bubble.send(UiCommand::HideBubble);
+        } else {
+            let _ = self.bubble.send(UiCommand::ShowBubble(
+                BubbleKind::Transcribing,
+                health.caption().to_string(),
+            ));
+        }
     }
 
     fn overlay_send(&self, request: OverlayRequest) {
@@ -845,6 +878,10 @@ impl UiFront {
     }
 
     fn hide(&self) {
+        if let Some(health) = self.attention {
+            self.send_state(health);
+            return;
+        }
         self.overlay_send(OverlayRequest::Hide);
         let _ = self.bubble.send(UiCommand::HideBubble);
     }
@@ -973,6 +1010,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         bubble: ui_tx.clone(),
         overlay: None,
         overlay_ready: false,
+        attention: None,
     };
     let mut overlay_ever_ready = false;
     let mut overlay_respawn_at: Option<Instant> = None;
@@ -1018,12 +1056,46 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut respawn_at: Option<Instant> = None;
     let mut respawn_backoff = SIDECAR_BACKOFF_START;
     let mut llm_post_asr_warmed = llm_polish.is_none();
+    let mut health = HealthMonitor::default();
+    let mut blocked_modes: Vec<SessionMode> = Vec::new();
+    let mut mic_available = true;
     let mut active_system_resolution: Option<u64> = None;
     let mut pending_system: Option<PendingSystemSelection> = None;
     let mut exit_error: Option<String> = None;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         match events.recv_timeout(TICK) {
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                mode,
+                edge: HotkeyEvent::Blocked,
+            })) => {
+                if !blocked_modes.contains(&mode) {
+                    blocked_modes.push(mode);
+                }
+                logging::error(&format!(
+                    "{} shortcut is not receiving events: {}",
+                    mode_label(mode),
+                    hotkey_block_reason()
+                ));
+            }
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                mode,
+                edge: HotkeyEvent::Available,
+            })) => {
+                let was_blocked = blocked_modes.contains(&mode);
+                blocked_modes.retain(|blocked| *blocked != mode);
+                if was_blocked {
+                    logging::info(&format!(
+                        "{} shortcut delivery restored",
+                        mode_label(mode)
+                    ));
+                } else {
+                    logging::info(&format!(
+                        "{} shortcut verified: events reach the daemon",
+                        mode_label(mode)
+                    ));
+                }
+            }
             Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
                 mode,
                 edge: HotkeyEvent::Pressed,
@@ -1040,15 +1112,16 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     let session_id = pending.session_id();
                     ui.dismiss_system_palette(session_id);
                 }
-                if !sidecar_ready {
-                    logging::warn("push-to-talk ignored while ASR sidecar is loading");
-                    show_error(&ui, "ASR still loading...", &mut bubble_hide_at);
-                    continue;
-                }
-                if mode == SessionMode::Dictation && llm_polish.is_some() && !llm_post_asr_warmed {
-                    logging::warn("push-to-talk ignored while LLM polish is warming");
-                    show_error(&ui, "LLM polish still warming...", &mut bubble_hide_at);
-                    continue;
+                if !health.current().is_ready() {
+                    // Show the real blocker rather than dropping the press
+                    // silently. System mode never polishes, so a warming
+                    // LLM does not hold it back.
+                    let blocker = health.current();
+                    if blocker != DaemonHealth::WarmingPolish || mode == SessionMode::Dictation {
+                        logging::warn(&format!("push-to-talk ignored: {blocker}"));
+                        show_error(&ui, blocker.caption(), &mut bubble_hide_at);
+                        continue;
+                    }
                 }
                 if let SessionAction::Started { session_id, .. } = machine.press_mode(mode) {
                     if mode == SessionMode::System {
@@ -1228,9 +1301,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 logging::info(&format!(
                     "microphone capture started: {description} (PulseAudio source: {device})"
                 ));
+                mic_available = true;
             }
             Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) => {
                 logging::warn(&format!("microphone capture stopped: {reason}"));
+                mic_available = false;
                 if matches!(machine.state(), SessionState::Recording { .. }) {
                     logging::warn("microphone lost mid-dictation; the session keeps running");
                 }
@@ -1242,8 +1317,17 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     logging::info(&format!("ASR sidecar ready: {backend}"));
                     llm_post_asr_warmed = llm_polish.is_none();
                     if let Some(client) = llm_polish.as_mut() {
-                        logging::info("LLM polish still warming...");
-                        ui.show(BubbleKind::Transcribing, "LLM polish still warming...");
+                        // Publish "warming" before the blocking warm-up, or
+                        // the overlay would jump straight from loading to
+                        // ready without explaining the pause.
+                        if let Some(next) = health.refresh(health_inputs(
+                            sidecar_ready,
+                            llm_post_asr_warmed,
+                            &blocked_modes,
+                            mic_available,
+                        )) {
+                            publish_health(next, &mut ui, &settings);
+                        }
                         match client
                             .warmup(&llm_polish::WARMUP_TEXTS, settings.llm_polish_timeout_ms)
                         {
@@ -1253,7 +1337,6 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     "LLM polish post-ASR warmup complete: {}",
                                     format_llm_warmup_summary(&outcome)
                                 ));
-                                ui.hide();
                             }
                             Err(error) => {
                                 logging::warn(&format!(
@@ -1265,17 +1348,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             }
                         }
                     }
-                    if settings.system_mode_enabled {
-                        logging::info(&format!(
-                            "Sunoto ready. Hold {} to dictate or {} for System mode.",
-                            settings.shortcut, settings.system_shortcut
-                        ));
-                    } else {
-                        logging::info(&format!(
-                            "Sunoto ready for dictation. Hold {} to dictate.",
-                            settings.shortcut
-                        ));
-                    }
+                    // "Sunoto ready" is logged by publish_health on the
+                    // transition to Ready, never here: ASR alone is not
+                    // readiness.
                 }
                 SidecarEvent::SessionStarted { session_id } => {
                     logging::info(&format!("session {session_id}: sidecar accepted"));
@@ -1669,6 +1744,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 overlay_ever_ready = true;
                 overlay_backoff = SIDECAR_BACKOFF_START;
                 logging::info(&format!("overlay UI ready ({backend})"));
+                // The overlay usually comes up before ASR does; show the
+                // current state right away instead of a blank screen.
+                let current = health.current();
+                ui.health(current);
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SystemSelection {
                 session_id,
@@ -2114,6 +2193,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
 
         // Watchdogs and deferred work, evaluated on every loop pass.
+        if let Some(next) = health.refresh(health_inputs(
+            sidecar_ready,
+            llm_post_asr_warmed,
+            &blocked_modes,
+            mic_available,
+        )) {
+            publish_health(next, &mut ui, &settings);
+        }
         if let Some(deadline) = transcribe_deadline
             && Instant::now() >= deadline
         {
@@ -2201,6 +2288,47 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 fn show_error(ui: &UiFront, message: &str, bubble_hide_at: &mut Option<Instant>) {
     ui.show(BubbleKind::Error, message);
     *bubble_hide_at = Some(Instant::now() + ERROR_BUBBLE_VISIBLE);
+}
+
+fn health_inputs(
+    asr_ready: bool,
+    polish_warmed: bool,
+    blocked_modes: &[SessionMode],
+    mic_available: bool,
+) -> HealthInputs {
+    HealthInputs {
+        asr_ready,
+        polish_warmed,
+        hotkey_blocked: !blocked_modes.is_empty(),
+        mic_available,
+    }
+}
+
+/// Log a health transition and push it to the overlay. This is the only
+/// place that says "ready", so the log line means a key press will record.
+fn publish_health(health: DaemonHealth, ui: &mut UiFront, settings: &Settings) {
+    match health {
+        DaemonHealth::Ready => {
+            if settings.system_mode_enabled {
+                logging::info(&format!(
+                    "Sunoto ready. Hold {} to dictate or {} for System mode.",
+                    settings.shortcut, settings.system_shortcut
+                ));
+            } else {
+                logging::info(&format!(
+                    "Sunoto ready for dictation. Hold {} to dictate.",
+                    settings.shortcut
+                ));
+            }
+        }
+        DaemonHealth::HotkeyBlocked => {
+            logging::error(&format!("daemon state: {health}: {}", hotkey_block_reason()));
+        }
+        other => {
+            logging::info(&format!("daemon state: {other}: {}", other.caption()));
+        }
+    }
+    ui.health(health);
 }
 
 fn present_navigation_confirmation(

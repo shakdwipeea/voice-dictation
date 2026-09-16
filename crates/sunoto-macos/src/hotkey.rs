@@ -9,15 +9,41 @@
 //! permission. If `CGEventTapCreate` returns null the listener reports
 //! `DisplayUnavailable`; the daemon logs it and the user is guided to grant
 //! permission.
+//!
+//! # Delivery probe
+//!
+//! Creating a tap and even `CGEventTapIsEnabled` can both succeed while macOS
+//! delivers nothing to the callback (missing or stale Input Monitoring
+//! grant, launchd context without a responsible process). The only honest
+//! check is end to end: post a tagged, no-op `flagsChanged` event and see it
+//! arrive in the callback. The worker thread runs that probe right after the
+//! tap is armed and after every re-arm (the re-arm paths are exactly where
+//! "enabled" and "delivering" disagree). It is deliberately not periodic: a
+//! posted event counts as user input to macOS and would keep the display
+//! from sleeping. State transitions surface as [`HotkeyEvent::Blocked`] /
+//! [`HotkeyEvent::Available`] on the same channel as presses, so the daemon
+//! can report the truth without polling the platform crate.
 
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ffi;
 use crate::types::{HotkeyEvent, Shortcut, X11Error};
+
+/// How long the probe waits for its own event to come back through the tap.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How often the worker checks `CGEventTapIsEnabled` and re-arms if needed.
+const REARM_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+/// Value written into `kCGEventSourceUserData` on probe events. Anything the
+/// tap sees with this tag is ours and never reaches the shortcut matcher.
+const PROBE_TAG: i64 = 0x5355_4e4f_544f_5052; // "SUNOTOPR"
+
+const PROBE_UNKNOWN: u8 = 0;
+const PROBE_DELIVERED: u8 = 1;
+const PROBE_BLOCKED: u8 = 2;
 
 /// macOS virtual key codes for the keys we support as shortcut targets.
 fn keycode_for_name(name: &str) -> Option<u16> {
@@ -83,6 +109,11 @@ struct TapState {
     /// which otherwise leaves the tap inert forever. Cleared (set null) until
     /// the worker thread wires it up after `CGEventTapCreate` succeeds.
     tap: ffi::CGEventTapRef,
+    /// Set by the callback when a probe-tagged event arrives.
+    probe_seen: Arc<AtomicBool>,
+    /// Set by the callback after it re-enables a tap macOS switched off, so
+    /// the worker thread re-probes delivery.
+    rearmed: Arc<AtomicBool>,
 }
 
 unsafe extern "C" fn tap_callback(
@@ -101,12 +132,19 @@ unsafe extern "C" fn tap_callback(
         let state = unsafe { &*(user_info as *const TapState) };
         if !state.tap.is_null() {
             unsafe { ffi::CGEventTapEnable(state.tap, 1) };
+            state.rearmed.store(true, Ordering::SeqCst);
         }
         return event;
     }
     // SAFETY: user_info points at a TapState that lives for the tap's lifetime
     // (kept in TapHandle); the callback only reads/writes POD-ish fields.
     let state = unsafe { &mut *(user_info as *mut TapState) };
+    let user_data =
+        unsafe { ffi::CGEventGetIntegerValueField(event, ffi::kCGEventSourceUserData) } as i64;
+    if user_data == PROBE_TAG {
+        state.probe_seen.store(true, Ordering::SeqCst);
+        return event;
+    }
     let flags = unsafe { ffi::CGEventGetFlags(event) };
     let keycode =
         unsafe { ffi::CGEventGetIntegerValueField(event, ffi::kCGKeyboardEventKeycode) } as u16;
@@ -144,6 +182,55 @@ fn handle_key_event(state: &mut TapState, type_: ffi::CGEventType, keycode: u16,
     }
 }
 
+/// Post a no-op `flagsChanged` event tagged as a probe. The flags are copied
+/// from the current session state, so no application observes a modifier
+/// change; only our tap callback reacts, by recognising the tag.
+///
+/// # Safety
+/// Calls CoreGraphics with a freshly created event and releases it.
+unsafe fn post_probe_event() -> bool {
+    unsafe {
+        let event = ffi::CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return false;
+        }
+        ffi::CGEventSetType(event, ffi::kCGEventFlagsChanged);
+        ffi::CGEventSetFlags(
+            event,
+            ffi::CGEventSourceFlagsState(ffi::kCGEventSourceStateCombinedSessionState),
+        );
+        ffi::CGEventSetIntegerValueField(event, ffi::kCGEventSourceUserData, PROBE_TAG);
+        ffi::CGEventPost(ffi::kCGHIDEventTap, event);
+        ffi::CFRelease(event);
+    }
+    true
+}
+
+/// Human explanation for a failed probe, built from the two TCC preflights.
+/// Both can report "granted" while delivery is still blocked (stale grant
+/// bound to an old code signature), so the wording covers that case too.
+pub fn hotkey_block_reason() -> String {
+    let listen = unsafe { ffi::CGPreflightListenEventAccess() };
+    let post = unsafe { ffi::CGPreflightPostEventAccess() };
+    let exe = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "sunoto-daemon".to_string());
+    match (listen, post) {
+        (false, false) => format!(
+            "Input Monitoring and Accessibility are not granted to {exe}; grant both in System Settings > Privacy & Security"
+        ),
+        (false, true) => format!(
+            "Input Monitoring is not granted to {exe}; grant it in System Settings > Privacy & Security > Input Monitoring"
+        ),
+        (true, false) => format!(
+            "Accessibility is not granted to {exe}; grant it in System Settings > Privacy & Security > Accessibility"
+        ),
+        (true, true) => format!(
+            "macOS reports permissions granted but delivers no events to {exe}; remove and re-add it under Input Monitoring (a rebuilt binary keeps a stale grant), or launch it from a GUI context instead of launchd"
+        ),
+    }
+}
+
 struct TapHandle {
     tap: ffi::CGEventTapRef,
     source: ffi::CFRunLoopSourceRef,
@@ -163,12 +250,62 @@ struct RunLoopSlot(Mutex<Option<ffi::CFRunLoopRef>>);
 unsafe impl Send for RunLoopSlot {}
 unsafe impl Sync for RunLoopSlot {}
 
+/// Probe bookkeeping owned by the worker thread. Kept as a struct so the
+/// transition logic is testable without CoreGraphics.
+struct ProbeTracker {
+    seen: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
+    deadline: Option<Instant>,
+    tx: mpsc::Sender<HotkeyEvent>,
+}
+
+impl ProbeTracker {
+    /// Begin a probe unless one is already in flight. A re-arm storm (macOS
+    /// disabling the tap every second while permission is missing) must not
+    /// keep pushing the deadline out, or the verdict would never land.
+    fn start(&mut self, now: Instant) -> bool {
+        if self.deadline.is_some() {
+            return false;
+        }
+        self.seen.store(false, Ordering::SeqCst);
+        self.deadline = Some(now + PROBE_TIMEOUT);
+        true
+    }
+
+    fn in_flight(&self) -> bool {
+        self.deadline.is_some()
+    }
+
+    /// Evaluate the in-flight probe. Returns the transition to publish, if any.
+    fn evaluate(&mut self, now: Instant) -> Option<HotkeyEvent> {
+        let deadline = self.deadline?;
+        let seen = self.seen.load(Ordering::SeqCst);
+        if !seen && now < deadline {
+            return None;
+        }
+        self.deadline = None;
+        let new_state = if seen { PROBE_DELIVERED } else { PROBE_BLOCKED };
+        let old_state = self.state.swap(new_state, Ordering::SeqCst);
+        if old_state == new_state {
+            return None;
+        }
+        let event = if seen {
+            HotkeyEvent::Available
+        } else {
+            HotkeyEvent::Blocked
+        };
+        let _ = self.tx.send(event);
+        Some(event)
+    }
+}
+
 pub struct HotkeyListener {
     rx: Receiver<HotkeyEvent>,
     #[allow(dead_code)]
     tap: Arc<TapHandle>,
     key_code: u16,
     modifier_mask: u64,
+    probe_state: Arc<AtomicU8>,
 }
 
 impl HotkeyListener {
@@ -182,12 +319,18 @@ impl HotkeyListener {
             .ok_or_else(|| X11Error::HotkeyUnavailable(shortcut.key_name.clone()))?;
 
         let (tx, rx) = mpsc::channel::<HotkeyEvent>();
+        let probe_seen = Arc::new(AtomicBool::new(false));
+        let probe_state = Arc::new(AtomicU8::new(PROBE_UNKNOWN));
+        let rearmed = Arc::new(AtomicBool::new(false));
+        let rearmed_for_thread = Arc::clone(&rearmed);
         let state = Box::new(TapState {
             key_code,
             modifier_mask: shortcut.modifier_mask,
             key_down: false,
-            tx,
+            tx: tx.clone(),
             tap: std::ptr::null_mut(),
+            probe_seen: Arc::clone(&probe_seen),
+            rearmed,
         });
         let state_ptr = Box::into_raw(state);
 
@@ -197,6 +340,12 @@ impl HotkeyListener {
         let stop_clone = Arc::clone(&stop);
         let state_as_usize = state_ptr as usize;
         let (ready_tx, ready_rx) = mpsc::channel::<Option<(usize, usize)>>();
+        let mut probe = ProbeTracker {
+            seen: probe_seen,
+            state: Arc::clone(&probe_state),
+            deadline: None,
+            tx,
+        };
 
         let thread = std::thread::spawn(move || {
             // SAFETY: create, source, add, enable, and run the tap on this
@@ -235,26 +384,48 @@ impl HotkeyListener {
                 ffi::CFRunLoopAddSource(rl, source_for_thread, mode);
                 ffi::CGEventTapEnable(tap_for_thread, 1);
                 let _ = ready_tx.send(Some((tap_for_thread as usize, source_for_thread as usize)));
-                let mut ticks_since_check: u32 = 0;
+                // First probe right away: the daemon learns within a second
+                // whether the tap is real or decorative.
+                probe.start(Instant::now());
+                if !post_probe_event() {
+                    eprintln!("[hotkey-diag] could not create the probe event");
+                }
+                let mut last_rearm_check = Instant::now();
                 let mut diag_logged_enabled: bool = false;
                 while !stop_clone.load(Ordering::SeqCst) {
-                    ffi::CFRunLoopRunInMode(mode, 0.25, 1);
+                    // Short slices while a probe is in flight so its verdict
+                    // lands promptly; the usual 250 ms otherwise.
+                    let slice = if probe.in_flight() { 0.05 } else { 0.25 };
+                    ffi::CFRunLoopRunInMode(mode, slice, 1);
+                    let now = Instant::now();
+                    if let Some(transition) = probe.evaluate(now) {
+                        eprintln!("[hotkey-diag] delivery probe: {transition:?}");
+                    }
+                    // The callback re-armed the tap after a timeout; make
+                    // sure the re-armed tap actually delivers.
+                    if rearmed_for_thread.swap(false, Ordering::SeqCst) && probe.start(now) {
+                        post_probe_event();
+                    }
                     // Periodically re-arm the tap. macOS can disable it
                     // after screen lock/sleep *without* delivering a
                     // kCGSessionEventTapTimeout callback, leaving the tap
-                    // silently inert. Checking ~4x/s keeps the hotkey alive
-                    // across locks without spamming the API.
-                    ticks_since_check = ticks_since_check.wrapping_add(1);
-                    if ticks_since_check >= 4 {
-                        ticks_since_check = 0;
+                    // silently inert. Checking once a second keeps the
+                    // hotkey alive across locks without spamming the API.
+                    if now.duration_since(last_rearm_check) >= REARM_CHECK_INTERVAL {
+                        last_rearm_check = now;
                         let enabled = ffi::CGEventTapIsEnabled(tap_for_thread);
                         if !diag_logged_enabled {
                             eprintln!("[hotkey-diag] tap is_enabled={} (created ok)", enabled);
                             diag_logged_enabled = true;
                         }
                         if enabled == 0 {
-                            eprintln!("[hotkey-diag] tap disabled by system; re-arming");
                             ffi::CGEventTapEnable(tap_for_thread, 1);
+                            // A re-armed tap is exactly the case where
+                            // "enabled" and "delivering" can disagree.
+                            if probe.start(now) {
+                                eprintln!("[hotkey-diag] tap disabled by system; re-armed, probing");
+                                post_probe_event();
+                            }
                         }
                     }
                 }
@@ -289,6 +460,7 @@ impl HotkeyListener {
             tap,
             key_code,
             modifier_mask: shortcut.modifier_mask,
+            probe_state,
         })
     }
 
@@ -313,6 +485,25 @@ impl HotkeyListener {
         None
     }
 
+    /// Wait for the first delivery-probe verdict. `Ok` means a synthetic
+    /// event posted by this process came back through the tap, so real key
+    /// presses will too. Used by `check` and `selftest`, which must not
+    /// report a dead tap as healthy.
+    pub fn verify_delivery(&self, timeout: Duration) -> Result<(), X11Error> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.probe_state.load(Ordering::SeqCst) {
+                PROBE_DELIVERED => return Ok(()),
+                PROBE_BLOCKED => return Err(X11Error::HotkeyBlocked(hotkey_block_reason())),
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(X11Error::HotkeyBlocked(hotkey_block_reason()));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     pub fn selftest_push_to_talk(&self) -> Result<(), X11Error> {
         let received = self.exercise_matcher_sequence();
         if received != [HotkeyEvent::Pressed, HotkeyEvent::Released] {
@@ -329,6 +520,8 @@ impl HotkeyListener {
             key_down: false,
             tx,
             tap: std::ptr::null_mut(),
+            probe_seen: Arc::new(AtomicBool::new(false)),
+            rearmed: Arc::new(AtomicBool::new(false)),
         };
         // Exercise the same regression case as the Linux self-test: the
         // target key is released after the modifier state clears.
@@ -375,6 +568,17 @@ mod tests {
     use super::*;
     use crate::types::Shortcut;
 
+    fn tracker() -> (ProbeTracker, Receiver<HotkeyEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let tracker = ProbeTracker {
+            seen: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(AtomicU8::new(PROBE_UNKNOWN)),
+            deadline: None,
+            tx,
+        };
+        (tracker, rx)
+    }
+
     #[test]
     fn maps_configured_hotkey_targets() {
         assert_eq!(keycode_for_name("F1"), Some(0x7a));
@@ -402,6 +606,8 @@ mod tests {
             key_down: false,
             tx,
             tap: std::ptr::null_mut(),
+            probe_seen: Arc::new(AtomicBool::new(false)),
+            rearmed: Arc::new(AtomicBool::new(false)),
         };
 
         handle_key_event(
@@ -419,5 +625,66 @@ mod tests {
 
         let received: Vec<_> = rx.try_iter().collect();
         assert_eq!(received, [HotkeyEvent::Pressed, HotkeyEvent::Released]);
+    }
+
+    #[test]
+    fn probe_reports_available_as_soon_as_the_event_is_seen() {
+        let (mut probe, rx) = tracker();
+        let t0 = Instant::now();
+        assert!(probe.start(t0));
+        assert!(probe.in_flight());
+        assert_eq!(probe.evaluate(t0 + Duration::from_millis(10)), None);
+        probe.seen.store(true, Ordering::SeqCst);
+        assert_eq!(
+            probe.evaluate(t0 + Duration::from_millis(20)),
+            Some(HotkeyEvent::Available)
+        );
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Available));
+        assert!(!probe.in_flight());
+    }
+
+    #[test]
+    fn a_rearm_storm_cannot_postpone_the_verdict() {
+        let (mut probe, rx) = tracker();
+        let t0 = Instant::now();
+        assert!(probe.start(t0));
+        // Re-arms every 200 ms while the probe is in flight are ignored.
+        for step in 1..=4 {
+            assert!(!probe.start(t0 + Duration::from_millis(200 * step)));
+        }
+        assert_eq!(
+            probe.evaluate(t0 + PROBE_TIMEOUT),
+            Some(HotkeyEvent::Blocked)
+        );
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Blocked));
+        // Once settled, the next re-arm may probe again.
+        assert!(probe.start(t0 + PROBE_TIMEOUT + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn probe_reports_blocked_after_the_deadline_and_only_on_transitions() {
+        let (mut probe, rx) = tracker();
+        let t0 = Instant::now();
+        assert!(probe.start(t0));
+        assert_eq!(probe.evaluate(t0 + PROBE_TIMEOUT / 2), None);
+        assert_eq!(
+            probe.evaluate(t0 + PROBE_TIMEOUT),
+            Some(HotkeyEvent::Blocked)
+        );
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Blocked));
+        // A second blocked verdict is silent.
+        let t1 = t0 + Duration::from_secs(10);
+        assert!(probe.start(t1));
+        assert_eq!(probe.evaluate(t1 + PROBE_TIMEOUT), None);
+        assert!(rx.try_recv().is_err());
+        // Recovery is announced once.
+        let t2 = t0 + Duration::from_secs(20);
+        assert!(probe.start(t2));
+        probe.seen.store(true, Ordering::SeqCst);
+        assert_eq!(
+            probe.evaluate(t2 + Duration::from_millis(5)),
+            Some(HotkeyEvent::Available)
+        );
+        assert_eq!(probe.state.load(Ordering::SeqCst), PROBE_DELIVERED);
     }
 }

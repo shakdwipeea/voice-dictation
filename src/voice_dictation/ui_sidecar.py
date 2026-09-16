@@ -7,6 +7,7 @@ sidecar) and streams newline-delimited JSON ops on stdin, using the same
     {"type": "show"} / {"type": "hide"}
     {"type": "recording", "elapsed_s": 1.2, "peak": 0.4, "rms": 0.05, "segments": 2}
     {"type": "status", "text": "transcribing"}
+    {"type": "state", "name": "loading_asr", "detail": "loading speech model"}
     {"type": "segment", "text": "..."} / {"type": "clear"}
     {"type": "system_palette", "session_id": 1, ...}
     {"type": "dismiss_system_palette", "session_id": 1}
@@ -51,6 +52,8 @@ def dispatch(overlay, msg: dict) -> bool:
             )
         elif op == "status":
             overlay.set_status(str(msg.get("text", "")))
+        elif op == "state":
+            overlay.set_state(str(msg.get("name", "")), str(msg.get("detail", "")))
         elif op == "segment":
             overlay.add_segment(str(msg.get("text", "")))
         elif op == "clear":
