@@ -41,6 +41,9 @@ Commands:
   status [--json]           show the running daemon's health
   setup [OPTIONS]           macOS: build Sunoto.app, register it at login, start it,
                             and wait until it reports ready (see setup --help)
+  restart                   macOS: quit and reopen the installed Sunoto.app
+  log                       macOS: follow ~/Library/Logs/sunoto/daemon.log
+  uninstall [--purge]       macOS: remove Sunoto.app and its Login Item
   bench [OPTIONS]           measure release-to-insertion latency percentiles
   eval [OPTIONS]            measure the pipeline's zero-edit rate on a corpus
   config show               print the effective settings as JSON
@@ -174,6 +177,9 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
         "run" => daemon::run(load_settings(rest)?),
         "status" => setup::print_status(rest.iter().any(|arg| arg == "--json")),
         "setup" => setup::run(rest),
+        "restart" => setup::restart(),
+        "log" => setup::follow_log(),
+        "uninstall" => setup::uninstall(rest),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
         "eval" => eval::run(parse_eval_args(rest)),
         "config" => config(rest),

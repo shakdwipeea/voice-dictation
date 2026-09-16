@@ -116,6 +116,17 @@ formula and cask share the bundle layout, so stage 2 is a signing step and a
 cask file, not a rewrite. Needs the owner's decision on an Apple Developer
 account.
 
+**Status: stage 1 implemented on branch `macos-red-flags` (M6), tap not yet
+created.** `packaging/homebrew/sunoto.rb` (head-only formula, passes `brew
+style`) installs the daemon, overlay, both Python runtimes, and a `sunoto`
+wrapper under libexec; `sunoto setup` downloads the Phi-4-mini GGUF from
+Hugging Face with size and SHA-256 verification into Application Support and
+points the config at it, or switches LLM polish off if declined. `restart`,
+`log`, and `uninstall [--purge]` exist. The daemon no longer spawns the
+polish sidecar when the model file is absent. Creating the
+`homebrew-sunoto` repository and the first `brew install --HEAD` run are the
+owner's steps (see `packaging/homebrew/README.md`).
+
 ### 2.4 Permissions made easy
 
 **Root cause.** Two files need grants (the bash login item and the bare

@@ -259,7 +259,19 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     }
 
     let mut sidecar = Some(spawn_sidecar(&settings, events_tx.clone())?);
-    let mut llm_polish = if settings.llm_polish_enabled {
+    let llm_model_present = settings
+        .llm_polish_model_file()
+        .is_some_and(|path| path.is_file());
+    let mut llm_polish = if settings.llm_polish_enabled && !llm_model_present {
+        logging::warn(&format!(
+            "LLM polish disabled: model file not found ({}); run `sunoto-daemon setup --with-llm` to download it, or set llm_polish_enabled to false",
+            settings
+                .llm_polish_model_file()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "no path resolved".to_string())
+        ));
+        None
+    } else if settings.llm_polish_enabled {
         match llm_polish::LlmPolishClient::spawn(&settings) {
             Ok(client) => Some(client),
             Err(error) => {

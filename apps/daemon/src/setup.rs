@@ -30,16 +30,35 @@ const LEGACY_LAUNCHD_LABEL: &str = "com.earendil-works.sunoto";
 /// launch where the repository (sidecar scripts, venvs, models) lives.
 pub const ROOT_MARKER: &str = "sunoto-root";
 
-const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--timeout-secs N]
+const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--with-llm|--without-llm] [--timeout-secs N]
 
   --dry-run          assemble target/release/Sunoto.app only; install nothing
   --no-login-item    install and start the app without registering it at login
-  --timeout-secs N   how long to wait for the daemon to report ready (default 240)
+  --with-llm         download the LLM polish model (about 2.7 GB) without asking
+  --without-llm      skip the LLM polish model; dictation uses deterministic polish only
+  --timeout-secs N   how long to wait for the daemon to report ready (default 600;
+                     the first start also downloads the 600 MB speech model)
 ";
+
+/// Where the LLM polish model is fetched from. The file is the same one the
+/// benchmarks ran against: its size and SHA-256 are pinned below.
+const LLM_MODEL_URL: &str = "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf";
+const LLM_MODEL_SHA256: &str = "840ad85cff01e41701e2b2a3826016916f8e51242c8f25d62e59fa7eb93acbc5";
+const LLM_MODEL_BYTES: u64 = 2_848_128_384;
+const LLM_MODEL_RELATIVE: &str =
+    "models/llm-polish-hf/phi-4-mini-q5/microsoft_Phi-4-mini-instruct-Q5_K_M.gguf";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LlmChoice {
+    Ask,
+    Download,
+    Skip,
+}
 
 struct Args {
     dry_run: bool,
     login_item: bool,
+    llm: LlmChoice,
     timeout: Duration,
 }
 
@@ -47,13 +66,16 @@ fn parse_args(args: &[String]) -> Result<Args, Box<dyn Error>> {
     let mut parsed = Args {
         dry_run: false,
         login_item: true,
-        timeout: Duration::from_secs(240),
+        llm: LlmChoice::Ask,
+        timeout: Duration::from_secs(600),
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--dry-run" => parsed.dry_run = true,
             "--no-login-item" => parsed.login_item = false,
+            "--with-llm" => parsed.llm = LlmChoice::Download,
+            "--without-llm" => parsed.llm = LlmChoice::Skip,
             "--timeout-secs" => {
                 let value = iter.next().ok_or("--timeout-secs needs a value")?;
                 parsed.timeout = Duration::from_secs(value.parse()?);
@@ -109,6 +131,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         ok(&format!("config:  created {}", config_path.display()));
     }
     preflight_asr_runtime(&root, &loaded)?;
+    let loaded = ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?;
+    let _ = loaded;
 
     section("bundle");
     assemble_bundle(&staging, &daemon, &overlay, &root)?;
@@ -170,6 +194,213 @@ fn preflight_asr_runtime(root: &Path, settings: &Settings) -> Result<(), Box<dyn
         .into());
     }
     ok("ASR runtime imports: mlx + parakeet_mlx");
+    Ok(())
+}
+
+/// Make sure the polish model exists, downloading it on request. Returns
+/// the settings as they are on disk afterwards.
+fn ensure_llm_model(
+    mut settings: Settings,
+    config_path: &Path,
+    choice: LlmChoice,
+    dry_run: bool,
+) -> Result<Settings, Box<dyn Error>> {
+    section("polish model");
+    if !settings.llm_polish_enabled && choice != LlmChoice::Download {
+        note("LLM polish is off in the config; deterministic polish only");
+        return Ok(settings);
+    }
+    if let Some(existing) = settings.llm_polish_model_file().filter(|p| p.is_file()) {
+        ok(&format!("model present: {}", existing.display()));
+        return Ok(settings);
+    }
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
+    let destination = home
+        .join("Library/Application Support/sunoto")
+        .join(LLM_MODEL_RELATIVE);
+    let decision = match choice {
+        LlmChoice::Download => true,
+        LlmChoice::Skip => false,
+        LlmChoice::Ask => {
+            if dry_run {
+                note("would ask whether to download the 2.7 GB polish model (dry run: skipping)");
+                return Ok(settings);
+            }
+            ask_yes_no(&format!(
+                "Download the LLM polish model (2.7 GB, one time) to {}? It merges mid-sentence self-corrections; without it dictation still works with deterministic cleanup. [y/N] ",
+                destination.display()
+            ))
+        }
+    };
+    if !decision {
+        if settings.llm_polish_enabled {
+            settings.llm_polish_enabled = false;
+            if !dry_run {
+                settings.save(config_path)?;
+            }
+            note("LLM polish switched off in the config; run `setup --with-llm` later to add it");
+        }
+        return Ok(settings);
+    }
+    if dry_run {
+        note(&format!(
+            "would download {LLM_MODEL_URL} to {}",
+            destination.display()
+        ));
+        return Ok(settings);
+    }
+    download_verified(
+        LLM_MODEL_URL,
+        &destination,
+        LLM_MODEL_SHA256,
+        LLM_MODEL_BYTES,
+    )?;
+    settings.llm_polish_model_path = Some(destination.to_string_lossy().into_owned());
+    settings.llm_polish_enabled = true;
+    settings.save(config_path)?;
+    ok(&format!("model ready: {}", destination.display()));
+    Ok(settings)
+}
+
+fn ask_yes_no(prompt: &str) -> bool {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        note("not a terminal; skipping the download (pass --with-llm to force it)");
+        return false;
+    }
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// `curl` with a progress bar into a `.part` file, then verify the SHA-256
+/// and size before moving it into place. A verified file is never replaced.
+fn download_verified(
+    url: &str,
+    destination: &Path,
+    sha256: &str,
+    expected_bytes: u64,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let partial = destination.with_extension("gguf.part");
+    note(&format!("downloading {url}"));
+    let status = Command::new("curl")
+        .args(["-L", "--fail", "--progress-bar", "-C", "-", "-o"])
+        .arg(&partial)
+        .arg(url)
+        .status()?;
+    if !status.success() {
+        return Err(format!("download failed ({status}); rerun setup to resume").into());
+    }
+    let size = fs::metadata(&partial)?.len();
+    if size != expected_bytes {
+        let _ = fs::remove_file(&partial);
+        return Err(format!(
+            "downloaded {size} bytes, expected {expected_bytes}; the file was discarded"
+        )
+        .into());
+    }
+    note("verifying checksum...");
+    let output = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(&partial)
+        .output()?;
+    let digest = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if digest != sha256 {
+        let _ = fs::remove_file(&partial);
+        return Err(
+            format!("checksum mismatch ({digest} != {sha256}); the file was discarded").into(),
+        );
+    }
+    fs::rename(&partial, destination)?;
+    Ok(())
+}
+
+/// `sunoto-daemon restart`: quit the installed app and open it again.
+pub fn restart() -> Result<(), Box<dyn Error>> {
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
+    let installed = home.join("Applications").join(format!("{APP_NAME}.app"));
+    if !installed.exists() {
+        return Err(format!(
+            "{} is not installed; run `sunoto-daemon setup` first",
+            installed.display()
+        )
+        .into());
+    }
+    stop_running_daemons();
+    Command::new("open").arg(&installed).status()?;
+    ok(&format!(
+        "restarted {APP_NAME}; `sunoto-daemon status` shows its health"
+    ));
+    Ok(())
+}
+
+/// `sunoto-daemon log`: follow the daemon log.
+pub fn follow_log() -> Result<(), Box<dyn Error>> {
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
+    let log_path = home.join("Library/Logs/sunoto/daemon.log");
+    let status = Command::new("tail")
+        .args(["-n", "80", "-f"])
+        .arg(&log_path)
+        .status()?;
+    if !status.success() {
+        return Err(format!("cannot follow {}", log_path.display()).into());
+    }
+    Ok(())
+}
+
+/// `sunoto-daemon uninstall`: stop the app, drop the Login Item, remove the
+/// bundle. Config, logs, and downloaded models stay unless `--purge`.
+pub fn uninstall(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let purge = args.iter().any(|arg| arg == "--purge");
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
+    let installed = home.join("Applications").join(format!("{APP_NAME}.app"));
+    section("uninstall");
+    stop_running_daemons();
+    remove_legacy_login_item(&home);
+    let script = format!(
+        r#"tell application "System Events"
+    try
+        delete every login item whose name is "{APP_NAME}"
+    end try
+end tell"#
+    );
+    let _ = Command::new("osascript")
+        .args(["-e", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if installed.exists() {
+        fs::remove_dir_all(&installed)?;
+        ok(&format!("removed {}", installed.display()));
+    } else {
+        note(&format!("{} was not installed", installed.display()));
+    }
+    ok("Login Item removed");
+    if purge {
+        for path in [
+            home.join("Library/Application Support/sunoto"),
+            home.join("Library/Logs/sunoto"),
+        ] {
+            if path.exists() {
+                fs::remove_dir_all(&path)?;
+                ok(&format!("removed {}", path.display()));
+            }
+        }
+    } else {
+        note("config, logs, and downloaded models kept (use --purge to remove them)");
+    }
+    note("Privacy & Security still lists Sunoto; remove the entries there if you like.");
     Ok(())
 }
 
@@ -513,6 +744,16 @@ mod tests {
         assert_eq!(args.timeout, Duration::from_secs(9));
         let args = parse_args(&["--no-login-item".into()]).unwrap();
         assert!(!args.login_item);
+        assert_eq!(args.llm, LlmChoice::Ask);
+        assert_eq!(args.timeout, Duration::from_secs(600));
+        assert_eq!(
+            parse_args(&["--with-llm".into()]).unwrap().llm,
+            LlmChoice::Download
+        );
+        assert_eq!(
+            parse_args(&["--without-llm".into()]).unwrap().llm,
+            LlmChoice::Skip
+        );
         assert!(parse_args(&["--bogus".into()]).is_err());
         assert!(parse_args(&["--timeout-secs".into()]).is_err());
     }

@@ -11,7 +11,19 @@ and release—the transcript is inserted into the focused application.
 
 ## macOS
 
-### Install and run
+### Install with Homebrew
+
+```bash
+brew tap shakdwipeea/sunoto
+brew install --HEAD sunoto
+sunoto setup
+```
+
+`sunoto setup` builds `Sunoto.app`, registers it as a Login Item, starts it,
+offers to download the 2.7 GB polish model, and waits until the app reports
+ready. The tap is documented in [packaging/homebrew](packaging/homebrew/README.md).
+
+### Install from a checkout
 
 From the repository root:
 
@@ -123,7 +135,10 @@ hotkey until the log says `ASR sidecar ready` or `Sunoto ready for dictation`.
 | Command | Purpose |
 | --- | --- |
 | `target/release/sunoto-daemon config show` | Show the active configuration. |
-| `target/release/sunoto-daemon check` | Check platform integration and sidecar startup. |
+| `target/release/sunoto-daemon check` | Check platform integration, hotkey delivery, and sidecar startup. |
+| `sunoto status` / `sunoto-daemon status` | Ask the running daemon for its health (hotkey, mic, model, polish). |
+| `sunoto restart`, `sunoto log`, `sunoto uninstall` | macOS lifecycle: reopen the app, follow the log, remove it. |
+| `sunoto setup --with-llm` | Download the polish model later if you skipped it. |
 | `make test` | Run Rust and Python tests. |
 | `bash scripts/macos-port/verify-all.sh` | Run the complete macOS verification gate. |
 | `bash bin/gpu-status.sh` | Read Linux NVIDIA GPU and Xid health safely. |

@@ -321,6 +321,20 @@ impl Settings {
         ]
     }
 
+    /// The GGUF the polish sidecar will load: the explicit path if set,
+    /// otherwise the named profile under the repository root.
+    pub fn llm_polish_model_file(&self) -> Option<PathBuf> {
+        self.llm_polish_model_path
+            .as_ref()
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+            .map(|path| PathBuf::from(expand_home(&path)))
+            .or_else(|| {
+                llm_polish_model_relative(&self.llm_polish_model)
+                    .map(|relative| repo_root().join(relative))
+            })
+    }
+
     pub fn llm_polish_command(&self) -> (String, Vec<String>, Vec<(String, String)>) {
         let root = repo_root();
         let python = self.llm_polish_python.clone().unwrap_or_else(|| {
@@ -343,14 +357,8 @@ impl Settings {
         // a repo-relative GGUF so the sidecar never silently falls back to its
         // bundled (Gemma) default when a daemon/bench asks for Phi.
         let resolved_model_path = self
-            .llm_polish_model_path
-            .as_ref()
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty())
-            .or_else(|| {
-                llm_polish_model_relative(&self.llm_polish_model)
-                    .map(|relative| root.join(relative).to_string_lossy().into_owned())
-            });
+            .llm_polish_model_file()
+            .map(|path| path.to_string_lossy().into_owned());
         if let Some(model_path) = resolved_model_path {
             envs.push(("SUNOTO_LLM_POLISH_MODEL_PATH".to_string(), model_path));
         }
@@ -607,6 +615,16 @@ fn merge_ld_preload(path: &str) -> String {
         Ok(existing) if !existing.is_empty() => existing,
         _ => path.to_string(),
     }
+}
+
+/// Expand a leading `~/` so a config written by `setup` stays readable.
+pub fn expand_home(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{home}/{rest}");
+    }
+    path.to_string()
 }
 
 pub fn config_path() -> PathBuf {
