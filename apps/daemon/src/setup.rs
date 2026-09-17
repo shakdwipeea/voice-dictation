@@ -674,6 +674,33 @@ fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Modification times of the two permission databases. Their contents are
+/// off limits, but their metadata is readable, and every toggle in Privacy
+/// & Security rewrites one of them. A running process cannot see its own
+/// new grant, so this is how the daemon learns that the user just flipped
+/// a switch and that a relaunch will now succeed.
+pub fn permission_db_stamp() -> Option<Vec<u128>> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    let paths = [
+        PathBuf::from("/Library/Application Support/com.apple.TCC/TCC.db"),
+        PathBuf::from(home).join("Library/Application Support/com.apple.TCC/TCC.db"),
+    ];
+    let stamps: Vec<u128> = paths
+        .iter()
+        .filter_map(|path| fs::metadata(path).ok())
+        .filter_map(|meta| meta.modified().ok())
+        .filter_map(|time| {
+            time.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_nanos())
+        })
+        .collect();
+    (!stamps.is_empty()).then_some(stamps)
+}
+
 /// Arrange for this app to be reopened after it exits. Returns false when
 /// not running from a bundle (a terminal-launched daemon stays put). The
 /// helper shell waits for the daemon to be gone first: Launch Services

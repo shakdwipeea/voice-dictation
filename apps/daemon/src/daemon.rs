@@ -199,6 +199,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // the app relaunches itself instead of waiting for the installer.
     let mut last_preflight_check = Instant::now();
     let mut grants_seen_at: Option<Instant> = None;
+    let mut permission_db_stamp = crate::setup::permission_db_stamp();
+    let mut relaunch_due: Option<Instant> = None;
     let mut capture_idle = false;
     let mut capture_requested_at: Option<Instant> = None;
     let mut keepalive_active = false;
@@ -1425,22 +1427,39 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         // Watchdogs and deferred work, evaluated on every loop pass.
         if !blocked_modes.is_empty() && last_preflight_check.elapsed() >= Duration::from_secs(1) {
             last_preflight_check = Instant::now();
+            // Signal 1: the permission database changed, so the user just
+            // flipped a switch. Wait a moment for a second flip, then
+            // relaunch; a stale process cannot use the grant otherwise.
+            let stamp = crate::setup::permission_db_stamp();
+            if stamp.is_some() && stamp != permission_db_stamp {
+                permission_db_stamp = stamp;
+                logging::info("privacy settings changed; relaunching shortly to apply them");
+                relaunch_due = Some(Instant::now() + Duration::from_millis(1500));
+            }
+            // Signal 2: the preflights themselves report granted while
+            // delivery is still blocked (seen when the grant existed before
+            // this process started).
             let (listen, accessibility) = permission_preflights();
             if listen && accessibility {
                 let seen = *grants_seen_at.get_or_insert_with(Instant::now);
-                // Two seconds of both grants present with delivery still
-                // blocked: the process is stale. Relaunch to apply them.
-                if seen.elapsed() >= Duration::from_secs(2)
-                    && crate::setup::relaunch_self_if_bundled()
-                {
-                    logging::info("permissions granted; relaunching so the hotkey can use them");
-                    STOP_REQUESTED.store(true, Ordering::SeqCst);
+                if seen.elapsed() >= Duration::from_secs(2) && relaunch_due.is_none() {
+                    relaunch_due = Some(Instant::now());
                 }
             } else {
                 grants_seen_at = None;
             }
         } else if blocked_modes.is_empty() {
             grants_seen_at = None;
+            relaunch_due = None;
+        }
+        if let Some(due) = relaunch_due
+            && Instant::now() >= due
+        {
+            relaunch_due = None;
+            if crate::setup::relaunch_self_if_bundled() {
+                logging::info("relaunching so the hotkey can use the new permissions");
+                STOP_REQUESTED.store(true, Ordering::SeqCst);
+            }
         }
         if matches!(machine.state(), SessionState::Idle) {
             let idle_for = last_activity.elapsed();
