@@ -206,6 +206,19 @@ unsafe fn post_probe_event() -> bool {
     true
 }
 
+/// Current TCC answers for (Input Monitoring, Accessibility). Accessibility
+/// is read through `AXIsProcessTrusted`, which reflects a toggle in System
+/// Settings without a restart; the daemon polls this while blocked so it
+/// can relaunch itself the moment a grant appears.
+pub fn permission_preflights() -> (bool, bool) {
+    unsafe {
+        (
+            ffi::CGPreflightListenEventAccess(),
+            ffi::AXIsProcessTrusted() || ffi::CGPreflightPostEventAccess(),
+        )
+    }
+}
+
 /// Human explanation for a failed probe, built from the two TCC preflights.
 /// Both can report "granted" while delivery is still blocked (stale grant
 /// bound to an old code signature), so the wording covers that case too.

@@ -17,7 +17,7 @@ mod system;
 mod types;
 
 pub use appkit::PasteboardSnapshot;
-pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
+pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason, permission_preflights};
 pub use insertion::{ProbeWindow, UiAdapter};
 pub use system::SystemPlatform;
 pub use types::{BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, X11Error};

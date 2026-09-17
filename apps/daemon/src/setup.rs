@@ -674,6 +674,27 @@ fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Arrange for this app to be reopened after it exits. Returns false when
+/// not running from a bundle (a terminal-launched daemon stays put). The
+/// helper shell waits for the daemon to be gone first: Launch Services
+/// ignores `open` for an app it still considers quitting.
+pub fn relaunch_self_if_bundled() -> bool {
+    let Some(bundle) = app_bundle_root() else {
+        return false;
+    };
+    let script = format!(
+        "while pgrep -f '[S]unoto.app/Contents/MacOS/sunoto-daemon' >/dev/null; do sleep 0.2; done; open '{}'",
+        bundle.display()
+    );
+    Command::new("sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
 /// Drop this bundle's own permission records. macOS keys grants to the
 /// code signature, so a record left by an earlier build of the same bundle
 /// id matches the identifier, fails the signature check, and denies
@@ -775,7 +796,7 @@ pub fn query_status() -> Option<serde_json::Value> {
 /// How often the watcher relaunches a blocked app. A grant given in System
 /// Settings only applies to processes started after it, so a relaunch is
 /// what turns the user's toggle into a verified hotkey.
-const BLOCKED_RELAUNCH_INTERVAL: Duration = Duration::from_secs(30);
+const BLOCKED_RELAUNCH_INTERVAL: Duration = Duration::from_secs(15);
 
 fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
@@ -815,7 +836,7 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
                     app.display()
                 ));
                 note(
-                    "Grants apply to a fresh process; the app is relaunched every 30 s until the hotkey verifies.",
+                    "The app relaunches itself as soon as both switches are on (fallback: every 15 s).",
                 );
                 open_pane("Privacy_ListenEvent");
                 std::thread::sleep(Duration::from_secs(2));

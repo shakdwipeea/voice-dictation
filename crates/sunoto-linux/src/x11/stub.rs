@@ -22,6 +22,11 @@ pub enum HotkeyEvent {
 
 /// Explanation for a blocked hotkey. X11 never reports one, so this only
 /// exists to keep the daemon's call sites platform-agnostic.
+/// X11 has no permission gate; both are always "granted".
+pub fn permission_preflights() -> (bool, bool) {
+    (true, true)
+}
+
 pub fn hotkey_block_reason() -> String {
     "the X11 shortcut grab is active".to_string()
 }

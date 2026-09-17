@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use sunoto_audio::AudioEvent;
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState};
-use sunoto_desktop::{BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, hotkey_block_reason};
+use sunoto_desktop::{
+    BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, hotkey_block_reason, permission_preflights,
+};
 use sunoto_ipc::{OverlayRequest, OverlaySuggestion, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_polish::{polish, resolve_style};
 use sunoto_system::{
@@ -191,6 +193,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // Quiet-idle bookkeeping: the mic is released and the LLM keepalive
     // window closed after a stretch with no session.
     let mut last_activity = Instant::now();
+    // While the hotkey is blocked, watch the permission preflights once a
+    // second. A grant given in System Settings only applies to a fresh
+    // process, so when both report granted and delivery is still blocked,
+    // the app relaunches itself instead of waiting for the installer.
+    let mut last_preflight_check = Instant::now();
+    let mut grants_seen_at: Option<Instant> = None;
     let mut capture_idle = false;
     let mut capture_requested_at: Option<Instant> = None;
     let mut keepalive_active = false;
@@ -1415,6 +1423,25 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
 
         // Watchdogs and deferred work, evaluated on every loop pass.
+        if !blocked_modes.is_empty() && last_preflight_check.elapsed() >= Duration::from_secs(1) {
+            last_preflight_check = Instant::now();
+            let (listen, accessibility) = permission_preflights();
+            if listen && accessibility {
+                let seen = *grants_seen_at.get_or_insert_with(Instant::now);
+                // Two seconds of both grants present with delivery still
+                // blocked: the process is stale. Relaunch to apply them.
+                if seen.elapsed() >= Duration::from_secs(2)
+                    && crate::setup::relaunch_self_if_bundled()
+                {
+                    logging::info("permissions granted; relaunching so the hotkey can use them");
+                    STOP_REQUESTED.store(true, Ordering::SeqCst);
+                }
+            } else {
+                grants_seen_at = None;
+            }
+        } else if blocked_modes.is_empty() {
+            grants_seen_at = None;
+        }
         if matches!(machine.state(), SessionState::Idle) {
             let idle_for = last_activity.elapsed();
             if keepalive_active
