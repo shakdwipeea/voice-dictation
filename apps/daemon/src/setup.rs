@@ -662,9 +662,12 @@ fn codesign(bundle: &Path) -> Result<(), Box<dyn Error>> {
 
 // Anchored so that `sunoto-daemon setup` (which may itself run from a
 // bundle) never matches: a Launch Services start has no arguments.
-const DAEMON_PATTERNS: [&str; 3] = [
+// The overlay is included: Launch Services counts it as the app, and an
+// `open` issued while it is still exiting is ignored.
+const DAEMON_PATTERNS: [&str; 4] = [
     "sunoto-daemon run$",
     "Sunoto.app/Contents/MacOS/sunoto-daemon$",
+    "Sunoto.app/Contents/MacOS/sunoto-overlay$",
     "Sunoto Login.app/Contents/MacOS/sunoto-login",
 ];
 
@@ -703,22 +706,18 @@ fn stop_running_daemons() {
 /// Process names are not trusted here: an installer running from a bundle
 /// looked like the app once and left the user with nothing running.
 fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
-    for attempt in 0..2 {
-        let mut command = Command::new("open");
-        if attempt == 1 {
-            command.arg("-n");
+    // Callers stop every daemon and overlay first, so `-n` (a new instance
+    // regardless of what Launch Services believes) is always right here.
+    let status = Command::new("open").arg("-n").arg(app).status()?;
+    if !status.success() {
+        return Err(format!("open {} failed ({status})", app.display()).into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        if query_status().is_some() {
+            return Ok(());
         }
-        let status = command.arg(app).status()?;
-        if !status.success() {
-            return Err(format!("open {} failed ({status})", app.display()).into());
-        }
-        let deadline = Instant::now() + Duration::from_secs(8);
-        while Instant::now() < deadline {
-            if query_status().is_some() {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        std::thread::sleep(Duration::from_millis(250));
     }
     if !daemons_running() {
         return Err(format!(
@@ -766,8 +765,7 @@ pub fn relaunch_self_if_bundled() -> bool {
         return false;
     };
     let script = format!(
-        "while pgrep -f '[S]unoto.app/Contents/MacOS/sunoto-daemon$' >/dev/null; do sleep 0.2; done; open '{}' || open -n '{}'",
-        bundle.display(),
+        "while pgrep -f '[S]unoto.app/Contents/MacOS/sunoto-(daemon|overlay)$' >/dev/null; do sleep 0.2; done; open -n '{}'",
         bundle.display()
     );
     Command::new("sh")
@@ -892,9 +890,23 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
     let mut last: Option<(String, String, String, String, String)> = None;
     let mut panes_opened = false;
     let mut last_relaunch = Instant::now();
+    let mut last_reply = Instant::now();
     note("waiting for the app to report its own health over the control socket...");
     loop {
-        if let Some(status) = query_status() {
+        let reply = query_status();
+        if reply.is_some() {
+            last_reply = Instant::now();
+        } else if last_reply.elapsed() >= Duration::from_secs(12) {
+            // The app went away (its own relaunch after a grant, or a
+            // crash) and nothing brought it back. Do it here.
+            note("the app is not answering; relaunching it");
+            stop_running_daemons();
+            launch_app(app)?;
+            last_relaunch = Instant::now();
+            last_reply = Instant::now();
+            continue;
+        }
+        if let Some(status) = reply {
             let field = |key: &str| {
                 status
                     .get(key)

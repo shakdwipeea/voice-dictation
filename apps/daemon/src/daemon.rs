@@ -205,6 +205,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut grants_seen_at: Option<Instant> = None;
     let mut permission_db_stamp = crate::setup::permission_db_stamp();
     let mut relaunch_due: Option<Instant> = None;
+    let mut warmup_pending = false;
     let mut capture_idle = false;
     let mut capture_requested_at: Option<Instant> = None;
     let mut keepalive_active = false;
@@ -248,6 +249,25 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         "{} shortcut verified: events reach the daemon",
                         mode_label(mode)
                     ));
+                }
+                if warmup_pending && blocked_modes.is_empty() && sidecar_ready {
+                    warmup_pending = false;
+                    if let Some(next) = health.refresh(health_inputs(
+                        sidecar_ready,
+                        llm_post_asr_warmed,
+                        &blocked_modes,
+                        mic,
+                        capture_requested_at.is_some(),
+                    )) {
+                        publish_health(next, &mut ui, &settings);
+                    }
+                    run_llm_warmup(
+                        &mut llm_polish,
+                        &settings,
+                        &mut llm_post_asr_warmed,
+                        &ui,
+                        &mut bubble_hide_at,
+                    );
                 }
             }
             Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
@@ -499,7 +519,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     respawn_backoff = SIDECAR_BACKOFF_START;
                     logging::info(&format!("ASR sidecar ready: {backend}"));
                     llm_post_asr_warmed = llm_polish.is_none();
-                    if let Some(client) = llm_polish.as_mut() {
+                    if llm_polish.is_some() && !blocked_modes.is_empty() {
+                        // The warm-up blocks the loop for several seconds
+                        // and is thrown away by the relaunch that follows a
+                        // permission grant. Do it once the hotkey works.
+                        warmup_pending = true;
+                        logging::info("LLM polish warm-up deferred until the hotkey is verified");
+                    } else if llm_polish.is_some() {
                         // Publish "warming" before the blocking warm-up, or
                         // the overlay would jump straight from loading to
                         // ready without explaining the pause.
@@ -512,25 +538,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         )) {
                             publish_health(next, &mut ui, &settings);
                         }
-                        match client
-                            .warmup(&llm_polish::WARMUP_TEXTS, settings.llm_polish_timeout_ms)
-                        {
-                            Ok(outcome) => {
-                                llm_post_asr_warmed = true;
-                                logging::info(&format!(
-                                    "LLM polish post-ASR warmup complete: {}",
-                                    format_llm_warmup_summary(&outcome)
-                                ));
-                            }
-                            Err(error) => {
-                                logging::warn(&format!(
-                                    "LLM polish disabled for this daemon run after post-ASR warmup failure: {error}"
-                                ));
-                                llm_polish = None;
-                                llm_post_asr_warmed = true;
-                                show_error(&ui, "LLM polish unavailable", &mut bubble_hide_at);
-                            }
-                        }
+                        run_llm_warmup(
+                            &mut llm_polish,
+                            &settings,
+                            &mut llm_post_asr_warmed,
+                            &ui,
+                            &mut bubble_hide_at,
+                        );
                     }
                     // "Sunoto ready" is logged by publish_health on the
                     // transition to Ready, never here: ASR alone is not
@@ -1587,6 +1601,38 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     match exit_error {
         Some(message) => Err(message.into()),
         None => Ok(()),
+    }
+}
+
+/// The post-ASR LLM warm-up. Blocks the loop for several seconds, so the
+/// caller publishes the "warming" state first.
+fn run_llm_warmup(
+    llm_polish: &mut Option<llm_polish::LlmPolishClient>,
+    settings: &Settings,
+    llm_post_asr_warmed: &mut bool,
+    ui: &UiFront,
+    bubble_hide_at: &mut Option<Instant>,
+) {
+    let Some(client) = llm_polish.as_mut() else {
+        *llm_post_asr_warmed = true;
+        return;
+    };
+    match client.warmup(&llm_polish::WARMUP_TEXTS, settings.llm_polish_timeout_ms) {
+        Ok(outcome) => {
+            *llm_post_asr_warmed = true;
+            logging::info(&format!(
+                "LLM polish post-ASR warmup complete: {}",
+                format_llm_warmup_summary(&outcome)
+            ));
+        }
+        Err(error) => {
+            logging::warn(&format!(
+                "LLM polish disabled for this daemon run after post-ASR warmup failure: {error}"
+            ));
+            *llm_polish = None;
+            *llm_post_asr_warmed = true;
+            show_error(ui, "LLM polish unavailable", bubble_hide_at);
+        }
     }
 }
 
