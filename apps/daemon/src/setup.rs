@@ -36,6 +36,44 @@ pub const EMBEDDED_ROOT: &str = "Contents/Resources/root";
 /// Speech model fetched on first run; matches the daemon's default.
 const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
 
+/// Environment variable naming the bundle a detached installer works on.
+const SETUP_BUNDLE_ENV: &str = "SUNOTO_SETUP_BUNDLE";
+
+/// The installer must not run as the app's own executable: Launch Services
+/// then counts it as "Sunoto is running" and ignores `open` for the real
+/// app. When invoked from inside a bundle, copy this binary to a temporary
+/// directory and exec the copy with the bundle path in the environment.
+/// Never returns when it re-execs.
+pub fn reexec_outside_bundle(command: &str, args: &[String]) -> Result<(), Box<dyn Error>> {
+    use std::os::unix::process::CommandExt;
+    let Some(bundle) = app_bundle_root() else {
+        return Ok(());
+    };
+    if std::env::var_os(SETUP_BUNDLE_ENV).is_some() {
+        return Ok(());
+    }
+    let exe = std::env::current_exe()?;
+    let dir = std::env::temp_dir().join(format!("sunoto-setup-{}", std::process::id()));
+    fs::create_dir_all(&dir)?;
+    let copy = dir.join("sunoto-daemon");
+    fs::copy(&exe, &copy)?;
+    let error = Command::new(&copy)
+        .arg(command)
+        .args(args)
+        .env(SETUP_BUNDLE_ENV, &bundle)
+        .exec();
+    Err(format!("could not re-exec the installer outside the bundle: {error}").into())
+}
+
+/// The prebuilt bundle this installer works on: the one it was detached
+/// from, or the one it runs inside.
+fn setup_bundle() -> Option<PathBuf> {
+    std::env::var_os(SETUP_BUNDLE_ENV)
+        .map(PathBuf::from)
+        .or_else(app_bundle_root)
+        .filter(|bundle| bundle_is_prebuilt(bundle))
+}
+
 /// `.../Sunoto.app` when this executable lives in an app bundle.
 pub fn app_bundle_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -151,14 +189,17 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let args = parse_args(args)?;
     let root = settings::repo_root();
-    let daemon = std::env::current_exe()?.canonicalize()?;
-    let overlay = daemon.with_file_name("sunoto-overlay");
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
     let installed = home.join("Applications").join(format!("{APP_NAME}.app"));
     let log_path = home.join("Library/Logs/sunoto/daemon.log");
-    // Prebuilt: this binary already sits in a release bundle with its
-    // runtime inside. Nothing to build; install the bundle as it is.
-    let prebuilt = app_bundle_root().filter(|bundle| bundle_is_prebuilt(bundle));
+    // Prebuilt: a release bundle with its runtime inside. Nothing to
+    // build; install the bundle as it is.
+    let prebuilt = setup_bundle();
+    let daemon = match &prebuilt {
+        Some(bundle) => bundle.join("Contents/MacOS/sunoto-daemon"),
+        None => std::env::current_exe()?.canonicalize()?,
+    };
+    let overlay = daemon.with_file_name("sunoto-overlay");
     let staging = match &prebuilt {
         Some(bundle) => bundle.clone(),
         None => root.join("target/release").join(format!("{APP_NAME}.app")),
@@ -657,10 +698,10 @@ fn stop_running_daemons() {
     std::thread::sleep(Duration::from_millis(500));
 }
 
-/// `open` the bundle and confirm a daemon process appeared. Launch Services
-/// may treat another process from a bundle with the same identifier (this
-/// installer, when it runs from a release bundle) as "already running" and
-/// ignore the first `open`; `open -n` forces a new instance on retry.
+/// `open` the bundle and confirm the new daemon answers on the control
+/// socket (it binds within a second of starting, before the models load).
+/// Process names are not trusted here: an installer running from a bundle
+/// looked like the app once and left the user with nothing running.
 fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
     for attempt in 0..2 {
         let mut command = Command::new("open");
@@ -671,12 +712,12 @@ fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
         if !status.success() {
             return Err(format!("open {} failed ({status})", app.display()).into());
         }
-        let deadline = Instant::now() + Duration::from_secs(6);
-        while !daemons_running() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        if daemons_running() {
-            break;
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            if query_status().is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
     if !daemons_running() {
@@ -829,7 +870,12 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), Box<dyn Error>> {
 pub fn query_status() -> Option<serde_json::Value> {
     let path = settings::control_socket_path();
     let mut stream = UnixStream::connect(path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    // The event loop answers between events; a session's LLM polish can
+    // hold it for a few seconds, so wait long enough not to call a busy
+    // daemon dead.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .ok()?;
     stream.write_all(b"{\"type\":\"status\"}\n").ok()?;
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
@@ -955,7 +1001,7 @@ fn warn(message: &str) {
 pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
     let Some(status) = query_status() else {
         return Err(format!(
-            "no daemon is answering on {}",
+            "no reply on {} within 15 s: the daemon is not running (or its socket file is stale)",
             settings::control_socket_path().display()
         )
         .into());

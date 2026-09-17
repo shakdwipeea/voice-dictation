@@ -169,10 +169,15 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             print!("{}", setup::info_plist());
             Ok(())
         }
-        "setup" => setup::run(rest),
-        "restart" => setup::restart(),
+        "setup" | "restart" | "uninstall" => {
+            setup::reexec_outside_bundle(command, rest)?;
+            match command {
+                "setup" => setup::run(rest),
+                "restart" => setup::restart(),
+                _ => setup::uninstall(rest),
+            }
+        }
         "log" => setup::follow_log(),
-        "uninstall" => setup::uninstall(rest),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
         "eval" => eval::run(parse_eval_args(rest)),
         "config" => config(rest),
