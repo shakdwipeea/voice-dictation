@@ -618,9 +618,11 @@ fn codesign(bundle: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// Anchored so that `sunoto-daemon setup` (which may itself run from a
+// bundle) never matches: a Launch Services start has no arguments.
 const DAEMON_PATTERNS: [&str; 3] = [
-    "sunoto-daemon run",
-    "Sunoto.app/Contents/MacOS/sunoto-daemon",
+    "sunoto-daemon run$",
+    "Sunoto.app/Contents/MacOS/sunoto-daemon$",
     "Sunoto Login.app/Contents/MacOS/sunoto-login",
 ];
 
@@ -654,15 +656,27 @@ fn stop_running_daemons() {
     std::thread::sleep(Duration::from_millis(500));
 }
 
-/// `open` the bundle and confirm a daemon process appeared.
+/// `open` the bundle and confirm a daemon process appeared. Launch Services
+/// may treat another process from a bundle with the same identifier (this
+/// installer, when it runs from a release bundle) as "already running" and
+/// ignore the first `open`; `open -n` forces a new instance on retry.
 fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
-    let status = Command::new("open").arg(app).status()?;
-    if !status.success() {
-        return Err(format!("open {} failed ({status})", app.display()).into());
-    }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !daemons_running() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(200));
+    for attempt in 0..2 {
+        let mut command = Command::new("open");
+        if attempt == 1 {
+            command.arg("-n");
+        }
+        let status = command.arg(app).status()?;
+        if !status.success() {
+            return Err(format!("open {} failed ({status})", app.display()).into());
+        }
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !daemons_running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if daemons_running() {
+            break;
+        }
     }
     if !daemons_running() {
         return Err(format!(
@@ -710,7 +724,8 @@ pub fn relaunch_self_if_bundled() -> bool {
         return false;
     };
     let script = format!(
-        "while pgrep -f '[S]unoto.app/Contents/MacOS/sunoto-daemon' >/dev/null; do sleep 0.2; done; open '{}'",
+        "while pgrep -f '[S]unoto.app/Contents/MacOS/sunoto-daemon$' >/dev/null; do sleep 0.2; done; open '{}' || open -n '{}'",
+        bundle.display(),
         bundle.display()
     );
     Command::new("sh")
