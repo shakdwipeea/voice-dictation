@@ -147,6 +147,18 @@ unsafe extern "C" {
     // Accessibility (HIServices, inside ApplicationServices): the focused
     // element and its role, used to refuse dictation into password fields.
     pub fn AXIsProcessTrusted() -> bool;
+    pub fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    pub fn CFDictionaryCreate(
+        allocator: CFAllocatorRef,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        numValues: CFIndex,
+        keyCallBacks: *const c_void,
+        valueCallBacks: *const c_void,
+    ) -> *const c_void;
+    pub static kCFTypeDictionaryKeyCallBacks: c_void;
+    pub static kCFTypeDictionaryValueCallBacks: c_void;
+    pub static kCFBooleanTrue: *const c_void;
     pub fn AXUIElementCreateSystemWide() -> AXUIElementRef;
     pub fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,

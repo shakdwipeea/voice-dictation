@@ -10,6 +10,38 @@ use crate::ffi;
 
 const SECURE_ROLE: &str = "AXSecureTextField";
 
+/// Ask macOS for Accessibility access with the system prompt. Besides the
+/// dialog, this lists the app in the Accessibility pane with its switch
+/// off, so the user flips a switch instead of adding the app by hand.
+/// Returns whether access is already granted.
+pub fn request_accessibility_with_prompt() -> bool {
+    // SAFETY: builds a one-entry CFDictionary {kAXTrustedCheckOptionPrompt:
+    // true}, passes it to the documented API, and releases it.
+    unsafe {
+        let key = cf_string("AXTrustedCheckOptionPrompt");
+        let Some(key) = key else {
+            return ffi::AXIsProcessTrusted();
+        };
+        let keys = [key as *const std::os::raw::c_void];
+        let values = [ffi::kCFBooleanTrue as *const std::os::raw::c_void];
+        let options = ffi::CFDictionaryCreate(
+            ffi::NULL_ALLOCATOR,
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            &ffi::kCFTypeDictionaryKeyCallBacks,
+            &ffi::kCFTypeDictionaryValueCallBacks,
+        );
+        ffi::CFRelease(key);
+        if options.is_null() {
+            return ffi::AXIsProcessTrusted();
+        }
+        let trusted = ffi::AXIsProcessTrustedWithOptions(options);
+        ffi::CFRelease(options);
+        trusted
+    }
+}
+
 /// Whether the element that currently has keyboard focus is a secure
 /// (password) text field. Checks both the role and the subrole: AppKit
 /// reports the role, Chromium-based apps report a plain text field with the

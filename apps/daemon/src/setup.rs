@@ -246,6 +246,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
     let _ = fs::write(&log_path, b"");
+    // Clear records an earlier build left under our identifier before the
+    // app asks for access. The app's own request then pre-lists it in each
+    // pane with the switch off, so the user only flips switches. A reset
+    // after the request would remove that listing again.
+    reset_own_permission_records();
     launch_app(&installed)?;
     ok(&format!("started {APP_NAME}; log: {}", log_path.display()));
 
@@ -673,6 +678,7 @@ fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
 /// code signature, so a record left by an earlier build of the same bundle
 /// id matches the identifier, fails the signature check, and denies
 /// silently while the toggle shows "on". Scoped to our identifier only.
+/// Must run before the app requests access, never after (see `run`).
 fn reset_own_permission_records() {
     for service in ["Accessibility", "ListenEvent"] {
         let _ = Command::new("tccutil")
@@ -804,14 +810,8 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
                 panes_opened = true;
                 let reason = field("hotkey_reason");
                 warn(&format!("hotkey blocked: {reason}"));
-                // Clear any record an older build left under our identifier,
-                // then relaunch so the app registers fresh entries.
-                reset_own_permission_records();
-                stop_running_daemons();
-                launch_app(app)?;
-                last_relaunch = Instant::now();
                 note(&format!(
-                    "Switch on the entry named {APP_NAME} in Input Monitoring, then in Accessibility (System Settings shows it without .app). If it is missing, press + and pick {}.",
+                    "{APP_NAME} is already listed in each pane with its switch off; switch it on in Input Monitoring, then in Accessibility. If it is missing, press + and pick {}.",
                     app.display()
                 ));
                 note(

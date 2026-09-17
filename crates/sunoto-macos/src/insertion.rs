@@ -40,6 +40,9 @@ pub struct UiAdapter {
 impl UiAdapter {
     pub fn open() -> Result<Self, X11Error> {
         if !unsafe { ffi::CGPreflightPostEventAccess() } {
+            // The Accessibility prompt lists the app in the pane; the
+            // event-posting request alone does not always do that.
+            let _ = accessibility::request_accessibility_with_prompt();
             unsafe {
                 let _ = ffi::CGRequestPostEventAccess();
             }
