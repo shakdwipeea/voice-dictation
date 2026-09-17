@@ -388,15 +388,22 @@ fn ensure_llm_model(
 }
 
 fn ask_yes_no(prompt: &str) -> bool {
-    use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
+    use std::io::{BufRead, BufReader, IsTerminal};
+    // Under `curl ... | bash` stdin is the script itself, so read the
+    // answer from the controlling terminal when there is one. With no
+    // terminal at all (CI, a service), skip rather than hang.
+    let mut input: Box<dyn BufRead> = if std::io::stdin().is_terminal() {
+        Box::new(BufReader::new(std::io::stdin()))
+    } else if let Ok(tty) = fs::File::open("/dev/tty") {
+        Box::new(BufReader::new(tty))
+    } else {
         note("not a terminal; skipping the download (pass --with-llm to force it)");
         return false;
-    }
+    };
     print!("{prompt}");
     let _ = std::io::stdout().flush();
     let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err() {
+    if input.read_line(&mut answer).is_err() {
         return false;
     }
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")

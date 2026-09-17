@@ -122,6 +122,13 @@ bash` downloads the latest release, verifies it, installs it in
 which now also prefetches the speech model with progress. From a checkout
 the same script still builds from source.
 
+**Verified live 2026-09-17.** `v0.1.0` is published with the bundle built
+on the owner's machine (the release workflow also ran on the tag). The
+public one-liner was run on the owner's Mac exactly as a user would:
+download and checksum, install, 62 s speech-model fetch, app start,
+blocked hotkey, two toggles, automatic relaunches, `Sunoto is ready`. The
+sidecars run from the embedded Python inside `Sunoto.app`.
+
 **Stage 2: a signed cask.** With an Apple Developer ID, the same bundle is
 signed and notarized, shipped as a cask, and grants survive upgrades. The
 formula and cask share the bundle layout, so stage 2 is a signing step and a
