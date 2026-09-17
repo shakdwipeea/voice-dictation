@@ -217,6 +217,47 @@ pub fn frontmost_application() -> Option<(String, String)> {
     result
 }
 
+/// Opt the process out of App Nap for its whole lifetime. Without this a
+/// background app with no window and no audio running gets throttled: the
+/// event tap is disabled "by timeout", the delivery probe expires, and the
+/// microphone reopens slowly. The activity token is retained forever.
+pub fn keep_process_responsive(reason: &str) -> bool {
+    let Some(pool) = Pool::new() else {
+        return false;
+    };
+    // NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical
+    const OPTIONS: u64 = 0x00EF_FFFF | 0xFF_0000_0000;
+    let Some(reason_ns) = ns_string(reason) else {
+        return false;
+    };
+    // SAFETY: documented NSProcessInfo selector; the returned token is
+    // retained and intentionally leaked so the activity never ends.
+    let ok = unsafe {
+        let info = send_id(
+            objc_class("NSProcessInfo").unwrap_or(std::ptr::null_mut()),
+            sel("processInfo").unwrap_or(std::ptr::null_mut()),
+        );
+        if info.is_null() {
+            false
+        } else {
+            let token = send_id_u64_id(
+                info,
+                sel("beginActivityWithOptions:reason:").unwrap_or(std::ptr::null_mut()),
+                OPTIONS,
+                reason_ns,
+            );
+            if token.is_null() {
+                false
+            } else {
+                send_void(token, sel("retain").unwrap_or(std::ptr::null_mut()));
+                true
+            }
+        }
+    };
+    drop(pool);
+    ok
+}
+
 // ----- runtime plumbing --------------------------------------------------------
 
 struct Pool(*mut c_void);
@@ -339,6 +380,17 @@ unsafe fn send_id_cstr(
     let function: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector, argument) }
+}
+
+unsafe fn send_id_u64_id(
+    receiver: *mut c_void,
+    selector: *mut c_void,
+    options: u64,
+    argument: *mut c_void,
+) -> *mut c_void {
+    let function: unsafe extern "C" fn(*mut c_void, *mut c_void, u64, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector, options, argument) }
 }
 
 unsafe fn send_id_ptr_usize(

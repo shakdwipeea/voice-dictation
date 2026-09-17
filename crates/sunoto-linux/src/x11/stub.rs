@@ -22,6 +22,11 @@ pub enum HotkeyEvent {
 
 /// Explanation for a blocked hotkey. X11 never reports one, so this only
 /// exists to keep the daemon's call sites platform-agnostic.
+/// No App Nap on Linux; nothing to do.
+pub fn keep_process_responsive(_reason: &str) -> bool {
+    true
+}
+
 /// X11 has no permission gate; both are always "granted".
 pub fn permission_preflights() -> (bool, bool) {
     (true, true)

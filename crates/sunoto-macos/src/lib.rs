@@ -16,7 +16,7 @@ mod insertion;
 mod system;
 mod types;
 
-pub use appkit::PasteboardSnapshot;
+pub use appkit::{PasteboardSnapshot, keep_process_responsive};
 pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason, permission_preflights};
 pub use insertion::{ProbeWindow, UiAdapter};
 pub use system::SystemPlatform;

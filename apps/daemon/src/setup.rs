@@ -584,6 +584,7 @@ pub fn info_plist() -> String {
     <key>CFBundleVersion</key><string>{version}</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSAppSleepDisabled</key><true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Sunoto records microphone audio while you hold the push-to-talk shortcut.</string>
     <key>NSInputMonitoringUsageDescription</key>

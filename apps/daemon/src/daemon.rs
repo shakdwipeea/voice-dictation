@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use sunoto_audio::AudioEvent;
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState};
 use sunoto_desktop::{
-    BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, hotkey_block_reason, permission_preflights,
+    BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, hotkey_block_reason,
+    keep_process_responsive, permission_preflights,
 };
 use sunoto_ipc::{OverlayRequest, OverlaySuggestion, SidecarEvent, SidecarMessage, SidecarRequest};
 use sunoto_polish::{polish, resolve_style};
@@ -66,6 +67,9 @@ fn install_signal_handlers() {
 
 pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     install_signal_handlers();
+    if !keep_process_responsive("Sunoto listens for the push-to-talk shortcut") {
+        logging::warn("could not opt out of App Nap; the hotkey may be throttled while idle");
+    }
     let backend = desktop_backend(&settings);
     // Wayland has no global-grab primitive; it relies on compositor bindings
     // driving `sunoto-daemon trigger press|release` over the control socket.
@@ -214,6 +218,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 mode,
                 edge: HotkeyEvent::Blocked,
             })) => {
+                if !matches!(machine.state(), SessionState::Idle) {
+                    // The shortcut just started or ended this session, so
+                    // events are plainly arriving; a probe lost under load
+                    // is not a permission problem.
+                    logging::warn("ignored a blocked-hotkey verdict during a live session");
+                    continue;
+                }
                 if !blocked_modes.contains(&mode) {
                     blocked_modes.push(mode);
                 }

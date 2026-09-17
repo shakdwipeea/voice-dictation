@@ -34,7 +34,10 @@ use crate::ffi;
 use crate::types::{HotkeyEvent, Shortcut, X11Error};
 
 /// How long the probe waits for its own event to come back through the tap.
-pub const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// A real keyboard event this recent proves delivery regardless of a
+/// probe that went missing (a throttled process can lose a posted event).
+const RECENT_EVENT_WINDOW: Duration = Duration::from_secs(5);
 /// How often the worker checks `CGEventTapIsEnabled` and re-arms if needed.
 const REARM_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// Value written into `kCGEventSourceUserData` on probe events. Anything the
@@ -111,6 +114,8 @@ struct TapState {
     tap: ffi::CGEventTapRef,
     /// Set by the callback when a probe-tagged event arrives.
     probe_seen: Arc<AtomicBool>,
+    /// Set by the callback on every real keyboard event: proof of delivery.
+    real_event_seen: Arc<AtomicBool>,
     /// Set by the callback after it re-enables a tap macOS switched off, so
     /// the worker thread re-probes delivery.
     rearmed: Arc<AtomicBool>,
@@ -145,6 +150,7 @@ unsafe extern "C" fn tap_callback(
         state.probe_seen.store(true, Ordering::SeqCst);
         return event;
     }
+    state.real_event_seen.store(true, Ordering::SeqCst);
     let flags = unsafe { ffi::CGEventGetFlags(event) };
     let keycode =
         unsafe { ffi::CGEventGetIntegerValueField(event, ffi::kCGKeyboardEventKeycode) } as u16;
@@ -270,6 +276,9 @@ struct ProbeTracker {
     state: Arc<AtomicU8>,
     deadline: Option<Instant>,
     tx: mpsc::Sender<HotkeyEvent>,
+    /// Real keyboard events flag from the callback, drained each tick.
+    real_event_seen: Arc<AtomicBool>,
+    last_real_event: Option<Instant>,
 }
 
 impl ProbeTracker {
@@ -291,12 +300,24 @@ impl ProbeTracker {
 
     /// Evaluate the in-flight probe. Returns the transition to publish, if any.
     fn evaluate(&mut self, now: Instant) -> Option<HotkeyEvent> {
+        if self.real_event_seen.swap(false, Ordering::SeqCst) {
+            self.last_real_event = Some(now);
+        }
         let deadline = self.deadline?;
-        let seen = self.seen.load(Ordering::SeqCst);
+        let mut seen = self.seen.load(Ordering::SeqCst);
         if !seen && now < deadline {
             return None;
         }
         self.deadline = None;
+        // A real key event inside the window is stronger evidence than a
+        // missing probe: the tap is delivering.
+        if !seen
+            && self
+                .last_real_event
+                .is_some_and(|at| now.duration_since(at) <= RECENT_EVENT_WINDOW)
+        {
+            seen = true;
+        }
         let new_state = if seen { PROBE_DELIVERED } else { PROBE_BLOCKED };
         let old_state = self.state.swap(new_state, Ordering::SeqCst);
         if old_state == new_state {
@@ -336,6 +357,7 @@ impl HotkeyListener {
         let probe_state = Arc::new(AtomicU8::new(PROBE_UNKNOWN));
         let rearmed = Arc::new(AtomicBool::new(false));
         let rearmed_for_thread = Arc::clone(&rearmed);
+        let real_event_seen = Arc::new(AtomicBool::new(false));
         let state = Box::new(TapState {
             key_code,
             modifier_mask: shortcut.modifier_mask,
@@ -343,6 +365,7 @@ impl HotkeyListener {
             tx: tx.clone(),
             tap: std::ptr::null_mut(),
             probe_seen: Arc::clone(&probe_seen),
+            real_event_seen: Arc::clone(&real_event_seen),
             rearmed,
         });
         let state_ptr = Box::into_raw(state);
@@ -358,6 +381,8 @@ impl HotkeyListener {
             state: Arc::clone(&probe_state),
             deadline: None,
             tx,
+            real_event_seen,
+            last_real_event: None,
         };
 
         let thread = std::thread::spawn(move || {
@@ -536,6 +561,7 @@ impl HotkeyListener {
             tx,
             tap: std::ptr::null_mut(),
             probe_seen: Arc::new(AtomicBool::new(false)),
+            real_event_seen: Arc::new(AtomicBool::new(false)),
             rearmed: Arc::new(AtomicBool::new(false)),
         };
         // Exercise the same regression case as the Linux self-test: the
@@ -590,6 +616,8 @@ mod tests {
             state: Arc::new(AtomicU8::new(PROBE_UNKNOWN)),
             deadline: None,
             tx,
+            real_event_seen: Arc::new(AtomicBool::new(false)),
+            last_real_event: None,
         };
         (tracker, rx)
     }
@@ -622,6 +650,7 @@ mod tests {
             tx,
             tap: std::ptr::null_mut(),
             probe_seen: Arc::new(AtomicBool::new(false)),
+            real_event_seen: Arc::new(AtomicBool::new(false)),
             rearmed: Arc::new(AtomicBool::new(false)),
         };
 
@@ -656,6 +685,29 @@ mod tests {
         );
         assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Available));
         assert!(!probe.in_flight());
+    }
+
+    #[test]
+    fn a_recent_real_key_event_overrides_a_missing_probe() {
+        let (mut probe, rx) = tracker();
+        let t0 = Instant::now();
+        assert!(probe.start(t0));
+        // A real key event arrives while the probe is in flight...
+        probe.real_event_seen.store(true, Ordering::SeqCst);
+        assert_eq!(probe.evaluate(t0 + Duration::from_millis(100)), None);
+        // ...and the probe itself never comes back: still delivered.
+        assert_eq!(
+            probe.evaluate(t0 + PROBE_TIMEOUT),
+            Some(HotkeyEvent::Available)
+        );
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Available));
+        // Long after the last real event, a missing probe means blocked.
+        let t1 = t0 + RECENT_EVENT_WINDOW + Duration::from_secs(10);
+        assert!(probe.start(t1));
+        assert_eq!(
+            probe.evaluate(t1 + PROBE_TIMEOUT),
+            Some(HotkeyEvent::Blocked)
+        );
     }
 
     #[test]
