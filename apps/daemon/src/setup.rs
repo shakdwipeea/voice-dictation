@@ -15,6 +15,7 @@
 use std::error::Error;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,6 +36,8 @@ pub const ROOT_MARKER: &str = "sunoto-root";
 pub const EMBEDDED_ROOT: &str = "Contents/Resources/root";
 /// Speech model fetched on first run; matches the daemon's default.
 const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+const SIGNING_IDENTITY: &str = "Sunoto Local Code Signing";
+const SIGNING_IDENTITY_MARKER: &str = "signing-identity";
 
 /// Environment variable naming the bundle a detached installer works on.
 const SETUP_BUNDLE_ENV: &str = "SUNOTO_SETUP_BUNDLE";
@@ -244,12 +247,18 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     section("bundle");
     if prebuilt.is_none() {
         assemble_bundle(&staging, &daemon, &overlay, &root)?;
-        codesign(&staging)?;
-        ok(&format!("assembled and signed {}", staging.display()));
+        ok(&format!("assembled {}", staging.display()));
     } else {
         ok("release bundle used as is");
     }
     if args.dry_run {
+        let identity = find_signing_identity().ok().flatten();
+        codesign(&staging, identity.as_ref())?;
+        if identity.is_some() {
+            ok("signed with the local stable identity");
+        } else {
+            warn("local signing identity is not installed; dry-run bundle is ad-hoc signed");
+        }
         note("dry run: nothing installed, nothing started");
         return Ok(());
     }
@@ -281,17 +290,47 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    let identity = match ensure_signing_identity() {
+        Ok(identity) => Some(identity),
+        Err(error) => {
+            warn(&format!(
+                "could not create the stable signing identity ({error}); using an ad-hoc signature, so macOS may require permissions again after an upgrade"
+            ));
+            None
+        }
+    };
+    codesign(&installed, identity.as_ref())?;
+    let marker = home
+        .join("Library/Application Support/sunoto")
+        .join(SIGNING_IDENTITY_MARKER);
+    let identity_changed = identity.as_ref().is_none_or(|identity| {
+        fs::read_to_string(&marker)
+            .map(|value| value.trim() != identity.fingerprint)
+            .unwrap_or(true)
+    });
+    if identity_changed {
+        // The first stable-signature install must replace records tied to the
+        // old ad-hoc signature. Later rebuilds keep the same TCC identity.
+        reset_own_permission_records();
+    }
+    if let Some(identity) = &identity {
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&marker, format!("{}\n", identity.fingerprint))?;
+        ok(&format!(
+            "signed with the stable local identity {}",
+            identity.fingerprint
+        ));
+    } else {
+        let _ = fs::remove_file(&marker);
+    }
     if args.login_item {
         register_login_item(&installed)?;
         ok(&format!("{APP_NAME} registered in Login Items"));
     }
     fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
     let _ = fs::write(&log_path, b"");
-    // Clear records an earlier build left under our identifier before the
-    // app asks for access. The app's own request then pre-lists it in each
-    // pane with the switch off, so the user only flips switches. A reset
-    // after the request would remove that listing again.
-    reset_own_permission_records();
     launch_app(&installed)?;
     ok(&format!("started {APP_NAME}; log: {}", log_path.display()));
 
@@ -637,19 +676,162 @@ pub fn info_plist() -> String {
     )
 }
 
-fn codesign(bundle: &Path) -> Result<(), Box<dyn Error>> {
-    // Ad-hoc, with a stable identifier. Every rebuild still changes the
-    // cdhash, so permission grants do not survive an upgrade; that is the
-    // documented limit until a Developer ID signs the bundle.
-    let status = Command::new("codesign")
-        .args([
-            "--force",
-            "--deep",
-            "--sign",
-            "-",
-            "--identifier",
-            BUNDLE_ID,
-        ])
+#[derive(Debug)]
+struct SigningIdentity {
+    fingerprint: String,
+    keychain: PathBuf,
+}
+
+fn login_keychain() -> Result<PathBuf, Box<dyn Error>> {
+    let output = Command::new("security")
+        .args(["default-keychain", "-d", "user"])
+        .output()?;
+    if !output.status.success() {
+        return Err("security could not locate the login keychain".into());
+    }
+    let path = String::from_utf8(output.stdout)?;
+    let path = path.trim().trim_matches('"');
+    if path.is_empty() {
+        return Err("security returned an empty login keychain path".into());
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn parse_signing_identity(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        if !line.contains(&format!("\"{SIGNING_IDENTITY}\"")) {
+            return None;
+        }
+        let fingerprint = line.split_whitespace().nth(1)?;
+        (fingerprint.len() == 40 && fingerprint.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| fingerprint.to_string())
+    })
+}
+
+fn find_signing_identity() -> Result<Option<SigningIdentity>, Box<dyn Error>> {
+    let keychain = login_keychain()?;
+    let output = Command::new("security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .arg(&keychain)
+        .output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(
+        parse_signing_identity(&stdout).map(|fingerprint| SigningIdentity {
+            fingerprint,
+            keychain,
+        }),
+    )
+}
+
+fn ensure_signing_identity() -> Result<SigningIdentity, Box<dyn Error>> {
+    if let Some(identity) = find_signing_identity()? {
+        return Ok(identity);
+    }
+    let keychain = login_keychain()?;
+    let work = std::env::temp_dir().join(format!("sunoto-signing-{}", std::process::id()));
+    if work.exists() {
+        fs::remove_dir_all(&work)?;
+    }
+    fs::create_dir(&work)?;
+    fs::set_permissions(&work, fs::Permissions::from_mode(0o700))?;
+    let key = work.join("identity.key");
+    let certificate = work.join("identity.pem");
+    let archive = work.join("identity.p12");
+    let password = format!("sunoto-local-{}", std::process::id());
+    let creation = (|| -> Result<(), Box<dyn Error>> {
+        let status = Command::new("/usr/bin/openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+            ])
+            .arg("-keyout")
+            .arg(&key)
+            .arg("-out")
+            .arg(&certificate)
+            .args([
+                "-subj",
+                &format!("/CN={SIGNING_IDENTITY}/O=Earendil Works"),
+                "-addext",
+                "keyUsage=critical,digitalSignature",
+                "-addext",
+                "extendedKeyUsage=critical,codeSigning",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err("openssl could not create the local code-signing certificate".into());
+        }
+        let status = Command::new("/usr/bin/openssl")
+            .args(["pkcs12", "-export", "-inkey"])
+            .arg(&key)
+            .arg("-in")
+            .arg(&certificate)
+            .arg("-out")
+            .arg(&archive)
+            .args([
+                "-name",
+                SIGNING_IDENTITY,
+                "-passout",
+                &format!("pass:{password}"),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err("openssl could not package the local signing identity".into());
+        }
+        let status = Command::new("security")
+            .arg("import")
+            .arg(&archive)
+            .arg("-k")
+            .arg(&keychain)
+            .args(["-P", &password, "-A"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err("security could not import the local signing identity".into());
+        }
+        let status = Command::new("security")
+            .args([
+                "add-trusted-cert",
+                "-d",
+                "-r",
+                "trustRoot",
+                "-p",
+                "codeSign",
+                "-k",
+            ])
+            .arg(&keychain)
+            .arg(&certificate)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            return Err("security could not trust the local code-signing certificate".into());
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&work);
+    creation?;
+    find_signing_identity()?.ok_or_else(|| {
+        "the local certificate was created but is not a valid code-signing identity".into()
+    })
+}
+
+fn codesign(bundle: &Path, identity: Option<&SigningIdentity>) -> Result<(), Box<dyn Error>> {
+    let mut command = Command::new("codesign");
+    command.args(["--force", "--deep", "--sign"]);
+    if let Some(identity) = identity {
+        command
+            .arg(&identity.fingerprint)
+            .arg("--keychain")
+            .arg(&identity.keychain);
+    } else {
+        command.arg("-");
+    }
+    let status = command
+        .args(["--identifier", BUNDLE_ID])
         .arg(bundle)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -880,16 +1062,10 @@ pub fn query_status() -> Option<serde_json::Value> {
     serde_json::from_str(response.trim()).ok()
 }
 
-/// How often the watcher relaunches a blocked app. A grant given in System
-/// Settings only applies to processes started after it, so a relaunch is
-/// what turns the user's toggle into a verified hotkey.
-const BLOCKED_RELAUNCH_INTERVAL: Duration = Duration::from_secs(15);
-
 fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
     let mut last: Option<(String, String, String, String, String)> = None;
     let mut panes_opened = false;
-    let mut last_relaunch = Instant::now();
     let mut last_reply = Instant::now();
     note("waiting for the app to report its own health over the control socket...");
     loop {
@@ -902,7 +1078,6 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
             note("the app is not answering; relaunching it");
             stop_running_daemons();
             launch_app(app)?;
-            last_relaunch = Instant::now();
             last_reply = Instant::now();
             continue;
         }
@@ -933,22 +1108,10 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
                 let reason = field("hotkey_reason");
                 warn(&format!("hotkey blocked: {reason}"));
                 note(&format!(
-                    "{APP_NAME} is already listed in each pane with its switch off; switch it on in Input Monitoring, then in Accessibility. If it is missing, press + and pick {}.",
+                    "Use the {APP_NAME} onboarding panel to grant each permission in order. If the app is missing from a pane, press + and pick {}.",
                     app.display()
                 ));
-                note(
-                    "The app relaunches itself as soon as both switches are on (fallback: every 15 s).",
-                );
-                open_pane("Privacy_ListenEvent");
-                std::thread::sleep(Duration::from_secs(2));
-                open_pane("Privacy_Accessibility");
-            } else if snapshot.1 == "blocked"
-                && last_relaunch.elapsed() >= BLOCKED_RELAUNCH_INTERVAL
-            {
-                stop_running_daemons();
-                launch_app(app)?;
-                last_relaunch = Instant::now();
-                note("relaunched to pick up new grants; still waiting...");
+                note("When every row says Allowed, click Done; Sunoto will relaunch once.");
             }
             if snapshot.0 == "mic_starting" && snapshot.3 == "ready" {
                 note("macOS should be showing the Microphone prompt; click Allow.");
@@ -981,16 +1144,6 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-}
-
-fn open_pane(anchor: &str) {
-    let _ = Command::new("open")
-        .arg(format!(
-            "x-apple.systempreferences:com.apple.preference.security?{anchor}"
-        ))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 fn section(title: &str) {
@@ -1088,5 +1241,17 @@ mod tests {
         );
         assert!(parse_args(&["--bogus".into()]).is_err());
         assert!(parse_args(&["--timeout-secs".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_matching_valid_signing_identity() {
+        let output = format!(
+            "  1) B7B77719D4A88C3F509F8539561F6DC096CBB22A \"{SIGNING_IDENTITY}\"\n     1 valid identities found\n"
+        );
+        assert_eq!(
+            parse_signing_identity(&output).as_deref(),
+            Some("B7B77719D4A88C3F509F8539561F6DC096CBB22A")
+        );
+        assert_eq!(parse_signing_identity("0 valid identities found\n"), None);
     }
 }

@@ -142,7 +142,6 @@ unsafe extern "C" {
     pub fn CGPreflightListenEventAccess() -> bool;
     pub fn CGRequestListenEventAccess() -> bool;
     pub fn CGPreflightPostEventAccess() -> bool;
-    pub fn CGRequestPostEventAccess() -> bool;
 
     // Accessibility (HIServices, inside ApplicationServices): the focused
     // element and its role, used to refuse dictation into password fields.

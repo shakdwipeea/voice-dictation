@@ -426,10 +426,265 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
     }
 }
 
+/// First-run permission guide. Only the next missing permission is actionable;
+/// the panel stays open until every grant is live and the user clicks Done.
+private final class OnboardingController: NSObject, NSWindowDelegate {
+    private struct Row {
+        let key: String
+        let permission: String
+        let title: String
+        let subtitle: String
+        let anchor: String
+    }
+
+    private let rows: [Row] = [
+        Row(
+            key: "listen",
+            permission: "input_monitoring",
+            title: "Input Monitoring",
+            subtitle: "Lets Sunoto hear your shortcut in other apps",
+            anchor: "Privacy_ListenEvent"
+        ),
+        Row(
+            key: "accessibility",
+            permission: "accessibility",
+            title: "Accessibility",
+            subtitle: "Lets Sunoto paste text where you are typing",
+            anchor: "Privacy_Accessibility"
+        ),
+        Row(
+            key: "microphone",
+            permission: "microphone",
+            title: "Microphone",
+            subtitle: "Lets Sunoto listen while you hold the shortcut",
+            anchor: "Privacy_Microphone"
+        ),
+    ]
+
+    private let panel: NSPanel
+    private var dots: [String: NSImageView] = [:]
+    private var buttons: [String: NSButton] = [:]
+    private var cards: [String: NSBox] = [:]
+    private var attempted: Set<String> = []
+    private let doneButton: NSButton
+    private let onAction: (String) -> Void
+    private let onDone: () -> Void
+    private(set) var visible = false
+    private var dismissed = false
+
+    private static func roundedFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: weight)
+        guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+        return NSFont(descriptor: descriptor, size: size) ?? base
+    }
+
+    init(onAction: @escaping (String) -> Void, onDone: @escaping () -> Void) {
+        self.onAction = onAction
+        self.onDone = onDone
+        doneButton = NSButton(title: "Done", target: nil, action: nil)
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 326),
+            styleMask: [.titled, .closable, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+
+        panel.title = "Sunoto"
+        panel.delegate = self
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.animationBehavior = .utilityWindow
+
+        let heading = NSTextField(labelWithString: "Set up permissions")
+        heading.font = .systemFont(ofSize: 20, weight: .semibold)
+        heading.textColor = .labelColor
+        let subtitle = NSTextField(labelWithString: "Grant access one step at a time. Your choices stay on this Mac.")
+        subtitle.font = .systemFont(ofSize: 12.5, weight: .regular)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.maximumNumberOfLines = 2
+        subtitle.lineBreakMode = .byWordWrapping
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 18, right: 22)
+        stack.addArrangedSubview(heading)
+        stack.addArrangedSubview(subtitle)
+        stack.setCustomSpacing(16, after: subtitle)
+
+        for row in rows {
+            let dot = NSImageView()
+            dot.image = NSImage(systemSymbolName: "circle", accessibilityDescription: "status")?
+                .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+            dot.contentTintColor = .tertiaryLabelColor
+            dot.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            dots[row.key] = dot
+
+            let title = NSTextField(labelWithString: row.title)
+            title.font = Self.roundedFont(ofSize: 13.5, weight: .semibold)
+            title.textColor = .labelColor
+            let sub = NSTextField(labelWithString: row.subtitle)
+            sub.font = .systemFont(ofSize: 11.5, weight: .regular)
+            sub.textColor = .secondaryLabelColor
+            sub.lineBreakMode = .byTruncatingTail
+            let labels = NSStackView(views: [title, sub])
+            labels.orientation = .vertical
+            labels.alignment = .leading
+            labels.spacing = 2
+            labels.widthAnchor.constraint(equalToConstant: 260).isActive = true
+
+            let button = NSButton(title: "Request Access", target: self, action: #selector(openPermission(_:)))
+            button.bezelStyle = .rounded
+            button.font = .systemFont(ofSize: 12, weight: .medium)
+            button.identifier = NSUserInterfaceItemIdentifier(row.key)
+            buttons[row.key] = button
+
+            let rowView = NSStackView(views: [dot, labels, button])
+            rowView.orientation = .horizontal
+            rowView.alignment = .centerY
+            rowView.spacing = 9
+            rowView.distribution = .gravityAreas
+            labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            button.widthAnchor.constraint(equalToConstant: 106).isActive = true
+
+            let card = NSBox()
+            card.boxType = .custom
+            card.borderColor = .separatorColor
+            card.borderWidth = 1
+            card.cornerRadius = 9
+            card.fillColor = .controlBackgroundColor
+            card.contentViewMargins = NSSize(width: 10, height: 8)
+            card.contentView = rowView
+            card.widthAnchor.constraint(equalToConstant: 436).isActive = true
+            card.heightAnchor.constraint(equalToConstant: 56).isActive = true
+            cards[row.key] = card
+            stack.addArrangedSubview(card)
+        }
+
+        let footer = NSTextField(labelWithString: "Done becomes available when all three permissions are allowed.")
+        footer.font = .systemFont(ofSize: 11.5)
+        footer.textColor = .tertiaryLabelColor
+        footer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        doneButton.target = self
+        doneButton.action = #selector(finishOnboarding)
+        doneButton.bezelStyle = .rounded
+        doneButton.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        doneButton.keyEquivalent = "\r"
+        doneButton.isEnabled = false
+        doneButton.widthAnchor.constraint(equalToConstant: 88).isActive = true
+
+        let footerRow = NSStackView(views: [footer, doneButton])
+        footerRow.orientation = .horizontal
+        footerRow.alignment = .centerY
+        footerRow.distribution = .gravityAreas
+        footerRow.widthAnchor.constraint(equalToConstant: 436).isActive = true
+        stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!)
+        stack.addArrangedSubview(footerRow)
+
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView()
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: content.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        panel.contentView = content
+    }
+
+    func update(listen: Bool, accessibility: Bool, microphone: Bool) {
+        let states: [String: Bool] = [
+            "listen": listen,
+            "accessibility": accessibility,
+            "microphone": microphone,
+        ]
+        let orderedStates = [listen, accessibility, microphone]
+        let firstMissing = orderedStates.firstIndex(of: false)
+        for (index, row) in rows.enumerated() {
+            let granted = states[row.key] ?? false
+            let actionable = firstMissing == index
+            dots[row.key]?.image = NSImage(
+                systemSymbolName: granted ? "checkmark.circle.fill" : (actionable ? "arrow.right.circle.fill" : "circle"),
+                accessibilityDescription: granted ? "allowed" : (actionable ? "next step" : "waiting")
+            )?.withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+            dots[row.key]?.contentTintColor = granted ? .systemGreen : (actionable ? .controlAccentColor : .tertiaryLabelColor)
+            cards[row.key]?.borderColor = actionable
+                ? .controlAccentColor.withAlphaComponent(0.65)
+                : .separatorColor
+            let button = buttons[row.key]
+            button?.title = granted ? "Allowed" : (attempted.contains(row.key) ? "Open Settings" : "Request Access")
+            button?.isEnabled = actionable
+        }
+        doneButton.isEnabled = listen && accessibility && microphone
+        show()
+    }
+
+    func hide() {
+        visible = false
+        panel.orderOut(nil)
+    }
+
+    private func show() {
+        guard !dismissed else { return }
+        let firstShow = !visible
+        visible = true
+        if let screen = NSScreen.main {
+            let frame = screen.visibleFrame
+            panel.setFrameOrigin(NSPoint(
+                x: frame.midX - panel.frame.width / 2,
+                y: frame.midY - panel.frame.height / 2
+            ))
+        }
+        if firstShow {
+            // Steal focus once so the buttons are clickable right away;
+            // later updates leave the user's focus alone.
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        panel.orderFront(nil)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        dismissed = true
+        visible = false
+        return true
+    }
+
+    @objc private func openPermission(_ sender: NSButton) {
+        guard let key = sender.identifier?.rawValue,
+              let row = rows.first(where: { $0.key == key }) else { return }
+        if attempted.contains(key) {
+            guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(row.anchor)") else { return }
+            NSWorkspace.shared.open(url)
+            return
+        }
+        attempted.insert(key)
+        sender.isEnabled = false
+        sender.title = "Open Settings"
+        onAction(row.permission)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak sender] in
+            sender?.isEnabled = true
+        }
+    }
+
+    @objc private func finishOnboarding() {
+        guard doneButton.isEnabled else { return }
+        hide()
+        onDone()
+    }
+}
+
 private final class OverlayApp: NSObject, NSApplicationDelegate {
     private let panel: NSPanel
     private let pill = PillView(frame: NSRect(x: 0, y: 0, width: 214, height: 34))
     private var palette: SystemPaletteController!
+    private var onboarding: OnboardingController!
     private var visible = false
     private let stdoutLock = NSLock()
 
@@ -451,6 +706,14 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             },
             onCancel: { [weak self] sessionID in
                 self?.emit(["type": "system_cancelled", "session_id": sessionID])
+            }
+        )
+        onboarding = OnboardingController(
+            onAction: { [weak self] permission in
+                self?.emit(["type": "permission_action", "permission": permission])
+            },
+            onDone: { [weak self] in
+                self?.emit(["type": "onboarding_done"])
             }
         )
         panel.contentView = pill
@@ -518,6 +781,12 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                 resizeForStatus()
                 show()
             }
+        case "onboarding":
+            onboarding.update(
+                listen: message["listen"] as? Bool ?? false,
+                accessibility: message["accessibility"] as? Bool ?? false,
+                microphone: message["microphone"] as? Bool ?? false
+            )
         case "system_palette":
             guard let sessionID = uint64(message["session_id"]),
                   let transcript = message["transcript"] as? String,

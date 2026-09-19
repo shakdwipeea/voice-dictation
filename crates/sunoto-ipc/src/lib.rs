@@ -51,6 +51,14 @@ pub enum OverlayRequest {
     DismissSystemPalette {
         session_id: u64,
     },
+    /// First-run permission guide (macOS overlay only). The daemon sends the
+    /// live TCC state edge-triggered. The overlay enables one row at a time
+    /// and remains visible until all flags are true and the user clicks Done.
+    Onboarding {
+        listen: bool,
+        accessibility: bool,
+        microphone: bool,
+    },
     Shutdown,
 }
 
@@ -60,6 +68,14 @@ pub struct OverlaySuggestion {
     pub title: String,
     pub subtitle: Option<String>,
     pub action_label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionKind {
+    InputMonitoring,
+    Accessibility,
+    Microphone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +106,12 @@ pub enum SidecarEvent {
     SystemCancelled {
         session_id: u64,
     },
+    /// The user clicked one permission row in the macOS onboarding panel.
+    PermissionAction {
+        permission: PermissionKind,
+    },
+    /// The user confirmed every onboarding row is granted.
+    OnboardingDone,
 }
 
 /// Everything the reader thread can deliver. The sidecar streams events on its
@@ -327,6 +349,37 @@ mod tests {
         );
         assert!(!encoded.contains("application_id"));
         assert!(!encoded.contains("path"));
+
+        let onboarding = OverlayRequest::Onboarding {
+            listen: true,
+            accessibility: false,
+            microphone: true,
+        };
+        let encoded = serde_json::to_string(&onboarding).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"onboarding","listen":true,"accessibility":false,"microphone":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
+            onboarding
+        );
+        let action = SidecarEvent::PermissionAction {
+            permission: PermissionKind::InputMonitoring,
+        };
+        let encoded = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"permission_action","permission":"input_monitoring"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SidecarEvent>(&encoded).unwrap(),
+            action
+        );
+        assert_eq!(
+            serde_json::to_string(&SidecarEvent::OnboardingDone).unwrap(),
+            r#"{"type":"onboarding_done"}"#
+        );
     }
 
     #[test]

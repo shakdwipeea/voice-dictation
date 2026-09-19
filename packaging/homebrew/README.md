@@ -43,9 +43,10 @@ no responsible GUI process, and macOS then disables the CGEventTap the
 hotkey depends on. The Login Item that `sunoto setup` registers starts
 `Sunoto.app` through Launch Services instead, which keeps the tap alive.
 
-## Known limit
+## Local signing
 
-The bundle is ad-hoc signed. Every upgrade changes its signature, so macOS
-asks for Input Monitoring and Accessibility again; `sunoto setup` detects
-the blocked hotkey and opens the right panes. A Developer ID signature would
-make the grants survive upgrades and allow a cask instead of a formula.
+Release bundles are ad-hoc signed in CI. `sunoto setup` creates a stable,
+self-signed code-signing identity in the user's login keychain and re-signs
+the installed bundle. Input Monitoring and Accessibility grants therefore
+survive formula upgrades on that machine. A Developer ID signature is still
+required for notarization and cask distribution.

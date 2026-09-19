@@ -32,6 +32,16 @@ pub fn permission_preflights() -> (bool, bool) {
     (true, true)
 }
 
+/// X11 has no TCC-style permission prompts; these keep the desktop facade
+/// platform-neutral.
+pub fn request_input_monitoring() -> bool {
+    true
+}
+
+pub fn request_accessibility() -> bool {
+    true
+}
+
 pub fn hotkey_block_reason() -> String {
     "the X11 shortcut grab is active".to_string()
 }

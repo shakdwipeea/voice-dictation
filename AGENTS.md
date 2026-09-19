@@ -106,11 +106,12 @@ fixes for every issue that has recurred more than once live in
 that file BEFORE changing code when a macOS symptom matches.
 
 The single most frequent issue is the **inert CGEventTap** (Ctrl+F1 does
-nothing): it is a TCC/permission + adhoc-code-signature problem. The fix is
-two-part: run the **bare binary** `target/release/sunoto-daemon` (not the
-`Sunoto.app` bundle — its path-based TCC grant survives rebuilds), AND launch
-it **from a terminal** (`nohup ... &`), not via launchd (launchd's no-responsible-
-process context makes TCC disable the tap). Full detail in recurring-issues §1.
+nothing): it is normally a TCC/signing problem. `setup` creates a stable
+per-machine signing identity and shows a native onboarding panel that requests
+one permission at a time from the daemon's main loop. It relaunches only after
+all grants are live and the user clicks Done. Rebuilds signed by that identity
+retain their grants. Never launch the installed app through launchd; use its
+Login Item/Launch Services context. Full detail is in recurring-issues §1.
 
 ### How to check logs on macOS
 
@@ -141,8 +142,8 @@ muted; check System Settings → Sound → Input.
   runs `sunoto-daemon setup`, which waits for the app's own ready report).
   Restart: `pkill -f "Sunoto.app/Contents/MacOS/sunoto-daemon"; open
   ~/Applications/Sunoto.app`. Permissions (Accessibility, Input Monitoring,
-  Microphone) are granted to the one entry `Sunoto.app`; an ad-hoc rebuild
-  changes its signature, so re-grant after reinstalling.
+  Microphone) are granted to the one entry `Sunoto.app`; the stable local
+  signature keeps those grants across rebuilds and reinstalls.
 - **Development launch:** run the **bare binary** from a terminal, NOT via
   launchd — `nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log
   2>&1 &`. launchd agents have no responsible process, so TCC disables the
@@ -157,10 +158,9 @@ muted; check System Settings → Sound → Input.
 ### macOS diagnosis quick-reference (full detail in the recurring-issues doc)
 
 - **Ctrl+F1 does nothing** → recurring-issues §1 (inert tap / TCC). First,
-  prove the daemon is healthy with a synthetic press over the control socket;
-  if that records, it's the tap. Run the bare binary; grant Input Monitoring +
-  Accessibility to `target/release/sunoto-daemon`. Do NOT trust
-  ʻsunoto-daemon checkʼ alone to rule this out.
+  inspect `sunoto-daemon status` and the onboarding panel. If a synthetic
+  control-socket press records, the audio/ASR pipeline is healthy and only the
+  physical-keyboard event tap is blocked.
 - **launchd crash-loop** (`daemon starting` every ~10s) → §2. Never
   reintroduce `CFRunLoopStop` in the hotkey `Drop`.
 - **Empty transcript every time** → §3. The offline engine must invert the

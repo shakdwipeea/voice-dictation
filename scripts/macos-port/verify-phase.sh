@@ -98,7 +98,7 @@ phase1() {
   [ -f "crates/sunoto-linux/src/x11/linux.rs" ]  && ok "x11/linux.rs split exists"  || fail "x11/linux.rs missing"
   [ -f "crates/sunoto-linux/src/x11/stub.rs" ]   && ok "x11/stub.rs exists"        || fail "x11/stub.rs missing"
   if grep -rq "sunoto_desktop" apps/daemon/src/*.rs; then ok "daemon imports sunoto-desktop"; else fail "daemon not using sunoto-desktop"; fi
-  if grep -q "DesktopBackend::Macos" apps/daemon/src/daemon.rs; then ok "DesktopBackend::Macos present"; else fail "DesktopBackend::Macos missing"; fi
+  if grep -rq "DesktopBackend::Macos" apps/daemon/src/*.rs apps/daemon/src/*/*.rs; then ok "DesktopBackend::Macos present"; else fail "DesktopBackend::Macos missing"; fi
 }
 
 phase5() {

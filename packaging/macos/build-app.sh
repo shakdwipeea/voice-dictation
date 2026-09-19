@@ -93,8 +93,15 @@ cp "$ROOT/target/release/sunoto-daemon" "$APP/Contents/MacOS/sunoto-daemon"
 cp "$ROOT/target/release/sunoto-overlay" "$APP/Contents/MacOS/sunoto-overlay"
 "$ROOT/target/release/sunoto-daemon" setup --print-plist > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
-# Ad-hoc signature with a stable identifier. A Developer ID would go here.
-codesign --force --deep --sign - --identifier com.earendil-works.sunoto "$APP" 2>/dev/null
+# Use the machine-local identity when this build host has one. Release CI
+# stays ad-hoc; setup re-signs the installed copy with the user's identity.
+identity="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/"Sunoto Local Code Signing"/ { print $2; exit }')"
+if [ -n "$identity" ]; then
+    codesign --force --deep --sign "$identity" --identifier com.earendil-works.sunoto "$APP" 2>/dev/null
+else
+    codesign --force --deep --sign - --identifier com.earendil-works.sunoto "$APP" 2>/dev/null
+fi
 codesign --verify --deep --strict "$APP"
 ok "$APP"
 

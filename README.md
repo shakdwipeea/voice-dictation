@@ -53,12 +53,13 @@ brew install python@3.12 && bash services/asr/setup_macos_runtime.sh && .venv-ne
 
 ### Grant permissions once
 
-When the installer reports `hotkey: blocked`, it opens the two panes that
-need a grant. In **System Settings → Privacy & Security**, add
-`~/Applications/Sunoto.app` under both **Accessibility** and
-**Input Monitoring** and switch it on. Allow **Microphone** access when macOS
-asks. The installer keeps watching and prints `Sunoto is ready` once the app
-confirms all three live. There is exactly one entry to grant.
+Sunoto opens an onboarding panel that guides **Input Monitoring**,
+**Accessibility**, and **Microphone** one at a time. Click the enabled
+**Allow** button, grant that permission, then continue to the next row. When
+all three say **Allowed**, click **Done**; Sunoto relaunches once and the
+installer prints `Sunoto is ready`. Setup signs the app with a stable
+per-machine identity, so later rebuilds and upgrades do not require another
+grant.
 
 Later, check on it any time with:
 

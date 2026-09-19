@@ -10,9 +10,12 @@ use sunoto_audio::AudioEvent;
 use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState};
 use sunoto_desktop::{
     BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, hotkey_block_reason,
-    keep_process_responsive, permission_preflights,
+    keep_process_responsive, permission_preflights, request_accessibility,
+    request_input_monitoring,
 };
-use sunoto_ipc::{OverlayRequest, OverlaySuggestion, SidecarEvent, SidecarMessage, SidecarRequest};
+use sunoto_ipc::{
+    OverlayRequest, OverlaySuggestion, PermissionKind, SidecarEvent, SidecarMessage, SidecarRequest,
+};
 use sunoto_polish::{polish, resolve_style};
 use sunoto_system::{
     CapabilityInput, NativeCapabilityCall, PendingSuggestionSet, RouteOutcome, SystemIntent,
@@ -47,6 +50,22 @@ const KEEPALIVE_GRACE: Duration = Duration::from_secs(20);
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+fn onboarding_request(state: (bool, bool, bool)) -> OverlayRequest {
+    OverlayRequest::Onboarding {
+        listen: state.0,
+        accessibility: state.1,
+        microphone: state.2,
+    }
+}
+
+fn onboarding_microphone_granted(mic: MicState, previously_verified: bool) -> bool {
+    match mic {
+        MicState::Capturing | MicState::Idle => true,
+        MicState::Starting => previously_verified,
+        MicState::Unavailable => false,
+    }
+}
+
 unsafe extern "C" {
     fn signal(signum: c_int, handler: usize) -> usize;
 }
@@ -69,6 +88,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     install_signal_handlers();
     if !keep_process_responsive("Sunoto listens for the push-to-talk shortcut") {
         logging::warn("could not opt out of App Nap; the hotkey may be throttled while idle");
+    }
+    // Permission requests are initiated one at a time from the onboarding
+    // panel. Startup only preflights, so macOS never stacks several dialogs.
+    let (listen_granted, accessibility_granted) = permission_preflights();
+    if !listen_granted || !accessibility_granted {
+        logging::warn(&format!(
+            "permissions not yet granted (Input Monitoring: {listen_granted}, Accessibility: {accessibility_granted}); the onboarding panel tracks them"
+        ));
     }
     let backend = desktop_backend(&settings);
     // Wayland has no global-grab primitive; it relies on compositor bindings
@@ -117,7 +144,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     // Persistent microphone capture bridged into the event channel.
     let capture_stop = Arc::new(AtomicBool::new(false));
-    let capture_wanted = Arc::new(AtomicBool::new(true));
+    let coordinated_onboarding =
+        cfg!(target_os = "macos") && (!listen_granted || !accessibility_granted);
+    // On a first install, defer CoreAudio so its Microphone dialog cannot
+    // race the two keyboard permission steps. Existing granted installs keep
+    // their normal immediate capture startup.
+    let capture_wanted = Arc::new(AtomicBool::new(!coordinated_onboarding));
     let capture_handle = spawn_capture_thread(
         &settings,
         events_tx.clone(),
@@ -194,6 +226,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut blocked_modes: Vec<SessionMode> = Vec::new();
     let mut hotkey_verified = false;
     let mut mic = MicState::Starting;
+    let mut microphone_verified = false;
     // Quiet-idle bookkeeping: the mic is released and the LLM keepalive
     // window closed after a stretch with no session.
     let mut last_activity = Instant::now();
@@ -205,6 +238,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut grants_seen_at: Option<Instant> = None;
     let mut permission_db_stamp = crate::setup::permission_db_stamp();
     let mut relaunch_due: Option<Instant> = None;
+    // Onboarding panel state, edge-triggered: the last (listen,
+    // accessibility, microphone) triple sent to the overlay. `None` re-sends
+    // on the next poll, which is how a respawned overlay learns the state.
+    let mut last_onboarding: Option<(bool, bool, bool)> = None;
+    let mut last_onboarding_poll = Instant::now();
+    let mut onboarding_in_progress = coordinated_onboarding;
+    let mut onboarding_listen_granted = listen_granted;
+    let mut onboarding_accessibility_granted = accessibility_granted;
+    let mut pending_permission: Option<PermissionKind> = None;
     let mut warmup_pending = false;
     let mut capture_idle = false;
     let mut capture_requested_at: Option<Instant> = None;
@@ -495,12 +537,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 let description = description.unwrap_or_else(|| "<unknown>".to_string());
                 let after_request = capture_requested_at
                     .take()
-                    .map(|at| format!(" ({}ms after the press)", at.elapsed().as_millis()))
+                    .map(|at| format!(" ({}ms after request)", at.elapsed().as_millis()))
                     .unwrap_or_default();
                 logging::info(&format!(
                     "microphone capture started: {description} (source: {device}){after_request}"
                 ));
                 mic = MicState::Capturing;
+                microphone_verified = true;
             }
             Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) if capture_idle => {
                 // Expected: we released the mic ourselves.
@@ -509,6 +552,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             Ok(DaemonEvent::Audio(AudioEvent::Stopped { reason })) => {
                 logging::warn(&format!("microphone capture stopped: {reason}"));
                 mic = MicState::Unavailable;
+                microphone_verified = false;
                 if matches!(machine.state(), SessionState::Recording { .. }) {
                     logging::warn("microphone lost mid-dictation; the session keeps running");
                 }
@@ -918,8 +962,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         ));
                     }
                 }
-                SidecarEvent::SystemSelection { .. } | SidecarEvent::SystemCancelled { .. } => {
-                    logging::warn("unexpected System UI event from ASR sidecar");
+                SidecarEvent::SystemSelection { .. }
+                | SidecarEvent::SystemCancelled { .. }
+                | SidecarEvent::PermissionAction { .. }
+                | SidecarEvent::OnboardingDone => {
+                    logging::warn("unexpected UI event from ASR sidecar");
                 }
             },
             Ok(DaemonEvent::Sidecar(SidecarMessage::Garbage { line })) => {
@@ -950,6 +997,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 // current state right away instead of a blank screen.
                 let current = health.current();
                 ui.health(current);
+                // A fresh overlay has no onboarding panel; re-publish the
+                // permission state on the next poll.
+                last_onboarding = None;
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SystemSelection {
                 session_id,
@@ -1026,6 +1076,53 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     logging::warn(&format!(
                         "ignored cancellation for stale System session {session_id}"
                     ));
+                }
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::PermissionAction {
+                permission,
+            }))) => {
+                onboarding_in_progress = true;
+                match permission {
+                    PermissionKind::InputMonitoring => {
+                        logging::info("onboarding requested Input Monitoring");
+                        let _ = request_input_monitoring();
+                        pending_permission = Some(permission);
+                        // Requesting can create the initial TCC row. Treat the
+                        // next database change as the user's switch action.
+                        permission_db_stamp = crate::setup::permission_db_stamp();
+                    }
+                    PermissionKind::Accessibility => {
+                        logging::info("onboarding requested Accessibility");
+                        let _ = request_accessibility();
+                        pending_permission = Some(permission);
+                        permission_db_stamp = crate::setup::permission_db_stamp();
+                    }
+                    PermissionKind::Microphone => {
+                        logging::info("onboarding requested Microphone");
+                        mic = MicState::Starting;
+                        capture_idle = false;
+                        capture_requested_at = Some(Instant::now());
+                        last_activity = Instant::now();
+                        capture_wanted.store(true, Ordering::SeqCst);
+                    }
+                }
+                last_onboarding = None;
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::OnboardingDone))) => {
+                let microphone = onboarding_microphone_granted(mic, microphone_verified);
+                if onboarding_listen_granted && onboarding_accessibility_granted && microphone {
+                    onboarding_in_progress = false;
+                    logging::info("permission onboarding completed");
+                    // Keyboard grants only take effect in a newly launched
+                    // process. Relaunch once, after the user explicitly ends
+                    // onboarding, rather than after each individual toggle.
+                    if !blocked_modes.is_empty() && crate::setup::relaunch_self_if_bundled() {
+                        logging::info("relaunching once to apply completed permission setup");
+                        STOP_REQUESTED.store(true, Ordering::SeqCst);
+                    }
+                } else {
+                    logging::warn("ignored onboarding Done before every permission was granted");
+                    last_onboarding = None;
                 }
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(event))) => {
@@ -1450,7 +1547,54 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
 
         // Watchdogs and deferred work, evaluated on every loop pass.
-        if !blocked_modes.is_empty() && last_preflight_check.elapsed() >= Duration::from_secs(1) {
+        // Onboarding panel: publish live state once a second while setup is
+        // in progress. It remains open after all flags turn true; only the
+        // user's Done action completes the flow. CoreAudio is deliberately
+        // held closed until the Microphone row is clicked on a first install.
+        if cfg!(target_os = "macos") && last_onboarding_poll.elapsed() >= Duration::from_secs(1) {
+            last_onboarding_poll = Instant::now();
+            let (listen, accessibility) = permission_preflights();
+            onboarding_listen_granted |= listen;
+            onboarding_accessibility_granted |= accessibility;
+            let stamp = crate::setup::permission_db_stamp();
+            if stamp.is_some() && stamp != permission_db_stamp {
+                permission_db_stamp = stamp;
+                match pending_permission.take() {
+                    Some(PermissionKind::InputMonitoring) => {
+                        onboarding_listen_granted = true;
+                        logging::info("onboarding observed the Input Monitoring switch change");
+                    }
+                    Some(PermissionKind::Accessibility) => {
+                        onboarding_accessibility_granted = true;
+                        logging::info("onboarding observed the Accessibility switch change");
+                    }
+                    _ => {}
+                }
+            }
+            // Releasing capture while idle does not revoke permission. Keep
+            // the successful capture evidence while idle or reopening, and
+            // never present model warmup as evidence of microphone access.
+            let microphone = onboarding_microphone_granted(mic, microphone_verified);
+            let state = (
+                onboarding_listen_granted,
+                onboarding_accessibility_granted,
+                microphone,
+            );
+            let initial_capture_pending = mic == MicState::Starting
+                && capture_wanted.load(Ordering::SeqCst)
+                && !(sidecar_ready && llm_post_asr_warmed);
+            if !state.0 || !state.1 || (!state.2 && !initial_capture_pending) {
+                onboarding_in_progress = true;
+            }
+            if onboarding_in_progress && last_onboarding != Some(state) {
+                last_onboarding = Some(state);
+                ui.overlay_send(onboarding_request(state));
+            }
+        }
+        if !onboarding_in_progress
+            && !blocked_modes.is_empty()
+            && last_preflight_check.elapsed() >= Duration::from_secs(1)
+        {
             last_preflight_check = Instant::now();
             // Signal 1: the permission database changed, so the user just
             // flipped a switch. Wait a moment for a second flip, then
@@ -1499,6 +1643,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             }
             if settings.capture_idle_stop_secs > 0
                 && !capture_idle
+                && mic == MicState::Capturing
+                && !onboarding_in_progress
                 && idle_for >= Duration::from_secs(settings.capture_idle_stop_secs)
             {
                 capture_idle = true;
@@ -1633,6 +1779,34 @@ fn run_llm_warmup(
             *llm_post_asr_warmed = true;
             show_error(ui, "LLM polish unavailable", bubble_hide_at);
         }
+    }
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+
+    #[test]
+    fn microphone_grant_survives_idle_and_reopen_but_not_capture_failure() {
+        assert!(!onboarding_microphone_granted(MicState::Starting, false));
+        assert!(onboarding_microphone_granted(MicState::Capturing, true));
+        // The idle transition turns capture_wanted off, but access remains.
+        assert!(onboarding_microphone_granted(MicState::Idle, true));
+        assert!(onboarding_microphone_granted(MicState::Starting, true));
+        assert!(!onboarding_microphone_granted(MicState::Unavailable, true));
+        assert!(!onboarding_microphone_granted(MicState::Starting, false));
+    }
+
+    #[test]
+    fn publishes_the_latched_permission_state() {
+        assert_eq!(
+            onboarding_request((true, false, true)),
+            OverlayRequest::Onboarding {
+                listen: true,
+                accessibility: false,
+                microphone: true,
+            }
+        );
     }
 }
 

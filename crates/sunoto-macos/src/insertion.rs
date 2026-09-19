@@ -39,14 +39,9 @@ pub struct UiAdapter {
 
 impl UiAdapter {
     pub fn open() -> Result<Self, X11Error> {
-        if !unsafe { ffi::CGPreflightPostEventAccess() } {
-            // The Accessibility prompt lists the app in the pane; the
-            // event-posting request alone does not always do that.
-            let _ = accessibility::request_accessibility_with_prompt();
-            unsafe {
-                let _ = ffi::CGRequestPostEventAccess();
-            }
-        }
+        // Never request Accessibility here: the onboarding action on the
+        // daemon's main loop owns the prompt. Without the grant, event
+        // posting just does nothing and health reports the block.
         // SAFETY: CombinedSessionState source is the standard shared source;
         // null return means the event system is unavailable.
         let source =

@@ -90,6 +90,13 @@ pub(crate) fn spawn_hotkey_thread(
                     "global {} shortcut unavailable: {error}; physical hotkey disabled while control triggers remain available",
                     mode_label(mode)
                 ));
+                // Keep health and onboarding relaunch logic accurate even
+                // when macOS permission preflight deliberately prevents an
+                // event tap from being created.
+                let _ = events.send(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                    mode,
+                    edge: sunoto_desktop::HotkeyEvent::Blocked,
+                }));
                 return;
             }
         };

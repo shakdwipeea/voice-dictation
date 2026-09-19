@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::ffi;
+use crate::permissions;
 use crate::types::{HotkeyEvent, Shortcut, X11Error};
 
 /// How long the probe waits for its own event to come back through the tap.
@@ -212,19 +213,6 @@ unsafe fn post_probe_event() -> bool {
     true
 }
 
-/// Current TCC answers for (Input Monitoring, Accessibility). Accessibility
-/// is read through `AXIsProcessTrusted`, which reflects a toggle in System
-/// Settings without a restart; the daemon polls this while blocked so it
-/// can relaunch itself the moment a grant appears.
-pub fn permission_preflights() -> (bool, bool) {
-    unsafe {
-        (
-            ffi::CGPreflightListenEventAccess(),
-            ffi::AXIsProcessTrusted() || ffi::CGPreflightPostEventAccess(),
-        )
-    }
-}
-
 /// Human explanation for a failed probe, built from the two TCC preflights.
 /// Both can report "granted" while delivery is still blocked (stale grant
 /// bound to an old code signature), so the wording covers that case too.
@@ -342,12 +330,27 @@ pub struct HotkeyListener {
     probe_state: Arc<AtomicU8>,
 }
 
+fn missing_permission_error(listen: bool, accessibility: bool) -> Option<X11Error> {
+    if !listen {
+        Some(X11Error::InputMonitoringPermission)
+    } else if !accessibility {
+        Some(X11Error::EventPostingPermission)
+    } else {
+        None
+    }
+}
+
 impl HotkeyListener {
     pub fn open(shortcut: &Shortcut) -> Result<Self, X11Error> {
-        if !unsafe { ffi::CGPreflightListenEventAccess() } {
-            unsafe {
-                let _ = ffi::CGRequestListenEventAccess();
-            }
+        // Creating a CGEventTap while Accessibility is missing makes macOS
+        // raise its Accessibility dialog implicitly. That bypasses the
+        // onboarding order (Input Monitoring must be first) even though this
+        // function never calls a request API. Preflight before creating any
+        // CoreGraphics object; the onboarding actions are the only request
+        // site, and setup relaunches us after all grants are live.
+        let (listen, accessibility) = permissions::permission_preflights();
+        if let Some(error) = missing_permission_error(listen, accessibility) {
+            return Err(error);
         }
         let key_code = keycode_for_name(&shortcut.key_name)
             .ok_or_else(|| X11Error::HotkeyUnavailable(shortcut.key_name.clone()))?;
@@ -628,6 +631,19 @@ mod tests {
         assert_eq!(keycode_for_name("f12"), Some(0x6f));
         assert_eq!(keycode_for_name("space"), Some(0x31));
         assert_eq!(keycode_for_name("nope"), None);
+    }
+
+    #[test]
+    fn missing_permissions_stop_before_event_tap_creation_in_onboarding_order() {
+        assert!(matches!(
+            missing_permission_error(false, false),
+            Some(X11Error::InputMonitoringPermission)
+        ));
+        assert!(matches!(
+            missing_permission_error(true, false),
+            Some(X11Error::EventPostingPermission)
+        ));
+        assert!(missing_permission_error(true, true).is_none());
     }
 
     #[test]

@@ -37,7 +37,7 @@ If the log then shows `session N: recording` → `sidecar accepted`, the **entir
 daemon→sidecar→audio pipeline is fine** and the ONLY thing broken is the
 physical-keyboard event tap. Stop here; it's §1, not the ASR.
 
-### Root cause: TCC grant vs code-signature mismatch
+### Root causes: unstable signing and concurrent requests
 
 - The CGEventTap (`crates/sunoto-macos/src/hotkey.rs`) calls
   `CGEventTapCreate` with `kCGEventTapOptionListenOnly`. On macOS 10.15+,
@@ -49,37 +49,34 @@ physical-keyboard event tap. Stop here; it's §1, not the ASR.
   tagged, no-op `flagsChanged` event posted through the tap at startup and
   after every re-arm; `check`, `selftest`, and the daemon's health state all
   use that verdict, so "ready" is only ever reported when events flow.
-- TCC grants are bound to the binary's **code signature (cdhash)** at grant
-  time. The daemon is **adhoc-signed**, so **every `cargo build` produces a new
-  cdhash and invalidates the previous grant**.
-- Two executable identities exist:
-  - **Bare binary** `target/release/sunoto-daemon`
-    (cargo adhoc id `sunoto_daemon-…`). Its TCC grant is **path-based** and
-    survives rebuilds on macOS 14 — this is the one that WORKS.
-  - **App bundle** `target/release/Sunoto.app/…/sunoto-daemon`
-    (id `com.earendil-works.sunoto`). Its grant is **bundle-id + cdhash**
-    based and breaks every rebuild.
-- The app bundle runs as `LSBackgroundOnly`/`LSUIElement` under launchd, and
-  **background launchd agents do not get interactive TCC prompts**. So once the
-  bundle-id grant is stale (or reset with `tccutil`), it **cannot be re-granted
-  via a prompt** — the prompt is suppressed. System Settings toggling also
-  fails to bind to the new cdhash reliably for adhoc bundles.
+- TCC grants are bound to the app's code-signing identity. Before 2026-09-19
+  the bundle was ad-hoc signed, so every rebuild changed its identity and
+  silently invalidated the previous grant even when the toggle still showed
+  on.
+- Input Monitoring, Accessibility, and Microphone requests used to originate
+  concurrently from three worker threads. macOS can suppress requests made
+  off the main thread early in launch, and the installer's timed relaunch loop
+  could stack or repeat prompts.
+- Terminal commands also requested access under Terminal's identity, creating
+  misleading extra entries in Privacy & Security.
 
-### Fix: use the GUI Login Item (or run the bare binary from a terminal), NOT launchd
+### Fix: stable local signing + one request site + onboarding
 
-Two things matter, and BOTH are required:
+`sunoto-daemon setup` creates a ten-year self-signed code-signing identity
+named **Sunoto Local Code Signing** in the user's login keychain and trusts it
+for code signing. Every installed bundle, including a prebuilt release bundle,
+is re-signed with that same identity. The first upgrade from an ad-hoc build
+resets the old Sunoto records and asks once; subsequent rebuilds and reinstalls
+keep the same TCC identity and grants.
 
-1. **Run the bare binary** `target/release/sunoto-daemon`, not the app
-   bundle. The bare binary's **path-based** TCC grant survives `cargo build`
-   rebuilds on macOS 14; the app-bundle (bundle-id) grant is cdhash-bound and
-   breaks every rebuild.
-2. **Launch it from a terminal** (e.g. `nohup target/release/sunoto-daemon
-   run > /tmp/sunoto-bare.log 2>&1 &`), **NOT via launchd**.
-   launchd agents run with **no responsible process** (no parent app), so TCC
-   treats them strictly: the tap is created but macOS **immediately disables
-   it** (`[hotkey-diag] tap disabled by system; re-arming` repeats forever,
-   zero events). A process launched from Terminal inherits Terminal's GUI/TCC
-   session context and the tap stays enabled (`tap is_enabled=1`).
+The native onboarding panel requests Input Monitoring, Accessibility, and
+Microphone one at a time. Only the next missing row is actionable; each click
+is handled by the daemon's main loop and opens only that service's Settings
+pane. CoreAudio stays closed until the Microphone step. The panel remains open
+after all checks pass; Done completes setup and relaunches the daemon once to
+apply keyboard grants. Its close button postpones onboarding. `check`, `selftest`, and
+`insert` only report permission state and never prompt. Setup no longer opens
+panes or restarts the app on a timer.
 
 For automatic startup, install `Sunoto.app` (since 2026-09-17 the daemon is
 the bundle's own executable; the bash `sunoto-login` wrapper is gone):
@@ -90,28 +87,21 @@ tail -f "$HOME/Library/Logs/sunoto/daemon.log"
 ```
 
 `Sunoto.app` is an `LSUIElement` application started by Launch Services, so
-the daemon itself is the responsible GUI process. Grant Accessibility and
-Input Monitoring to the single entry named **Sunoto** (System Settings drops
-the `.app`). `setup` watches the app's own hotkey-delivery probe; when it
-reports blocked it resets the bundle's own permission records
-(`tccutil reset Accessibility|ListenEvent com.earendil-works.sunoto`, scoped
-to that identifier), relaunches the app, opens the panes, and keeps
-relaunching every 30 s until the hotkey verifies.
+the daemon itself is the responsible GUI process. Follow the onboarding panel
+and grant Accessibility, Input Monitoring, and Microphone to the single entry
+named **Sunoto**. `setup` watches the app's own delivery and capture probes and
+returns when all checks report ready.
 
 Two facts learned live on 2026-09-17 that the tooling now handles:
 
-- **A toggle that is on can still deny.** An older build under the same
-  bundle id leaves a record bound to the old code signature; macOS matches
-  the identifier, fails the signature check, and denies silently while the
-  switch shows on. `tccutil reset ... com.earendil-works.sunoto` reported
-  two records for exactly this reason. Removing and re-adding by hand does
-  not help until the app is relaunched.
+- **A toggle that is on can still deny for an old ad-hoc build.** Setup resets
+  Sunoto's own records once when it migrates to the stable identity. It does
+  not reset them on later reinstalls.
 - **Accessibility grants apply to processes started after the grant.** The
   running app keeps reporting blocked until it is relaunched, which is why
-  `setup` relaunches while blocked and `restart` now waits for the old
-  process to exit before `open` (Launch Services ignores `open` for an app
-  it still considers quitting). The older `docs/macos-gui-login-item-plan.md` describes the
-superseded two-process design.
+  the daemon watches permission state and relaunches on a real grant event.
+  `restart` waits for the old process to exit before `open` because Launch
+  Services ignores an app it still considers quitting.
 
 The working manual development launch remains:
 ```sh
@@ -124,25 +114,10 @@ The legacy launchd plist (`com.earendil-works.sunoto.plist`) has been
 deleted from the repo; **a launchd-launched tap is inert due to TCC context**.
 `sunoto-daemon setup` boots out and removes any copy still installed.
 
-To get the bare binary's TCC grant in place (one-time, per machine):
-
-1. Build: `cargo build --release -p sunoto-daemon` (produces the bare binary).
-2. Run it once in the foreground so macOS prompts:
-   `target/release/sunoto-daemon run`
-   (or `bash install-macos.sh`, which opens the Privacy pane).
-3. In the TCC prompts that appear, click **Open System Settings** and enable
-   **Input Monitoring** AND **Accessibility** for `sunoto-daemon`
-   (`/Users/.../voice-dictation/target/release/sunoto-daemon`).
-4. If no prompt appears (already dismissed once), add the binary manually in
-   System Settings → Privacy & Security → **Input Monitoring** (and
-   Accessibility) via the **+** button, selecting the bare binary file.
-5. Restart: `launchctl kickstart -k gui/$(id -u)/com.earendil-works.sunoto`.
-
-Verify the grant:
+Verify the installed app's signing identity:
 ```sh
-sqlite3 /Library/Application\ Support/com.apple.TCC/TCC.db \
-  "SELECT service,client,auth_value FROM access WHERE client LIKE '%sunoto-daemon%';"
-# expect kTCCServiceListenEvent and kTCCServiceAccessibility with auth_value=2
+security find-identity -v -p codesigning | grep 'Sunoto Local Code Signing'
+codesign -dvvv "$HOME/Applications/Sunoto.app" 2>&1 | grep '^Authority='
 ```
 
 ### Inert-tap recovery (code-level, already in place)
@@ -168,18 +143,39 @@ has not recurred for a while.
 
 ### Do NOT do
 
-- Do not run the app bundle (`Sunoto.app`) as the daemon on macOS dev.
 - Do not run the daemon via launchd and expect the hotkey to work — the
   launchd TCC context disables the tap. Use the GUI Login Item or `nohup ...
   &` from a terminal.
-- Do not `tccutil reset ListenEvent com.earendil-works.sunoto` expecting a
-  re-prompt — the launchd/background context suppresses it.
+- Do not reset Sunoto's TCC records on every reinstall. Stable signing is what
+  allows the grants to survive upgrades.
 - `sunoto-daemon check` now fails on an inert tap; if it passes, the tap is
   delivering events in that launch context. Note that the context matters:
   a grant for the login-item launch does not cover a terminal launch.
-- Do not rebuild the app bundle and assume TCC still applies.
+- Do not replace the local signing identity unless you intend to grant access
+  again. Rebuilding the app with the same identity is safe.
 
 ---
+
+### Onboarding reappears after 120 seconds with Microphone already enabled
+
+On 2026-09-19, the live log showed successful capture, followed by
+`microphone released after 120s idle`, and then a new onboarding request.
+The publisher treated `capture_wanted == false` as permission denied, even
+though the daemon had intentionally released an authorized microphone.
+Clicking Microphone was immediately undone by the expired idle timer.
+
+The daemon now preserves successful capture evidence through intentional idle
+and reopening. Only a real capture stop clears that evidence. Done and the
+permission rows use the same decision. Initial model warmup no longer marks
+Microphone Allowed without a successful capture; it only defers automatically
+opening onboarding during normal startup. Idle release requires an active
+capture and completed onboarding, and a microphone request refreshes the idle
+timer. A regression test covers initial startup, capture, idle, reopen, and
+capture failure.
+
+The earlier wrong-first Accessibility prompt also required guarding
+`CGEventTapCreate` itself with both permission preflights: creating the tap can
+implicitly trigger macOS permission UI even without an explicit request.
 
 ## 2. launchd crash-loop (KeepAlive respawn storm)
 

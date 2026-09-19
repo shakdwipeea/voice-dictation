@@ -79,8 +79,8 @@ pkill -f "$APP_NAME/Contents/MacOS/sunoto-daemon" 2>/dev/null || true
 sleep 1
 rm -rf "$INSTALL_DIR/$APP_NAME"
 ditto "$TMP/unpacked/$APP_NAME" "$INSTALL_DIR/$APP_NAME"
-# The bundle is ad-hoc signed, so macOS would refuse to open a quarantined
-# copy. You chose to install it; lift the flag.
+# Release bundles are ad-hoc signed in CI and re-signed with a stable local
+# identity by setup. Lift quarantine before handing the bundle to setup.
 xattr -dr com.apple.quarantine "$INSTALL_DIR/$APP_NAME" 2>/dev/null || true
 ok "installed $INSTALL_DIR/$APP_NAME"
 

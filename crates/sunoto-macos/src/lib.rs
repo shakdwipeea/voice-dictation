@@ -13,11 +13,13 @@ mod appkit;
 mod ffi;
 mod hotkey;
 mod insertion;
+mod permissions;
 mod system;
 mod types;
 
 pub use appkit::{PasteboardSnapshot, keep_process_responsive};
-pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason, permission_preflights};
+pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
 pub use insertion::{ProbeWindow, UiAdapter};
+pub use permissions::{permission_preflights, request_accessibility, request_input_monitoring};
 pub use system::SystemPlatform;
 pub use types::{BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, X11Error};

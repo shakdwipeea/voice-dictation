@@ -285,6 +285,16 @@ macOS requires one-time Privacy & Security permissions:
 - Input Monitoring for the global event tap.
 - Microphone for CoreAudio capture.
 
+On first install, Sunoto opens one onboarding panel with three aligned steps.
+Only the next missing permission can be opened, so macOS never stacks several
+prompts or Settings panes. Input Monitoring and Accessibility are requested by
+the daemon's main loop when their **Allow** button is clicked; Microphone
+capture does not start until its step. Terminal commands such as `check`,
+`selftest`, and `insert` do not create separate permission entries. After all
+three rows say **Allowed**, click **Done**. The panel then closes and Sunoto
+relaunches once to apply the keyboard grants. The standard close button lets
+you postpone setup without granting anything else.
+
 ### Starting the application on macOS
 
 Build the release binary and the native overlay:
@@ -311,9 +321,13 @@ target/release/sunoto-daemon status
 ```
 
 `setup` accepts `--dry-run` (assemble `target/release/Sunoto.app` only),
-`--no-login-item`, and `--timeout-secs N`. It waits until the app reports
-`ready` over the control socket and opens the right Privacy & Security pane
-when the hotkey probe reports the tap is blocked.
+`--no-login-item`, and `--timeout-secs N`. It creates a self-signed
+**Sunoto Local Code Signing** identity in the login keychain, re-signs the
+installed app, and waits until the app reports `ready` over the control socket.
+The first install after migrating from an ad-hoc build asks for permissions
+once. Later rebuilds and reinstalls retain the grants because the signing
+identity is stable. If identity creation fails, setup warns and uses an ad-hoc
+signature rather than aborting the install.
 
 For manual development, run the daemon from a terminal:
 
