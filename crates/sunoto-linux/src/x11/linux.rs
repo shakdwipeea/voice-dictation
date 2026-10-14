@@ -15,9 +15,10 @@ pub enum HotkeyEvent {
     /// these; XGrabKey either succeeds or fails at open time.
     Blocked,
     Available,
-    /// Esc or a typed key cancelled a recording. Only the macOS listener
-    /// emits it.
+    /// Esc cancelled a recording, or a typed key turned a press into a
+    /// chord. Only the macOS listener emits these.
     Cancelled,
+    Interrupted,
 }
 
 /// Explanation for a blocked hotkey. X11 never reports one, so this only

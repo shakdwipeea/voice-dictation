@@ -240,7 +240,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
 <header>
   <div class="eyebrow">Sunoto · for product</div>
   <h1>How Sunoto works</h1>
-  <p class="lede">Hold <kbd>Right Option</kbd> and talk, or tap it once to talk hands-free. Your words appear wherever your cursor is: an email, a Slack message, a doc, a terminal. This page explains what happens in between, in plain language.</p>
+  <p class="lede">Tap <kbd>Right Option</kbd>, talk, and tap it again. Your words appear wherever your cursor is: an email, a Slack message, a doc, a terminal. This page explains what happens in between, in plain language.</p>
   <p class="meta">Written 15 October 2026 from the code at commit <span class="mono">8ecd6b4d</span>, then updated for the Right Option shortcut. The engineering version is <a href="architecture.html">architecture.html</a>.</p>
   <nav aria-label="Sections">
     <ul>
@@ -263,7 +263,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
   </div>
   <div class="fact">
     <h3>Fast</h3>
-    <p>Text arrives about a quarter second after you let go, or about half a second with the AI editor switched on.</p>
+    <p>Text arrives about a quarter second after your second tap, or about half a second with the AI editor switched on.</p>
   </div>
   <div class="fact">
     <h3>Works in any app</h3>
@@ -358,7 +358,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
         <rect x="45" y="290" width="100" height="22" rx="4" class="keycap"/>
         <text x="95" y="305" text-anchor="middle" class="t-key">Right Option</text>
         <line x1="170" y1="288" x2="256" y2="288" class="k-signal" marker-end="url(#ah-signal)"/>
-        <text x="214" y="279" text-anchor="middle" class="t-lab">hold or tap</text>
+        <text x="214" y="279" text-anchor="middle" class="t-lab">tap / tap again</text>
 
         <rect x="20" y="336" width="150" height="72" rx="10" class="box box-out"/>
         <text x="95" y="366" text-anchor="middle" class="t-title">Your microphone</text>
@@ -404,8 +404,8 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
     <li>
       <span class="step-n">1</span>
       <div class="step-body">
-        <div class="stage"><b>Hold Right Option and talk</b> · coordinator</div>
-        <p>The status pill appears with a red dot and a sound meter. The speech engine starts working while you are still talking, which is why the result arrives so quickly after you let go. A quick tap instead of a hold keeps recording hands-free until the next tap. Esc throws the recording away.</p>
+        <div class="stage"><b>Tap Right Option and talk</b> · coordinator</div>
+        <p>The status pill appears with a red dot, a sound meter, and “Tap again to paste, Esc to cancel”. The speech engine starts working while you are still talking, which is why the result arrives so quickly after the second tap. Esc throws the recording away.</p>
       </div>
       <div class="said sound">
         <span class="label">You say</span>
@@ -415,7 +415,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
     <li>
       <span class="step-n">2</span>
       <div class="step-body">
-        <div class="stage"><b>Let go</b> · speech engine · about 0.25 s</div>
+        <div class="stage"><b>Tap again</b> · speech engine · about 0.25 s</div>
         <p>The speech engine finishes the sentence and hands the words back. It writes exactly what it heard, filler words included.</p>
       </div>
       <div class="said">
@@ -449,7 +449,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
       <span class="step-n">5</span>
       <div class="step-body">
         <div class="stage"><b>Paste</b> · coordinator</div>
-        <p>Sunoto checks that you are still in the window you were in when you let go, pastes the text, then puts back whatever was on your clipboard before.</p>
+        <p>Sunoto checks that you are still in the window you were in when you tapped, pastes the text, then puts back whatever was on your clipboard before.</p>
       </div>
       <div class="said final">
         <span class="label">Lands in your app</span>
@@ -460,8 +460,8 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
 
   <figure>
     <div class="fig-scroll fig-bar">
-      <svg class="dg" viewBox="0 0 800 130" role="img" aria-label="Time after you let go, to scale: the speech engine takes about 0.24 seconds, the tidy-up rules take a few milliseconds, and the optional AI editor takes about 0.3 seconds, so text appears after roughly 0.55 seconds.">
-        <text x="40" y="40" class="t-lab">you let go</text>
+      <svg class="dg" viewBox="0 0 800 130" role="img" aria-label="Time after the second tap, to scale: the speech engine takes about 0.24 seconds, the tidy-up rules take a few milliseconds, and the optional AI editor takes about 0.3 seconds, so text appears after roughly 0.55 seconds.">
+        <text x="40" y="40" class="t-lab">second tap</text>
         <line x1="40" y1="46" x2="40" y2="92" class="axis"/>
 
         <rect x="40" y="56" width="288" height="28" rx="4" class="bar-asr"/>
@@ -487,7 +487,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
         <text x="760" y="118" text-anchor="middle" class="t-lab">0.6 s</text>
       </svg>
     </div>
-    <figcaption>Wait time after you let go, drawn to scale. The speech engine and the AI editor take nearly all of it; the rules are instant. With the AI editor off, text appears in about a quarter second. Typical figures from benchmarks on an M1 Pro MacBook; long sentences take a bit longer.</figcaption>
+    <figcaption>Wait time after the second tap, drawn to scale. The speech engine and the AI editor take nearly all of it; the rules are instant. With the AI editor off, text appears in about a quarter second. Typical figures from benchmarks on an M1 Pro MacBook; long sentences take a bit longer.</figcaption>
   </figure>
 </section>
 
@@ -504,7 +504,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
       <tbody>
         <tr>
           <td class="nowrap"><span class="pill"><span class="dot"></span><span class="bars"><i style="height:40%"></i><i style="height:80%"></i><i style="height:100%"></i><i style="height:60%"></i><i style="height:85%"></i><i style="height:35%"></i></span></span></td>
-          <td>Recording.</td><td>Talk, then let go (or tap again if you tapped to start).</td>
+          <td>Recording.</td><td>Talk, then tap again to paste, or press Esc to throw it away.</td>
         </tr>
         <tr><td class="nowrap"><span class="pill">transcribing...</span></td><td>The speech engine is finishing the sentence.</td><td>Wait a moment.</td></tr>
         <tr><td class="nowrap"><span class="pill">polishing...</span></td><td>The AI editor is checking the sentence.</td><td>Wait a moment.</td></tr>
@@ -557,7 +557,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
   <ul class="points">
     <li><strong>Private by construction</strong><span>Audio and text never leave the computer. There is no server.</span></li>
     <li><strong>Never presses Enter or Tab</strong><span>A dictated line becomes plain text with spaces, so it can never send a chat message or run a command in a terminal on its own.</span></li>
-    <li><strong>Right window or nowhere</strong><span>Sunoto remembers which window you were in when you let go. If you switched since, it leaves the text on the clipboard and says so.</span></li>
+    <li><strong>Right window or nowhere</strong><span>Sunoto remembers which window you were in when you tapped to finish. If you switched since, it leaves the text on the clipboard and says so.</span></li>
     <li><strong>Stays out of password fields</strong><span>On a Mac, it refuses to insert into a password box and does not copy the text there either.</span></li>
     <li><strong>Gives your clipboard back</strong><span>It pastes through the clipboard, then restores what you had copied before.</span></li>
     <li><strong>Microphone goes quiet when idle</strong><span>After 2 minutes without dictation the mic is released. The next press turns it back on.</span></li>

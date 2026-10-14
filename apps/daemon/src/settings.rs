@@ -114,13 +114,9 @@ fn default_overlay_backend() -> &'static str {
 #[serde(default)]
 pub struct Settings {
     /// Dictation shortcut: a chord such as "Ctrl+F1", or on macOS a single
-    /// right-hand modifier such as "RightOption". Hold it and talk, or tap it
-    /// to talk hands-free (see `tap_to_lock`).
+    /// right-hand modifier such as "RightOption". Tap it to start recording
+    /// and tap it again to paste; Esc throws the recording away (macOS).
     pub shortcut: String,
-    /// A tap shorter than a third of a second keeps recording until the next
-    /// tap; holding still records until release. Esc cancels on macOS. Off
-    /// restores strict hold-to-talk.
-    pub tap_to_lock: bool,
     /// Enables the separate voice-command capture path. It remains off until
     /// the suggestion palette is connected; enabling it must never change the
     /// behavior of the normal dictation shortcut.
@@ -243,7 +239,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             shortcut: default_shortcut().to_string(),
-            tap_to_lock: true,
             system_mode_enabled: false,
             system_shortcut: "Ctrl+F2".to_string(),
             system_llm_fallback_enabled: true,
@@ -782,17 +777,17 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_defaults_to_hold_or_tap() {
+    fn shortcut_defaults_to_right_option_on_macos() {
         let settings = Settings::default();
-        assert!(settings.tap_to_lock);
         if cfg!(target_os = "macos") {
             assert_eq!(settings.shortcut, "RightOption");
         } else {
             assert_eq!(settings.shortcut, "Ctrl+F1");
         }
-        // Older config files without the new key keep working.
-        let loaded: Settings = serde_json::from_str(r#"{"shortcut": "Ctrl+F1"}"#).unwrap();
-        assert!(loaded.tap_to_lock);
+        // A config written while hold-to-talk was optional still loads.
+        let loaded: Settings =
+            serde_json::from_str(r#"{"shortcut": "Ctrl+F1", "tap_to_lock": true}"#).unwrap();
+        assert_eq!(loaded.shortcut, "Ctrl+F1");
     }
 
     #[test]

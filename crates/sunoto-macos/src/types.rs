@@ -19,9 +19,11 @@ pub enum HotkeyEvent {
     Blocked,
     /// A probe event came back through the tap: real presses will too.
     Available,
-    /// Esc was pressed, or another key was typed while a single-key shortcut
-    /// was held (the user is typing, not dictating). Throws away a recording.
+    /// A bare Esc: throws away the recording in progress.
     Cancelled,
+    /// Another key was typed while a single-key shortcut was held (Option-E
+    /// for an accent): that press was a chord, not a tap.
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

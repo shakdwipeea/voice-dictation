@@ -50,9 +50,9 @@ const TICK: Duration = Duration::from_millis(50);
 /// follow-up dictation still finds a warm GPU.
 const KEEPALIVE_GRACE: Duration = Duration::from_secs(20);
 
-/// A hands-free recording (tap to start) finishes on its own after this, in
-/// case the user forgot it was on.
-const HANDS_FREE_LIMIT: Duration = Duration::from_secs(5 * 60);
+/// A recording finishes on its own after this, in case the user forgot it
+/// was on.
+const RECORDING_LIMIT: Duration = Duration::from_secs(5 * 60);
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -70,6 +70,7 @@ fn trigger_input(edge: HotkeyEvent) -> Option<TriggerInput> {
         HotkeyEvent::Pressed => Some(TriggerInput::Press),
         HotkeyEvent::Released => Some(TriggerInput::Release),
         HotkeyEvent::Cancelled => Some(TriggerInput::Cancel),
+        HotkeyEvent::Interrupted => Some(TriggerInput::Interrupt),
         HotkeyEvent::Blocked | HotkeyEvent::Available => None,
     }
 }
@@ -275,9 +276,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut keepalive_active = false;
     let mut active_system_resolution: Option<u64> = None;
     let mut pending_system: Option<PendingSystemSelection> = None;
-    let mut gestures = TriggerGestures::new(settings.tap_to_lock);
-    // Set when a hands-free recording hits HANDS_FREE_LIMIT: the next loop
-    // turn finishes it through the ordinary release path.
+    let mut gestures = TriggerGestures::new();
+    // Set when a recording hits RECORDING_LIMIT: the next loop turn finishes
+    // it through the ordinary release path.
     let mut forced_finish: Option<SessionMode> = None;
     let mut exit_error: Option<String> = None;
 
@@ -290,9 +291,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             })),
             None => events.recv_timeout(TICK),
         };
-        // Hold to talk, tap to talk hands-free, Esc to cancel. The router
-        // turns raw key edges into the press and release the arms below
-        // already handle, so those paths are unchanged.
+        // Tap to start, tap again to paste, Esc to cancel. The router turns
+        // raw key edges into the press and release the arms below already
+        // handle, so those paths are unchanged.
         let received = match received {
             Ok(DaemonEvent::Hotkey(ModeHotkeyEvent { mode, edge }))
                 if forced.is_none() && trigger_input(edge).is_some() =>
@@ -308,21 +309,6 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         mode,
                         edge: HotkeyEvent::Released,
                     })),
-                    TriggerAction::Lock => {
-                        if let Some(session_id) = machine.current_session() {
-                            logging::info(&format!(
-                                "session {session_id}: hands-free; tap {} again to finish",
-                                crate::settings::shortcut_label(&settings.shortcut)
-                            ));
-                        }
-                        let hint = match (mode, cfg!(target_os = "macos")) {
-                            (SessionMode::System, _) => "System — tap again to finish",
-                            (SessionMode::Dictation, true) => "Tap again to finish, Esc to cancel",
-                            (SessionMode::Dictation, false) => "Tap again to finish",
-                        };
-                        ui.show(BubbleKind::Recording, hint);
-                        continue;
-                    }
                     TriggerAction::Cancel => {
                         if let SessionState::Recording {
                             session_id,
@@ -354,7 +340,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         match received {
             // Routed above; never reaches this match.
             Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
-                edge: HotkeyEvent::Cancelled,
+                edge: HotkeyEvent::Cancelled | HotkeyEvent::Interrupted,
                 ..
             })) => {}
             Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
@@ -468,9 +454,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         "session {session_id}: recording ({})",
                         mode_label(mode)
                     ));
-                    let recording_label = match mode {
-                        SessionMode::Dictation => "recording...",
-                        SessionMode::System => "System — listening...",
+                    // The pill says how to finish; the first partial
+                    // transcript replaces it.
+                    let recording_label = match (mode, cfg!(target_os = "macos")) {
+                        (SessionMode::Dictation, true) => "Tap again to paste, Esc to cancel",
+                        (SessionMode::Dictation, false) => "Tap again to paste",
+                        (SessionMode::System, _) => "System — tap again to finish",
                     };
                     ui.show(BubbleKind::Recording, recording_label);
                     bubble_hide_at = None;
@@ -1747,9 +1736,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             publish_health(next, &mut ui, &settings);
         }
         if let Some(mode) =
-            gestures.expire(recording_mode(&machine), HANDS_FREE_LIMIT, Instant::now())
+            gestures.expire(recording_mode(&machine), RECORDING_LIMIT, Instant::now())
         {
-            logging::info("hands-free recording reached 5 minutes; finishing it");
+            logging::info("recording reached 5 minutes; finishing it");
             forced_finish = Some(mode);
         }
         if let Some(deadline) = transcribe_deadline

@@ -1121,7 +1121,7 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
             {
                 let shortcut = crate::settings::shortcut_label(&field("shortcut"));
                 ok(&format!(
-                    "{APP_NAME} is ready. In any app, hold {shortcut} and speak, or tap it to talk hands-free and tap again to finish."
+                    "{APP_NAME} is ready. In any app, tap {shortcut}, speak, and tap it again to paste. Esc cancels."
                 ));
                 return Ok(());
             }

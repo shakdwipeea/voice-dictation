@@ -1131,9 +1131,9 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         update(accessibility: accessibility, microphone: microphone, reveal: true)
     }
 
-    /// Teach the real shortcut: hold it to talk, or tap it to go hands-free.
+    /// Teach the real shortcut: tap to start, tap again to paste.
     private func setShortcut(_ label: String) {
-        hint.stringValue = "Hold \(label) and talk, or tap it to talk hands-free."
+        hint.stringValue = "Tap \(label), talk, then tap it again to paste."
         for row in rows {
             subtitles[row.key]?.stringValue = row.subtitle.replacingOccurrences(of: "%@", with: label)
         }

@@ -211,8 +211,8 @@ fn handle_key_event(state: &mut TapState, type_: ffi::CGEventType, keycode: u16,
 
 /// A single modifier as the shortcut. It goes down and up through
 /// `flagsChanged` events; any other key while it is held means the user is
-/// typing a shortcut or a special character (Option-E), not dictating, so
-/// the recording that the press started is cancelled.
+/// typing a shortcut or a special character (Option-E), so that press is
+/// reported as interrupted and the daemon does not treat it as a tap.
 fn handle_lone_modifier(
     state: &mut TapState,
     lone: LoneModifier,
@@ -239,7 +239,7 @@ fn handle_lone_modifier(
         }
         ffi::kCGEventKeyDown | ffi::kCGEventFlagsChanged if state.key_down => {
             state.key_down = false;
-            let _ = state.tx.send(HotkeyEvent::Cancelled);
+            let _ = state.tx.send(HotkeyEvent::Interrupted);
         }
         _ => {}
     }
@@ -797,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_with_right_option_held_cancels_instead_of_dictating() {
+    fn typing_with_right_option_held_is_a_chord_not_a_tap() {
         let (mut state, rx) = state_for(&Shortcut::parse("RightOption").unwrap());
         handle_key_event(
             &mut state,
@@ -809,7 +809,7 @@ mod tests {
         handle_key_event(&mut state, ffi::kCGEventKeyDown, 0x0e, RIGHT_OPTION_DOWN);
         handle_key_event(&mut state, ffi::kCGEventFlagsChanged, 0x3d, 0);
         let received: Vec<_> = rx.try_iter().collect();
-        assert_eq!(received, [HotkeyEvent::Pressed, HotkeyEvent::Cancelled]);
+        assert_eq!(received, [HotkeyEvent::Pressed, HotkeyEvent::Interrupted]);
     }
 
     #[test]

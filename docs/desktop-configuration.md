@@ -150,7 +150,7 @@ source = ~/.config/hypr/voice-dictation.conf
 Default Wayland shortcut:
 
 ```text
-Hold Ctrl+F1 to record. Release to transcribe and paste.
+Tap Ctrl+F1 to start recording. Tap it again to transcribe and paste.
 ```
 
 The Hyprland template also includes aliases for keyboards that emit media keys
@@ -234,21 +234,18 @@ Typical macOS real-ASR config:
 ### Shortcut on macOS
 
 The default is **Right Option** on its own: one key under the right thumb that
-does nothing by itself in macOS. Two ways to use it:
-
-- **Hold** it, speak, and let go.
-- **Tap** it (shorter than a third of a second), speak hands-free, and tap it
-  again to finish. Hands-free recordings stop on their own after 5 minutes.
+does nothing by itself in macOS. **Tap** it to start recording, speak, and
+**tap** it again to transcribe and paste. Recordings stop on their own after 5
+minutes.
 
 **Esc** throws away the recording in progress. The tap only listens, so the
-app in front also receives the Esc. Typing another key while Right Option is
-held (Option-E for an accent, say) cancels too, so special characters still
-work.
+app in front also receives the Esc. A tap counts only when no other key is
+pressed while Right Option is down, so Option characters (Option-E for an
+accent, say) still work and never start or stop a recording.
 
 Other single keys: `"RightCommand"`, `"RightControl"`, `"RightShift"`. Chords
 such as `"Ctrl+F1"` or `"Cmd+Shift+Space"` still work. Left-hand modifiers and
 the Globe/Fn key are not offered: macOS and other apps already use them.
-`"tap_to_lock": false` restores strict hold-to-talk.
 
 `backend = "parakeet_mlx_streaming"` is the default macOS backend. It uses
 parakeet-mlx `transcribe_stream()` for live partials while recording, then runs
@@ -357,8 +354,8 @@ nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &
 ```
 
 Wait for `ASR sidecar ready` (~16–32s warmup while parakeet-mlx loads), then
-hold Right Option, speak, and let go (or tap it, speak, and tap again) — clean
-text is pasted at the focused cursor.
+tap Right Option, speak, and tap it again — clean text is pasted at the
+focused cursor.
 
 Watch live logs:
 
