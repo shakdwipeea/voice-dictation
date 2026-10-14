@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>How Sunoto Works</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one 44rem reading column; figures widen to the 62rem page; sound is red, text is blue, everywhere. */
+:root {
+  --paper: #f4f6f9;
+  --surface: #ffffff;
+  --ink: #18202e;
+  --muted: #5b6678;
+  --line: #d5dbe4;
+  --zone: #eaf0f8;
+  --rec: #cf3b2b;
+  --rec-soft: #fbe3df;
+  --word: #2a5bd0;
+  --word-soft: #e1e9fb;
+  --pill: #1d2430;
+  --pill-ink: #f2f4f8;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f131a; --surface: #161c26; --ink: #e7ebf2; --muted: #9aa5b8;
+    --line: #2c3544; --zone: #1a2230; --rec: #ff7262; --rec-soft: #3b201d;
+    --word: #8aabff; --word-soft: #1d2a44; --pill: #07090d; --pill-ink: #eef1f6;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f131a; --surface: #161c26; --ink: #e7ebf2; --muted: #9aa5b8;
+  --line: #2c3544; --zone: #1a2230; --rec: #ff7262; --rec-soft: #3b201d;
+  --word: #8aabff; --word-soft: #1d2a44; --pill: #07090d; --pill-ink: #eef1f6;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 1.0625rem/1.6 var(--font-body);
+}
+.page {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 3.5rem 5rem;
+  display: grid;
+  gap: 4.5rem;
+}
+.page > * { min-width: 0; }
+.prose { max-width: 44rem; }
+.prose > * + * { margin-top: 1rem; }
+
+a { color: var(--word); text-underline-offset: 0.18em; }
+a:focus-visible { outline: 2px solid var(--word); outline-offset: 3px; border-radius: 3px; }
+
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.12; }
+h1 { font-size: clamp(2.4rem, 6vw, 3.6rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.6rem, 3.4vw, 2.1rem); font-weight: 700; letter-spacing: -0.01em; }
+h3 { font-size: 1.15rem; font-weight: 700; }
+p { margin: 0; }
+.lede { font-size: 1.25rem; line-height: 1.5; max-width: 40rem; }
+.meta { color: var(--muted); font-size: 0.92rem; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+kbd {
+  font-family: var(--font-mono); font-size: 0.82em; font-weight: 500;
+  border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+  padding: 0.05em 0.4em; background: var(--surface); white-space: nowrap;
+}
+
+/* Header */
+header { display: grid; gap: 1.25rem; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted);
+}
+nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; }
+nav a { font-size: 0.95rem; }
+
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; }
+.fact { border-top: 2px solid var(--ink); padding-top: 0.8rem; display: grid; gap: 0.35rem; align-content: start; }
+.fact h3 { font-size: 1.2rem; }
+.fact p { color: var(--muted); font-size: 0.98rem; }
+
+section { display: grid; gap: 1.5rem; }
+section > * { min-width: 0; }
+
+/* Figures */
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.fig-scroll { overflow-x: auto; padding: 1.25rem 1.25rem 0.5rem; }
+.fig-scroll svg { display: block; width: 100%; height: auto; }
+.fig-wide svg { min-width: 760px; }
+.fig-bar svg { min-width: 560px; }
+figcaption { padding: 0.9rem 1.25rem 1.2rem; color: var(--muted); font-size: 0.95rem; border-top: 1px solid var(--line); text-wrap: pretty; }
+
+.dg text { fill: var(--ink); font-family: var(--font-body); font-size: 12.5px; }
+.dg .t-title { font-family: var(--font-display); font-weight: 700; font-size: 16px; }
+.dg .t-main { font-size: 20px; }
+.dg .t-sub { fill: var(--muted); font-size: 12px; }
+.dg .t-tag { font-family: var(--font-mono); font-size: 10.5px; fill: var(--muted); }
+.dg .t-lab { font-size: 11.5px; fill: var(--muted); }
+.dg .t-eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; fill: var(--muted); }
+.dg .t-key { font-family: var(--font-mono); font-size: 11px; font-weight: 500; }
+.dg .t-on-bar { font-size: 12px; font-weight: 700; }
+.dg .t-rec { fill: var(--rec); font-weight: 700; }
+.dg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.3; }
+.dg .box-main { stroke: var(--ink); stroke-width: 1.7; }
+.dg .box-opt { stroke: var(--muted); stroke-dasharray: 5 4; }
+.dg .box-out { fill: var(--paper); }
+.dg .zone { fill: var(--zone); stroke: var(--muted); stroke-dasharray: 7 6; stroke-width: 1.2; }
+.dg .chip { fill: var(--zone); stroke: var(--line); }
+.dg .keycap { fill: var(--surface); stroke: var(--muted); stroke-width: 1.1; }
+.dg .k-sound { stroke: var(--rec); stroke-width: 2.4; fill: none; }
+.dg .k-word { stroke: var(--word); stroke-width: 2.4; fill: none; }
+.dg .k-signal { stroke: var(--muted); stroke-width: 1.8; fill: none; }
+.dg .k-none { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 4 4; fill: none; }
+.dg .k-cross { stroke: var(--rec); stroke-width: 2.4; fill: none; stroke-linecap: round; }
+.dg .f-sound { fill: var(--rec); }
+.dg .f-word { fill: var(--word); }
+.dg .f-signal { fill: var(--muted); }
+.dg .pillshape { fill: var(--pill); stroke: var(--line); }
+.dg .meter { fill: var(--pill-ink); }
+.dg .recdot { fill: var(--rec); }
+.dg .axis { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+.dg .bar-asr { fill: var(--word-soft); stroke: var(--word); stroke-width: 1.4; }
+.dg .bar-rules { fill: var(--ink); }
+.dg .bar-llm { fill: var(--surface); stroke: var(--word); stroke-width: 1.4; stroke-dasharray: 5 4; }
+.dg .done { stroke: var(--rec); stroke-width: 2; fill: none; }
+
+/* The journey */
+.journey { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-top: 1px solid var(--line); }
+.journey li {
+  display: grid; grid-template-columns: 2.6rem minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem 1.5rem; padding: 1.4rem 0; border-bottom: 1px solid var(--line); align-items: start;
+}
+.step-n {
+  width: 2rem; height: 2rem; border-radius: 50%; border: 1.5px solid var(--ink);
+  display: grid; place-items: center; font: 500 0.9rem var(--font-mono);
+}
+.step-body { display: grid; gap: 0.4rem; }
+.step-body p { color: var(--muted); font-size: 0.98rem; }
+.stage {
+  font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.stage b { color: var(--ink); font-weight: 500; }
+.said {
+  background: var(--zone); border-radius: 10px; padding: 0.8rem 1rem; font-size: 1.05rem; line-height: 1.5;
+  display: grid; gap: 0.35rem;
+}
+.said .label { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.said del { color: var(--rec); text-decoration-thickness: 2px; text-decoration-color: var(--rec); }
+.said.final { background: var(--word-soft); }
+.said.final .text { font-weight: 700; color: var(--word); }
+.said.sound .text { color: var(--rec); font-style: italic; }
+
+/* Pill chips mirror the on-screen overlay */
+.pill {
+  display: inline-flex; align-items: center; gap: 0.45em; background: var(--pill); color: var(--pill-ink);
+  font: 500 0.8rem/1 var(--font-mono); padding: 0.45em 0.8em; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--line);
+}
+.pill .dot { width: 0.55em; height: 0.55em; border-radius: 50%; background: var(--rec); }
+.pill .bars { display: inline-flex; align-items: center; gap: 2px; height: 0.9em; }
+.pill .bars i { display: block; width: 3px; background: var(--pill-ink); border-radius: 1px; }
+
+/* Tables */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 0.97rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th {
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--muted); background: var(--zone);
+}
+td.nowrap { white-space: nowrap; }
+td .muted { color: var(--muted); }
+
+/* Setup steps */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; counter-reset: s; }
+.steps li { counter-increment: s; display: grid; gap: 0.35rem; align-content: start; padding-top: 0.7rem; border-top: 2px solid var(--line); }
+.steps li::before { content: counter(s); font: 500 0.85rem var(--font-mono); color: var(--muted); }
+.steps li strong { font-family: var(--font-display); font-size: 1.05rem; line-height: 1.25; }
+.steps li span { color: var(--muted); font-size: 0.93rem; }
+
+/* Lists of guardrails and gaps */
+.points { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem 2rem; }
+.points li { display: grid; gap: 0.3rem; align-content: start; }
+.points li strong { font-family: var(--font-display); font-size: 1.05rem; }
+.points li span { color: var(--muted); font-size: 0.97rem; }
+.points.gaps li { padding-left: 0.9rem; border-left: 2px solid var(--rec-soft); }
+
+.example {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.9rem;
+  font-size: 0.93rem; display: grid; gap: 0.25rem;
+}
+.example del { color: var(--rec); text-decoration-thickness: 2px; }
+
+/* Glossary */
+.glossary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 2rem; margin: 0; }
+.glossary div { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); gap: 1rem; padding: 0.7rem 0; border-bottom: 1px solid var(--line); }
+.glossary dt { font-family: var(--font-mono); font-size: 0.88rem; font-weight: 500; }
+.glossary dd { margin: 0; color: var(--muted); font-size: 0.96rem; }
+
+footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--line); padding-top: 1.5rem; display: grid; gap: 0.5rem; }
+
+@media (max-width: 860px) {
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .page { gap: 3.5rem; padding-block: 2.25rem 4rem; }
+  .facts, .points, .glossary { grid-template-columns: minmax(0, 1fr); }
+  .journey li { grid-template-columns: 2.6rem minmax(0, 1fr); }
+  .journey li .said { grid-column: 2; }
+  .glossary div { grid-template-columns: minmax(0, 1fr); gap: 0.2rem; }
+}
+@media (max-width: 460px) {
+  .steps { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+<header>
+  <div class="eyebrow">Sunoto · for product</div>
+  <h1>How Sunoto works</h1>
+  <p class="lede">Hold <kbd>Right Option</kbd> and talk, or tap it once to talk hands-free. Your words appear wherever your cursor is: an email, a Slack message, a doc, a terminal. This page explains what happens in between, in plain language.</p>
+  <p class="meta">Written 15 October 2026 from the code at commit <span class="mono">8ecd6b4d</span>, then updated for the Right Option shortcut. The engineering version is <a href="architecture.html">architecture.html</a>.</p>
+  <nav aria-label="Sections">
+    <ul>
+      <li><a href="#parts">The parts</a></li>
+      <li><a href="#journey">One sentence, start to finish</a></li>
+      <li><a href="#pill">What the pill says</a></li>
+      <li><a href="#setup">First-time setup</a></li>
+      <li><a href="#guardrails">Guardrails</a></li>
+      <li><a href="#gaps">Known gaps</a></li>
+      <li><a href="#platforms">Mac and Linux</a></li>
+      <li><a href="#glossary">Engineering words</a></li>
+    </ul>
+  </nav>
+</header>
+
+<div class="facts">
+  <div class="fact">
+    <h3>Stays on your computer</h3>
+    <p>The speech engine and the AI editor run on the laptop itself. No internet connection, account, or subscription is involved.</p>
+  </div>
+  <div class="fact">
+    <h3>Fast</h3>
+    <p>Text arrives about a quarter second after you let go, or about half a second with the AI editor switched on.</p>
+  </div>
+  <div class="fact">
+    <h3>Works in any app</h3>
+    <p>Sunoto pastes the text the way you would, so it works anywhere you can type. Apps need no plugin or integration.</p>
+  </div>
+</div>
+
+<section id="parts">
+  <div class="prose">
+    <h2>The parts</h2>
+    <p>Sunoto is one main program, the <strong>coordinator</strong>, plus three helper programs that it starts and talks to. The coordinator does the quick, simple jobs itself: it listens for the shortcut, records the microphone, applies the tidy-up rules, and pastes the result. The heavy or screen-related jobs go to helpers.</p>
+  </div>
+
+  <figure>
+    <div class="fig-scroll fig-wide">
+      <svg class="dg" viewBox="0 0 1000 580" role="img" aria-label="Sunoto is a coordinator program with three helpers: a speech engine, an optional AI editor, and a status pill. The keyboard and microphone feed the coordinator, which pastes text into the app you are using. Everything runs on your computer, with no connection to the internet.">
+        <defs>
+          <marker id="ah-sound" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-sound"/></marker>
+          <marker id="ah-word" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-word"/></marker>
+          <marker id="ah-signal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-signal"/></marker>
+        </defs>
+
+        <!-- Legend -->
+        <line x1="20" y1="24" x2="54" y2="24" class="k-sound" marker-end="url(#ah-sound)"/>
+        <text x="62" y="28" class="t-lab">sound</text>
+        <line x1="120" y1="24" x2="154" y2="24" class="k-word" marker-end="url(#ah-word)"/>
+        <text x="162" y="28" class="t-lab">text</text>
+        <line x1="210" y1="24" x2="244" y2="24" class="k-signal" marker-end="url(#ah-signal)"/>
+        <text x="252" y="28" class="t-lab">signals and status</text>
+        <rect x="380" y="15" width="34" height="18" rx="4" class="box box-opt"/>
+        <text x="422" y="28" class="t-lab">optional part</text>
+
+        <!-- On-device boundary -->
+        <rect x="230" y="56" width="540" height="500" rx="18" class="zone"/>
+        <text x="252" y="84" class="t-eyebrow">SUNOTO · RUNS ON YOUR COMPUTER</text>
+
+        <!-- Helpers -->
+        <rect x="260" y="104" width="220" height="96" rx="10" class="box"/>
+        <text x="370" y="138" text-anchor="middle" class="t-title">Speech engine</text>
+        <text x="370" y="160" text-anchor="middle" class="t-sub">turns sound into words</text>
+        <text x="370" y="184" text-anchor="middle" class="t-tag">helper · Parakeet model</text>
+
+        <rect x="520" y="104" width="220" height="96" rx="10" class="box box-opt"/>
+        <text x="630" y="138" text-anchor="middle" class="t-title">AI editor</text>
+        <text x="630" y="160" text-anchor="middle" class="t-sub">fixes “…I mean…” slips</text>
+        <text x="630" y="184" text-anchor="middle" class="t-tag">helper · Phi-4 mini model</text>
+
+        <!-- Coordinator -->
+        <rect x="260" y="250" width="480" height="136" rx="12" class="box box-main"/>
+        <text x="500" y="284" text-anchor="middle" class="t-title t-main">Coordinator</text>
+        <text x="500" y="306" text-anchor="middle" class="t-sub">the main program: decides what happens, and in what order</text>
+        <rect x="276" y="330" width="100" height="34" rx="17" class="chip"/>
+        <text x="326" y="351" text-anchor="middle">Shortcut</text>
+        <rect x="392" y="330" width="100" height="34" rx="17" class="chip"/>
+        <text x="442" y="351" text-anchor="middle">Recording</text>
+        <rect x="508" y="330" width="100" height="34" rx="17" class="chip"/>
+        <text x="558" y="351" text-anchor="middle">Tidy-up rules</text>
+        <rect x="624" y="330" width="100" height="34" rx="17" class="chip"/>
+        <text x="674" y="351" text-anchor="middle">Paste</text>
+
+        <!-- Coordinator <-> helpers -->
+        <line x1="330" y1="250" x2="330" y2="204" class="k-sound" marker-end="url(#ah-sound)"/>
+        <text x="322" y="231" text-anchor="end" class="t-lab">audio</text>
+        <line x1="410" y1="200" x2="410" y2="246" class="k-word" marker-end="url(#ah-word)"/>
+        <text x="418" y="231" class="t-lab">words</text>
+        <line x1="590" y1="250" x2="590" y2="204" class="k-word" marker-end="url(#ah-word)"/>
+        <text x="582" y="231" text-anchor="end" class="t-lab">draft text</text>
+        <line x1="670" y1="200" x2="670" y2="246" class="k-word" marker-end="url(#ah-word)"/>
+        <text x="678" y="231" class="t-lab">edited text</text>
+
+        <!-- Status pill -->
+        <line x1="500" y1="386" x2="500" y2="440" class="k-signal" marker-end="url(#ah-signal)"/>
+        <text x="508" y="418" class="t-lab">status updates</text>
+        <rect x="400" y="444" width="200" height="92" rx="10" class="box"/>
+        <text x="500" y="472" text-anchor="middle" class="t-title">Status pill</text>
+        <text x="500" y="492" text-anchor="middle" class="t-sub">shows what is happening</text>
+        <rect x="452" y="503" width="96" height="22" rx="11" class="pillshape"/>
+        <circle cx="467" cy="514" r="4.5" class="recdot"/>
+        <rect x="480" y="512" width="3" height="4" rx="1" class="meter"/>
+        <rect x="486" y="510" width="3" height="8" rx="1" class="meter"/>
+        <rect x="492" y="508" width="3" height="12" rx="1" class="meter"/>
+        <rect x="498" y="510.5" width="3" height="7" rx="1" class="meter"/>
+        <rect x="504" y="509" width="3" height="10" rx="1" class="meter"/>
+        <rect x="510" y="511.5" width="3" height="5" rx="1" class="meter"/>
+        <rect x="516" y="509.5" width="3" height="9" rx="1" class="meter"/>
+        <rect x="522" y="511" width="3" height="6" rx="1" class="meter"/>
+        <rect x="528" y="512.5" width="3" height="3" rx="1" class="meter"/>
+
+        <!-- Outside: keyboard and microphone -->
+        <rect x="20" y="252" width="150" height="72" rx="10" class="box box-out"/>
+        <text x="95" y="278" text-anchor="middle" class="t-title">Your keyboard</text>
+        <rect x="45" y="290" width="100" height="22" rx="4" class="keycap"/>
+        <text x="95" y="305" text-anchor="middle" class="t-key">Right Option</text>
+        <line x1="170" y1="288" x2="256" y2="288" class="k-signal" marker-end="url(#ah-signal)"/>
+        <text x="214" y="279" text-anchor="middle" class="t-lab">hold or tap</text>
+
+        <rect x="20" y="336" width="150" height="72" rx="10" class="box box-out"/>
+        <text x="95" y="366" text-anchor="middle" class="t-title">Your microphone</text>
+        <text x="95" y="388" text-anchor="middle" class="t-sub">built-in or headset</text>
+        <line x1="170" y1="372" x2="256" y2="372" class="k-sound" marker-end="url(#ah-sound)"/>
+        <text x="214" y="363" text-anchor="middle" class="t-lab">your voice</text>
+
+        <!-- Outside: the app you are typing in -->
+        <line x1="740" y1="318" x2="826" y2="318" class="k-word" marker-end="url(#ah-word)"/>
+        <text x="785" y="309" text-anchor="middle" class="t-lab">pastes text</text>
+        <rect x="830" y="262" width="150" height="112" rx="10" class="box box-out"/>
+        <text x="905" y="292" text-anchor="middle" class="t-title">The app you’re</text>
+        <text x="905" y="311" text-anchor="middle" class="t-title">typing in</text>
+        <text x="905" y="338" text-anchor="middle" class="t-sub">Mail, Slack, Notes,</text>
+        <text x="905" y="356" text-anchor="middle" class="t-sub">a browser, a terminal</text>
+
+        <!-- Outside: the internet, not connected -->
+        <line x1="770" y1="132" x2="830" y2="132" class="k-none"/>
+        <line x1="793" y1="125" x2="807" y2="139" class="k-cross"/>
+        <line x1="807" y1="125" x2="793" y2="139" class="k-cross"/>
+        <rect x="830" y="100" width="150" height="64" rx="32" class="box box-out box-opt"/>
+        <text x="905" y="128" text-anchor="middle" class="t-title">Internet</text>
+        <text x="905" y="148" text-anchor="middle" class="t-sub">cloud services</text>
+        <text x="905" y="188" text-anchor="middle" class="t-lab t-rec">not used</text>
+        <text x="905" y="205" text-anchor="middle" class="t-lab">nothing is sent out</text>
+      </svg>
+    </div>
+    <figcaption>Everything inside the dashed area runs on your computer. The coordinator sends your audio to the speech engine and gets words back, optionally asks the AI editor to fix self-corrections, keeps the status pill up to date, and pastes the final text into your app. Nothing crosses to the internet.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <p><strong>Why separate helper programs?</strong> Two reasons that matter for the product. First, if a helper crashes, the coordinator restarts it and dictation keeps working; a crash never takes Sunoto down. Second, the team can swap a helper without touching the rest. The Mac and Linux versions use different speech engines behind the same coordinator.</p>
+  </div>
+</section>
+
+<section id="journey">
+  <div class="prose">
+    <h2>One sentence, start to finish</h2>
+    <p>Here is a real example, run through Sunoto’s cleanup on 15 October 2026. Someone corrects themselves mid-sentence, which is exactly what people do when they talk.</p>
+  </div>
+
+  <ol class="journey">
+    <li>
+      <span class="step-n">1</span>
+      <div class="step-body">
+        <div class="stage"><b>Hold Right Option and talk</b> · coordinator</div>
+        <p>The status pill appears with a red dot and a sound meter. The speech engine starts working while you are still talking, which is why the result arrives so quickly after you let go. A quick tap instead of a hold keeps recording hands-free until the next tap. Esc throws the recording away.</p>
+      </div>
+      <div class="said sound">
+        <span class="label">You say</span>
+        <span class="text">“Um, call him at five, actually, at five thirty.”</span>
+      </div>
+    </li>
+    <li>
+      <span class="step-n">2</span>
+      <div class="step-body">
+        <div class="stage"><b>Let go</b> · speech engine · about 0.25 s</div>
+        <p>The speech engine finishes the sentence and hands the words back. It writes exactly what it heard, filler words included.</p>
+      </div>
+      <div class="said">
+        <span class="label">Speech engine writes</span>
+        <span class="text">Um, call him at five, actually, at five thirty.</span>
+      </div>
+    </li>
+    <li>
+      <span class="step-n">3</span>
+      <div class="step-body">
+        <div class="stage"><b>Tidy-up rules</b> · coordinator · a few milliseconds</div>
+        <p>Fixed rules remove filler words (“um”, “uh”, “you know”), fix capitals and spacing, apply your own spellings (“git hub” becomes “GitHub”) and saved snippets, and handle simple corrections like “Send it to Bob, I mean Alice.” In a terminal they also drop the final period.</p>
+      </div>
+      <div class="said">
+        <span class="label">After the rules</span>
+        <span class="text"><del>Um,</del> Call him at five, actually, at five thirty.</span>
+      </div>
+    </li>
+    <li>
+      <span class="step-n">4</span>
+      <div class="step-body">
+        <div class="stage"><b>AI editor</b> · optional · about 0.3 s, up to 1 s when it rewrites</div>
+        <p>A small language model on your computer gets one narrow job: merge the self-corrections the rules missed. It answers either “OK, leave it” or a corrected sentence. If it fails, runs too long, or drops too many of your words, Sunoto keeps the text from step 3.</p>
+      </div>
+      <div class="said">
+        <span class="label">After the AI editor</span>
+        <span class="text">Call him at five<del>, actually, at five</del> thirty.</span>
+      </div>
+    </li>
+    <li>
+      <span class="step-n">5</span>
+      <div class="step-body">
+        <div class="stage"><b>Paste</b> · coordinator</div>
+        <p>Sunoto checks that you are still in the window you were in when you let go, pastes the text, then puts back whatever was on your clipboard before.</p>
+      </div>
+      <div class="said final">
+        <span class="label">Lands in your app</span>
+        <span class="text">Call him at five thirty.</span>
+      </div>
+    </li>
+  </ol>
+
+  <figure>
+    <div class="fig-scroll fig-bar">
+      <svg class="dg" viewBox="0 0 800 130" role="img" aria-label="Time after you let go, to scale: the speech engine takes about 0.24 seconds, the tidy-up rules take a few milliseconds, and the optional AI editor takes about 0.3 seconds, so text appears after roughly 0.55 seconds.">
+        <text x="40" y="40" class="t-lab">you let go</text>
+        <line x1="40" y1="46" x2="40" y2="92" class="axis"/>
+
+        <rect x="40" y="56" width="288" height="28" rx="4" class="bar-asr"/>
+        <text x="184" y="75" text-anchor="middle" class="t-on-bar">Speech engine ≈ 0.24 s</text>
+
+        <rect x="328" y="56" width="6" height="28" class="bar-rules"/>
+        <text x="331" y="40" text-anchor="middle" class="t-lab">tidy-up rules (instant)</text>
+
+        <rect x="334" y="56" width="360" height="28" rx="4" class="bar-llm"/>
+        <text x="514" y="75" text-anchor="middle" class="t-on-bar">AI editor ≈ 0.3 s (optional)</text>
+
+        <line x1="694" y1="46" x2="694" y2="92" class="done"/>
+        <text x="694" y="40" text-anchor="middle" class="t-lab t-rec">text appears ≈ 0.55 s</text>
+
+        <line x1="40" y1="96" x2="760" y2="96" class="axis"/>
+        <line x1="40" y1="96" x2="40" y2="102" class="axis"/>
+        <line x1="280" y1="96" x2="280" y2="102" class="axis"/>
+        <line x1="520" y1="96" x2="520" y2="102" class="axis"/>
+        <line x1="760" y1="96" x2="760" y2="102" class="axis"/>
+        <text x="40" y="118" text-anchor="middle" class="t-lab">0 s</text>
+        <text x="280" y="118" text-anchor="middle" class="t-lab">0.2 s</text>
+        <text x="520" y="118" text-anchor="middle" class="t-lab">0.4 s</text>
+        <text x="760" y="118" text-anchor="middle" class="t-lab">0.6 s</text>
+      </svg>
+    </div>
+    <figcaption>Wait time after you let go, drawn to scale. The speech engine and the AI editor take nearly all of it; the rules are instant. With the AI editor off, text appears in about a quarter second. Typical figures from benchmarks on an M1 Pro MacBook; long sentences take a bit longer.</figcaption>
+  </figure>
+</section>
+
+<section id="pill">
+  <div class="prose">
+    <h2>What the status pill says</h2>
+    <p>The pill is the only thing Sunoto shows on screen. While recording it stays small: a red dot and a sound meter. Words appear only when there is something to report.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>The pill shows</th><th>What is going on</th><th>What the user does</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="nowrap"><span class="pill"><span class="dot"></span><span class="bars"><i style="height:40%"></i><i style="height:80%"></i><i style="height:100%"></i><i style="height:60%"></i><i style="height:85%"></i><i style="height:35%"></i></span></span></td>
+          <td>Recording.</td><td>Talk, then let go (or tap again if you tapped to start).</td>
+        </tr>
+        <tr><td class="nowrap"><span class="pill">transcribing...</span></td><td>The speech engine is finishing the sentence.</td><td>Wait a moment.</td></tr>
+        <tr><td class="nowrap"><span class="pill">polishing...</span></td><td>The AI editor is checking the sentence.</td><td>Wait a moment.</td></tr>
+        <tr><td class="nowrap"><span class="pill">loading speech model...</span></td><td>Sunoto just started and the speech engine is loading. A few seconds on a Mac.</td><td>Wait for it to clear.</td></tr>
+        <tr><td class="nowrap"><span class="pill">warming polish...</span></td><td>The AI editor is getting ready.</td><td>Wait for it to clear.</td></tr>
+        <tr><td class="nowrap"><span class="pill">microphone starting...</span></td><td>The mic was switched off after 2 idle minutes and is turning back on.</td><td>Nothing.</td></tr>
+        <tr><td class="nowrap"><span class="pill">waiting for microphone access</span></td><td>First run: macOS is asking for microphone permission.</td><td>Click Allow.</td></tr>
+        <tr><td class="nowrap"><span class="pill">microphone unavailable</span></td><td>The mic was unplugged or its permission was removed.</td><td>Check the sound input settings.</td></tr>
+        <tr><td class="nowrap"><span class="pill">hotkey blocked: check permissions</span></td><td>macOS is not letting Sunoto see the shortcut.</td><td>Grant Accessibility.</td></tr>
+        <tr><td class="nowrap"><span class="pill">focus changed; result is in the clipboard</span></td><td>You switched windows before the text was ready, so Sunoto did not type into the wrong place.</td><td>Paste it yourself.</td></tr>
+        <tr><td class="nowrap"><span class="pill">password field: nothing inserted</span></td><td>The cursor is in a password box. Sunoto refuses on purpose and does not copy the text either.</td><td>Nothing; this is by design.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="prose">
+    <h2>First-time setup on a Mac</h2>
+    <p>The Mac is the main focus right now. Installation is one command pasted into Terminal; everything after that is guided.</p>
+  </div>
+  <ol class="steps">
+    <li><strong>Run the installer</strong><span>It puts Sunoto.app in the user’s Applications folder and adds it as a Login Item, so it starts at login.</span></li>
+    <li><strong>Speech model downloads</strong><span>About 600 MB, once.</span></li>
+    <li><strong>AI editor: yes or no</strong><span>The installer asks before downloading its 2.7 GB model. Without it, dictation still works with the tidy-up rules.</span></li>
+    <li><strong>Grant two permissions</strong><span>An onboarding panel asks for Accessibility, then Microphone, with an Allow button per row.</span></li>
+    <li><strong>Click Done</strong><span>Sunoto restarts once and the installer prints “Sunoto is ready”.</span></li>
+  </ol>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Permission</th><th>Why Sunoto needs it</th><th>Without it</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="nowrap"><strong>Accessibility</strong></td><td>To notice <kbd>Right Option</kbd> while you are in another app, paste into the app you are using, and check whether the cursor is in a password field.</td><td>The shortcut does nothing and text cannot be inserted. The pill says “hotkey blocked”.</td></tr>
+        <tr><td class="nowrap"><strong>Microphone</strong></td><td>To hear you.</td><td>Nothing is recorded. The pill says “waiting for microphone access”.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose">
+    <p>Permission problems were the most common Mac bug in the project’s history: after an update, macOS would quietly stop delivering the shortcut. Setup now signs the app with a stable identity created on that machine, so later updates keep their permissions.</p>
+  </div>
+</section>
+
+<section id="guardrails">
+  <div class="prose">
+    <h2>Guardrails built in</h2>
+    <p>Sunoto types into other people’s apps, so most of its design is about never putting text in the wrong place or doing something the user did not intend.</p>
+  </div>
+  <ul class="points">
+    <li><strong>Private by construction</strong><span>Audio and text never leave the computer. There is no server.</span></li>
+    <li><strong>Never presses Enter or Tab</strong><span>A dictated line becomes plain text with spaces, so it can never send a chat message or run a command in a terminal on its own.</span></li>
+    <li><strong>Right window or nowhere</strong><span>Sunoto remembers which window you were in when you let go. If you switched since, it leaves the text on the clipboard and says so.</span></li>
+    <li><strong>Stays out of password fields</strong><span>On a Mac, it refuses to insert into a password box and does not copy the text there either.</span></li>
+    <li><strong>Gives your clipboard back</strong><span>It pastes through the clipboard, then restores what you had copied before.</span></li>
+    <li><strong>Microphone goes quiet when idle</strong><span>After 2 minutes without dictation the mic is released. The next press turns it back on.</span></li>
+    <li><strong>The AI editor has a short leash</strong><span>It may only merge self-corrections. If its answer drops too many words, errors, or takes too long, Sunoto uses the rules-only text.</span></li>
+    <li><strong>Crashes are recoverable</strong><span>If a helper stops, the coordinator restarts it, waiting a bit longer after each failure.</span></li>
+  </ul>
+</section>
+
+<section id="gaps">
+  <div class="prose">
+    <h2>Known gaps</h2>
+    <p>Things a product decision or more engineering work would change.</p>
+  </div>
+  <ul class="points gaps">
+    <li>
+      <strong>The AI editor can over-edit</strong>
+      <span>Its safety check catches most bad rewrites but not all. Found while writing this page:</span>
+      <div class="example">
+        <span>Said: “We should ask the design team, sorry, the product team, to review the onboarding copy.”</span>
+        <span>Inserted: “<del>We should ask the design team, sorry,</del> The product team, to review the onboarding copy.”</span>
+      </div>
+    </li>
+    <li><strong>Dictated text is saved in the local log</strong><span>On by default to help with debugging. For a release this is a privacy concern; one setting replaces the text with its length and a fingerprint.</span></li>
+    <li><strong>Built for English</strong><span>The tidy-up rules and the AI editor’s instructions are English only.</span></li>
+    <li><strong>No spoken formatting</strong><span>Saying “new line”, “comma” or “bullet point” types those words. Punctuation comes only from the speech engine.</span></li>
+    <li><strong>Short wait after start-up</strong><span>The speech engine needs a few seconds to load on a Mac and up to about 30 seconds on Linux. The pill shows this; the shortcut works once it clears.</span></li>
+    <li><strong>Large optional download</strong><span>The AI editor’s model is 2.7 GB, which is why the installer asks first.</span></li>
+    <li><strong>Linux is for developers today</strong><span>Install is a script that builds from source, and Wayland desktops need the shortcut set up by hand.</span></li>
+    <li><strong>No settings window</strong><span>Preferences such as the shortcut, custom spellings and snippets live in a text file and need a restart to apply.</span></li>
+  </ul>
+</section>
+
+<section id="platforms">
+  <div class="prose">
+    <h2>Mac and Linux</h2>
+    <p>The coordinator, the tidy-up rules and the AI editor are shared. The parts that touch the operating system are written separately for each.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th></th><th>Mac (main focus)</th><th>Linux</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Install</strong></td><td>One-line installer; a ready-built Sunoto.app with everything inside</td><td>Build from source; runs as a background service</td></tr>
+        <tr><td><strong>Speech engine</strong></td><td>Parakeet, on the Mac’s built-in graphics chip</td><td>Nemotron, on an NVIDIA graphics card</td></tr>
+        <tr><td><strong>Shortcut</strong></td><td>Works everywhere once Accessibility is granted</td><td>Works directly on X11; set up by hand on Wayland</td></tr>
+        <tr><td><strong>Pasting</strong></td><td>Paste first, typing as a fallback</td><td>X11 types first, Wayland pastes first</td></tr>
+        <tr><td><strong>Permissions</strong></td><td>Two, granted once in the onboarding panel</td><td>None</td></tr>
+        <tr><td><strong>Status pill</strong></td><td>Native Mac window</td><td>Linux desktop window (GTK)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="glossary">
+  <div class="prose">
+    <h2>Words you will hear from engineers</h2>
+    <p>The same parts, by the names used in code, logs and planning docs.</p>
+  </div>
+  <dl class="glossary">
+    <div><dt>daemon</dt><dd>The coordinator: the program that is always running in the background. File name <span class="mono">sunoto-daemon</span>.</dd></div>
+    <div><dt>sidecar</dt><dd>A helper program the coordinator starts and exchanges short text messages with.</dd></div>
+    <div><dt>ASR</dt><dd>Automatic speech recognition: the speech engine.</dd></div>
+    <div><dt>Parakeet, Nemotron</dt><dd>The two speech models: Parakeet on Mac, Nemotron on Linux.</dd></div>
+    <div><dt>LLM polish</dt><dd>The AI editor. “LLM” means large language model.</dd></div>
+    <div><dt>deterministic polish</dt><dd>The tidy-up rules. Deterministic means the same input always gives the same output.</dd></div>
+    <div><dt>overlay</dt><dd>The status pill.</dd></div>
+    <div><dt>partials</dt><dd>The speech engine’s running guesses while you are still talking.</dd></div>
+    <div><dt>hotkey, event tap</dt><dd>The shortcut and the macOS mechanism that listens for it.</dd></div>
+    <div><dt>TCC</dt><dd>The macOS privacy system behind the permission prompts.</dd></div>
+    <div><dt>pre-roll</dt><dd>The 0.3 s of sound kept from just before you press, so a fast first word is not clipped.</dd></div>
+    <div><dt>keepalive, warm-up</dt><dd>Small background pings that keep the AI editor ready, so it does not start cold.</dd></div>
+    <div><dt>Metal, MLX, CUDA</dt><dd>Ways of running models on the graphics chip: Metal and MLX on Mac, CUDA on NVIDIA.</dd></div>
+    <div><dt>focus</dt><dd>The window and text field your keystrokes currently go to.</dd></div>
+  </dl>
+</section>
+
+<footer>
+  <p>Sources: the code in <span class="mono">apps/daemon</span>, <span class="mono">crates/</span> and <span class="mono">services/</span>, plus <a href="architecture.md">architecture.md</a>, <a href="desktop-configuration.md">desktop-configuration.md</a> and the README. Timings come from the project’s own benchmarks on an M1 Pro MacBook.</p>
+</footer>
+
+</main>
+</body>
+</html>
