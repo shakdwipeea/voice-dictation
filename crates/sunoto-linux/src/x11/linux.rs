@@ -15,6 +15,9 @@ pub enum HotkeyEvent {
     /// these; XGrabKey either succeeds or fails at open time.
     Blocked,
     Available,
+    /// Esc or a typed key cancelled a recording. Only the macOS listener
+    /// emits it.
+    Cancelled,
 }
 
 /// Explanation for a blocked hotkey. X11 never reports one, so this only
@@ -24,17 +27,13 @@ pub fn keep_process_responsive(_reason: &str) -> bool {
     true
 }
 
-/// X11 has no permission gate; both are always "granted".
-pub fn permission_preflights() -> (bool, bool) {
-    (true, true)
-}
-
-/// X11 has no TCC-style permission prompts; these keep the desktop facade
-/// platform-neutral.
-pub fn request_input_monitoring() -> bool {
+/// X11 has no permission gate; Accessibility is always "granted".
+pub fn accessibility_granted() -> bool {
     true
 }
 
+/// X11 has no TCC-style permission prompts; this keeps the desktop facade
+/// platform-neutral.
 pub fn request_accessibility() -> bool {
     true
 }

@@ -139,6 +139,7 @@ mod tests {
             HotkeyEvent::Released,
             HotkeyEvent::Blocked,
             HotkeyEvent::Available,
+            HotkeyEvent::Cancelled,
         ];
         let _ = [
             BubbleKind::Recording,

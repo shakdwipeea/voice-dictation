@@ -224,12 +224,31 @@ Typical macOS real-ASR config:
 
 ```json
 {
-  "shortcut": "Ctrl+F1",
+  "shortcut": "RightOption",
   "backend": "parakeet_mlx_streaming",
   "profile_ms": 560,
   "overlay_backend": "macos"
 }
 ```
+
+### Shortcut on macOS
+
+The default is **Right Option** on its own: one key under the right thumb that
+does nothing by itself in macOS. Two ways to use it:
+
+- **Hold** it, speak, and let go.
+- **Tap** it (shorter than a third of a second), speak hands-free, and tap it
+  again to finish. Hands-free recordings stop on their own after 5 minutes.
+
+**Esc** throws away the recording in progress. The tap only listens, so the
+app in front also receives the Esc. Typing another key while Right Option is
+held (Option-E for an accent, say) cancels too, so special characters still
+work.
+
+Other single keys: `"RightCommand"`, `"RightControl"`, `"RightShift"`. Chords
+such as `"Ctrl+F1"` or `"Cmd+Shift+Space"` still work. Left-hand modifiers and
+the Globe/Fn key are not offered: macOS and other apps already use them.
+`"tap_to_lock": false` restores strict hold-to-talk.
 
 `backend = "parakeet_mlx_streaming"` is the default macOS backend. It uses
 parakeet-mlx `transcribe_stream()` for live partials while recording, then runs
@@ -281,17 +300,19 @@ not loaded.
 
 macOS requires one-time Privacy & Security permissions:
 
-- Accessibility for CGEvent insertion and hotkeys.
-- Input Monitoring for the global event tap.
-- Microphone for CoreAudio capture.
+- Accessibility, for the shortcut's event tap and for pasting (CGEvent).
+- Microphone, for CoreAudio capture.
 
-On first install, Sunoto opens one onboarding panel with three aligned steps.
-Only the next missing permission can be opened, so macOS never stacks several
-prompts or Settings panes. Input Monitoring and Accessibility are requested by
-the daemon's main loop when their **Allow** button is clicked; Microphone
-capture does not start until its step. Terminal commands such as `check`,
-`selftest`, and `insert` do not create separate permission entries. After all
-three rows say **Allowed**, click **Done**. The panel then closes and Sunoto
+Input Monitoring is not needed: Accessibility grants both listening to and
+posting keyboard events, while Input Monitoring only grants listening.
+
+On first install, Sunoto opens one onboarding panel with two steps. Only the
+next missing permission can be opened, so macOS never stacks several prompts
+or Settings panes. Accessibility is requested by the daemon's main loop when
+its **Allow** button is clicked; Microphone capture does not start until its
+step. Terminal commands such as `check`, `selftest`, and `insert` do not
+create separate permission entries. After both rows say **Allowed**, click
+**Done**. The panel then closes and Sunoto
 relaunches once to apply the keyboard grants. The standard close button lets
 you postpone setup without granting anything else.
 
@@ -336,7 +357,8 @@ nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log 2>&1 &
 ```
 
 Wait for `ASR sidecar ready` (~16–32s warmup while parakeet-mlx loads), then
-hold Ctrl+F1, speak, and release — clean text is pasted at the focused cursor.
+hold Right Option, speak, and let go (or tap it, speak, and tap again) — clean
+text is pasted at the focused cursor.
 
 Watch live logs:
 

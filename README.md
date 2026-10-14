@@ -1,7 +1,8 @@
 # Sunoto Voice Dictation
 
-Sunoto is a local, system-wide voice dictation app. Hold **Ctrl+F1**, speak,
-and release—the transcript is inserted into the focused application.
+Sunoto is a local, system-wide voice dictation app. Hold **Right Option** and
+speak, or tap it to talk hands-free; the transcript is inserted into the
+focused application. (On Linux the shortcut is **Ctrl+F1**.)
 
 - Local ASR: no cloud service or API key
 - Push-to-talk: no silence timeout
@@ -53,10 +54,10 @@ brew install python@3.12 && bash services/asr/setup_macos_runtime.sh && .venv-ne
 
 ### Grant permissions once
 
-Sunoto opens an onboarding panel that guides **Input Monitoring**,
-**Accessibility**, and **Microphone** one at a time. Click the enabled
-**Allow** button, grant that permission, then continue to the next row. When
-all three say **Allowed**, click **Done**; Sunoto relaunches once and the
+Sunoto opens an onboarding panel that asks for two permissions, one at a
+time: **Accessibility** (to notice the shortcut and paste your words) and
+**Microphone**. Click the enabled **Allow** button, grant that permission,
+then continue to the next row. When both say **Allowed**, click **Done**; Sunoto relaunches once and the
 installer prints `Sunoto is ready`. Setup signs the app with a stable
 per-machine identity, so later rebuilds and upgrades do not require another
 grant.
@@ -132,9 +133,14 @@ the daemon's native global shortcut and XTEST insertion. See
 ## Everyday use
 
 1. Focus the application where text should appear.
-2. Hold **Ctrl+F1**.
-3. Speak while holding the keys.
-4. Release to transcribe, polish, and insert the text.
+2. Either hold **Right Option** (Ctrl+F1 on Linux), speak, and let go, or tap
+   it once, speak hands-free, and tap it again to finish.
+3. Sunoto transcribes, polishes, and inserts the text.
+4. Changed your mind? Press **Esc** while recording to throw it away (macOS).
+
+A hands-free recording finishes on its own after 5 minutes. Set
+`"tap_to_lock": false` for strict hold-to-talk, or pick another key with
+`"shortcut"` (see [desktop configuration](docs/desktop-configuration.md)).
 
 Sunoto waits for its ASR sidecar to warm up after startup. Do not judge the
 hotkey until the log says `ASR sidecar ready` or `Sunoto ready for dictation`.

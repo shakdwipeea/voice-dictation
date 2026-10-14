@@ -41,8 +41,13 @@ physical-keyboard event tap. Stop here; it's §1, not the ASR.
 
 - The CGEventTap (`crates/sunoto-macos/src/hotkey.rs`) calls
   `CGEventTapCreate` with `kCGEventTapOptionListenOnly`. On macOS 10.15+,
-  capturing keyboard events requires **Input Monitoring** TCC permission
-  (requested via `CGRequestListenEventAccess`).
+  capturing keyboard events needs Input Monitoring **or** Accessibility;
+  Accessibility grants both listening and posting. Since 2026-10-15 Sunoto
+  only asks for Accessibility (and Microphone). The Input Monitoring step was
+  dropped because `CGRequestListenEventAccess` does not reliably list the app
+  in the pane (Settings opened on a list with nothing to switch on), a
+  running process cannot see its own new Input Monitoring grant, and the
+  database-change heuristic used to detect it counted a Deny as a grant.
 - `CGEventTapCreate` can return **non-null** even without the permission, but
   macOS then **immediately disables the tap** — it receives zero events. This
   is the "inert tap". Since 2026-09-17 the listener proves delivery with a
@@ -69,8 +74,7 @@ is re-signed with that same identity. The first upgrade from an ad-hoc build
 resets the old Sunoto records and asks once; subsequent rebuilds and reinstalls
 keep the same TCC identity and grants.
 
-The native onboarding panel requests Input Monitoring, Accessibility, and
-Microphone one at a time. Only the next missing row is actionable; each click
+The native onboarding panel requests Accessibility, then Microphone. Only the next missing row is actionable; each click
 is handled by the daemon's main loop and opens only that service's Settings
 pane. CoreAudio stays closed until the Microphone step. The panel remains open
 after all checks pass; Done completes setup and relaunches the daemon once to
@@ -88,8 +92,10 @@ tail -f "$HOME/Library/Logs/sunoto/daemon.log"
 
 `Sunoto.app` is an `LSUIElement` application started by Launch Services, so
 the daemon itself is the responsible GUI process. Follow the onboarding panel
-and grant Accessibility, Input Monitoring, and Microphone to the single entry
-named **Sunoto**. `setup` watches the app's own delivery and capture probes and
+and grant Accessibility and Microphone to the single entry named **Sunoto**.
+If the shortcut is still blocked with Accessibility on, quit and reopen
+Sunoto; as a last resort, also switching Sunoto on under Input Monitoring
+does no harm. `setup` watches the app's own delivery and capture probes and
 returns when all checks report ready.
 
 Two facts learned live on 2026-09-17 that the tooling now handles:

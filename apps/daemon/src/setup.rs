@@ -666,9 +666,7 @@ pub fn info_plist() -> String {
     <key>LSUIElement</key><true/>
     <key>NSAppSleepDisabled</key><true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Sunoto records microphone audio while you hold the push-to-talk shortcut.</string>
-    <key>NSInputMonitoringUsageDescription</key>
-    <string>Sunoto listens for the global push-to-talk shortcut while you use other applications.</string>
+    <string>Sunoto records your voice only while you dictate with its shortcut.</string>
 </dict>
 </plist>
 "#,
@@ -1121,9 +1119,9 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
             {
+                let shortcut = crate::settings::shortcut_label(&field("shortcut"));
                 ok(&format!(
-                    "{APP_NAME} is ready. Hold {} in any app, speak, release.",
-                    field("shortcut")
+                    "{APP_NAME} is ready. In any app, hold {shortcut} and speak, or tap it to talk hands-free and tap again to finish."
                 ));
                 return Ok(());
             }

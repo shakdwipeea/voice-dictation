@@ -44,6 +44,60 @@ fn default_backend() -> &'static str {
     }
 }
 
+/// Right Option on a Mac: one key under the right thumb that does nothing on
+/// its own. Linux keeps a chord, since X11 grabs need a key plus modifiers.
+fn default_shortcut() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "RightOption"
+    } else {
+        "Ctrl+F1"
+    }
+}
+
+/// The shortcut as people read it: "Right Option", "Control-F1".
+pub fn shortcut_label(shortcut: &str) -> String {
+    let squashed: String = shortcut
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '_'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let lone = match squashed.as_str() {
+        "rightoption" | "rightalt" => Some("Right Option"),
+        "rightcommand" | "rightcmd" => Some("Right Command"),
+        "rightcontrol" | "rightctrl" => Some("Right Control"),
+        "rightshift" => Some("Right Shift"),
+        _ => None,
+    };
+    if let Some(lone) = lone {
+        return lone.to_string();
+    }
+    shortcut
+        .split('+')
+        .map(str::trim)
+        .map(|part| match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => "Control".to_string(),
+            "shift" => "Shift".to_string(),
+            "alt" | "option" => "Option".to_string(),
+            "cmd" | "command" | "super" => "Command".to_string(),
+            "esc" | "escape" => "Esc".to_string(),
+            key if key.len() > 1
+                && key.starts_with('f')
+                && key[1..].chars().all(|c| c.is_ascii_digit()) =>
+            {
+                key.to_uppercase()
+            }
+            _ => {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 fn default_profile_ms() -> u16 {
     if cfg!(target_os = "macos") { 560 } else { 160 }
 }
@@ -59,8 +113,14 @@ fn default_overlay_backend() -> &'static str {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Push-to-talk shortcut, e.g. "Ctrl+F1".
+    /// Dictation shortcut: a chord such as "Ctrl+F1", or on macOS a single
+    /// right-hand modifier such as "RightOption". Hold it and talk, or tap it
+    /// to talk hands-free (see `tap_to_lock`).
     pub shortcut: String,
+    /// A tap shorter than a third of a second keeps recording until the next
+    /// tap; holding still records until release. Esc cancels on macOS. Off
+    /// restores strict hold-to-talk.
+    pub tap_to_lock: bool,
     /// Enables the separate voice-command capture path. It remains off until
     /// the suggestion palette is connected; enabling it must never change the
     /// behavior of the normal dictation shortcut.
@@ -182,7 +242,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            shortcut: "Ctrl+F1".to_string(),
+            shortcut: default_shortcut().to_string(),
+            tap_to_lock: true,
             system_mode_enabled: false,
             system_shortcut: "Ctrl+F2".to_string(),
             system_llm_fallback_enabled: true,
@@ -721,6 +782,28 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_defaults_to_hold_or_tap() {
+        let settings = Settings::default();
+        assert!(settings.tap_to_lock);
+        if cfg!(target_os = "macos") {
+            assert_eq!(settings.shortcut, "RightOption");
+        } else {
+            assert_eq!(settings.shortcut, "Ctrl+F1");
+        }
+        // Older config files without the new key keep working.
+        let loaded: Settings = serde_json::from_str(r#"{"shortcut": "Ctrl+F1"}"#).unwrap();
+        assert!(loaded.tap_to_lock);
+    }
+
+    #[test]
+    fn shortcut_labels_read_like_macos_menus() {
+        assert_eq!(shortcut_label("RightOption"), "Right Option");
+        assert_eq!(shortcut_label("right-command"), "Right Command");
+        assert_eq!(shortcut_label("Ctrl+F1"), "Control-F1");
+        assert_eq!(shortcut_label("cmd+shift+space"), "Command-Shift-Space");
+    }
+
+    #[test]
     fn quiet_idle_defaults() {
         let settings = Settings::default();
         assert_eq!(settings.capture_idle_stop_secs, 120);
@@ -799,6 +882,7 @@ mod tests {
     #[test]
     fn enabled_system_mode_requires_a_distinct_shortcut() {
         let same_shortcut = Settings {
+            shortcut: "Ctrl+F1".into(),
             system_mode_enabled: true,
             system_shortcut: "ctrl+f1".into(),
             ..Settings::default()

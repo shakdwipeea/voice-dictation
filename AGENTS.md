@@ -9,7 +9,7 @@ flow where possible.
 ## Architecture
 
 ```
-                            [hotkey / Ctrl+F1]
+              [hotkey: Right Option on macOS / Ctrl+F1 on Linux]
                                      |
                                      v
    +-------------------------------------------------------------+
@@ -141,8 +141,9 @@ muted; check System Settings → Sound → Input.
   Login Item. Install or reinstall with `bash install-macos.sh` (builds, then
   runs `sunoto-daemon setup`, which waits for the app's own ready report).
   Restart: `pkill -f "Sunoto.app/Contents/MacOS/sunoto-daemon"; open
-  ~/Applications/Sunoto.app`. Permissions (Accessibility, Input Monitoring,
-  Microphone) are granted to the one entry `Sunoto.app`; the stable local
+  ~/Applications/Sunoto.app`. Permissions (Accessibility and Microphone;
+  Accessibility also covers the shortcut's event tap, so Input Monitoring is
+  not requested) are granted to the one entry `Sunoto.app`; the stable local
   signature keeps those grants across rebuilds and reinstalls.
 - **Development launch:** run the **bare binary** from a terminal, NOT via
   launchd — `nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log
@@ -157,7 +158,8 @@ muted; check System Settings → Sound → Input.
 
 ### macOS diagnosis quick-reference (full detail in the recurring-issues doc)
 
-- **Ctrl+F1 does nothing** → recurring-issues §1 (inert tap / TCC). First,
+- **The shortcut does nothing** (Right Option; Ctrl+F1 on older configs) →
+  recurring-issues §1 (inert tap / TCC). First,
   inspect `sunoto-daemon status` and the onboarding panel. If a synthetic
   control-socket press records, the audio/ASR pipeline is healthy and only the
   physical-keyboard event tap is blocked.

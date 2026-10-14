@@ -1,93 +1,469 @@
 import AppKit
 import Foundation
 
-// The passive pill is used while recording and resolving. System mode uses a
-// purple accent so it cannot be confused with ordinary red dictation capture.
+// The look of the overlay. Your voice is red while you talk; when you let go
+// the sound settles into an ink-blue line, the line text sits on, and a glint
+// travels along it while Sunoto works. Amber marks anything that needs the
+// user. System mode uses the person's macOS accent so it can never be
+// confused with dictation capture.
+private struct PillPalette {
+    let body: NSColor
+    let edge: NSColor
+    let primary: NSColor
+    let secondary: NSColor
+    let faint: NSColor
+    let voice: NSColor
+    let ink: NSColor
+    let amber: NSColor
+    let onAmber: NSColor
+
+    static func resolve(for appearance: NSAppearance) -> PillPalette {
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return PillPalette(
+                body: NSColor(srgbRed: 0.105, green: 0.115, blue: 0.145, alpha: 0.95),
+                edge: NSColor(white: 1.0, alpha: 0.11),
+                primary: NSColor(srgbRed: 0.95, green: 0.96, blue: 0.98, alpha: 1),
+                secondary: NSColor(white: 1.0, alpha: 0.58),
+                faint: NSColor(white: 1.0, alpha: 0.16),
+                voice: NSColor(srgbRed: 1.0, green: 0.38, blue: 0.32, alpha: 1),
+                ink: NSColor(srgbRed: 0.56, green: 0.69, blue: 1.0, alpha: 1),
+                amber: NSColor(srgbRed: 1.0, green: 0.72, blue: 0.28, alpha: 1),
+                onAmber: NSColor(srgbRed: 0.16, green: 0.10, blue: 0.0, alpha: 0.9)
+            )
+        }
+        return PillPalette(
+            body: NSColor(srgbRed: 0.985, green: 0.987, blue: 0.992, alpha: 0.96),
+            edge: NSColor(srgbRed: 0.05, green: 0.08, blue: 0.15, alpha: 0.13),
+            primary: NSColor(srgbRed: 0.09, green: 0.11, blue: 0.15, alpha: 1),
+            secondary: NSColor(srgbRed: 0.09, green: 0.11, blue: 0.15, alpha: 0.56),
+            faint: NSColor(srgbRed: 0.09, green: 0.11, blue: 0.15, alpha: 0.13),
+            voice: NSColor(srgbRed: 0.88, green: 0.22, blue: 0.17, alpha: 1),
+            ink: NSColor(srgbRed: 0.18, green: 0.37, blue: 0.84, alpha: 1),
+            amber: NSColor(srgbRed: 0.85, green: 0.52, blue: 0.0, alpha: 1),
+            onAmber: NSColor.white
+        )
+    }
+}
+
+private enum PillPhase {
+    /// Nothing to show.
+    case idle
+    /// Holding the shortcut: live sound ribbon and timer.
+    case recording
+    /// Let go: the ribbon has settled into a line while ASR and polish run.
+    case working
+    /// Daemon health that resolves by itself (loading, warming, mic starting).
+    case busy
+    /// Daemon health the user has to fix (hotkey blocked, mic unavailable).
+    case attention
+    /// A session failed or its text went somewhere other than the cursor.
+    case error
+    /// A short confirmation, such as a System mode action that ran.
+    case notice
+}
+
+/// The passive pill shown at the top of the screen. It never takes clicks.
 private final class PillView: NSView {
-    var level: CGFloat = 0.0 {
-        didSet { needsDisplay = true }
-    }
-    var status: String = "" {
-        didSet { needsDisplay = true }
-    }
-    /// True while the pill is showing daemon health (loading, warming,
-    /// blocked) rather than a capture. Draws a neutral dot so a user never
-    /// mistakes "not ready" for "recording".
-    var attention: Bool = false {
-        didSet { needsDisplay = true }
-    }
+    static let rowHeight: CGFloat = 40
+    static let captionHeight: CGFloat = 24
+    static let captureWidth: CGFloat = 232
+    static let maxWidth: CGFloat = 440
+    private static let ribbonLeft: CGFloat = 38
+    private static let timerWidth: CGFloat = 54
+    private static let sampleSpacing: CGFloat = 3
+    private static let historyLength = 160
+    private static let sampleInterval: CFTimeInterval = 0.02
+    /// Audio frames arrive every 20 ms while the key is held; a longer gap
+    /// means the user let go.
+    private static let releaseGap: CFTimeInterval = 0.14
+    private static let settleDuration: CFTimeInterval = 0.36
+    private static let glintPeriod: CFTimeInterval = 1.25
+
+    private(set) var phase: PillPhase = .idle
+    private(set) var caption = ""
+    private var systemMode = false
+    private var levels = [CGFloat](repeating: 0, count: PillView.historyLength)
+    private var elapsed: Double = 0
+    private var sawSample = false
+    private var lastSampleAt: CFTimeInterval = 0
+    private var settle: CGFloat = 0
+    private var settleStartedAt: CFTimeInterval = 0
+    private var clock: CFTimeInterval = 0
+    var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
     override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    /// True while the pill changes on its own and needs the display clock.
+    var isAnimating: Bool {
+        switch phase {
+        case .recording: return true
+        case .working: return settle < 1 || !reduceMotion
+        case .busy: return !reduceMotion
+        default: return false
+        }
+    }
+
+    // MARK: Input from the daemon
+
+    /// A new capture is about to start (or the pill was just shown).
+    func beginIfIdle(now: CFTimeInterval) {
+        guard phase == .idle else { return }
+        startCapture(now: now)
+    }
+
+    func pushLevel(_ level: CGFloat, elapsed newElapsed: Double, now: CFTimeInterval) {
+        let newSession = newElapsed + 0.05 < elapsed
+        if newSession || !(phase == .recording || phase == .working) {
+            startCapture(now: now)
+        } else if phase == .working {
+            // Audio resumed after a hiccup: the key is still held.
+            phase = .recording
+            settle = 0
+        }
+        levels.removeFirst()
+        levels.append(max(0, min(1, level)))
+        elapsed = newElapsed
+        sawSample = true
+        lastSampleAt = now
+        clock = now
+        needsDisplay = true
+    }
+
+    func setStatus(_ raw: String, error: Bool) {
+        var text = raw
+        for prefix in ["System — ", "System: "] where text.hasPrefix(prefix) {
+            systemMode = true
+            text = String(text.dropFirst(prefix.count))
+        }
+        text = Self.tidy(text)
+        if error {
+            phase = .error
+            caption = Self.sentenceCase(text)
+        } else if raw.isEmpty {
+            // Sent as a new recording starts: clear the caption.
+            caption = ""
+            systemMode = false
+        } else if ["polishing…", "transcribing…"].contains(text.lowercased()) {
+            enterWorking(now: clock)
+            caption = Self.sentenceCase(text)
+        } else if phase == .recording || phase == .working {
+            // A live partial transcript; the daemon sends its last 40 chars.
+            caption = text.count >= 40 ? "…" + text : text
+        } else {
+            phase = .notice
+            caption = Self.sentenceCase(text)
+        }
+        needsDisplay = true
+    }
+
+    func setHealth(name: String, detail: String) {
+        let selfResolving = ["loading_asr", "warming_polish", "mic_starting", "mic_reopening"]
+        phase = selfResolving.contains(name) ? .busy : .attention
+        caption = Self.sentenceCase(Self.tidy(detail.isEmpty ? name : detail))
+        systemMode = false
+        needsDisplay = true
+    }
+
+    /// Advance animations to `now`. Returns whether to keep the clock running.
+    func tick(now: CFTimeInterval) -> Bool {
+        clock = now
+        if phase == .recording, sawSample, now - lastSampleAt > Self.releaseGap {
+            enterWorking(now: now)
+        }
+        if phase == .working, settle < 1 {
+            let t = CGFloat(min(1, (now - settleStartedAt) / Self.settleDuration))
+            settle = 1 - pow(1 - t, 3)
+        }
+        needsDisplay = true
+        return isAnimating
+    }
+
+    func reset() {
+        phase = .idle
+        caption = ""
+        systemMode = false
+        levels = [CGFloat](repeating: 0, count: Self.historyLength)
+        elapsed = 0
+        sawSample = false
+        settle = 0
+        needsDisplay = true
+    }
+
+    /// A still frame of a recording for the onboarding panel.
+    func showDemo() {
+        reset()
+        phase = .recording
+        // Two spoken phrases with a breath between them.
+        for index in 0..<Self.historyLength {
+            let t = Double(index) * Self.sampleInterval
+            let envelope = max(0, sin(t * 2.3) * 0.6 + sin(t * 5.1 + 1) * 0.35 + 0.25)
+            levels[index] = CGFloat(min(1, envelope * (0.75 + 0.25 * sin(t * 37))))
+        }
+        elapsed = 3.2
+    }
+
+    private func startCapture(now: CFTimeInterval) {
+        phase = .recording
+        levels = [CGFloat](repeating: 0, count: Self.historyLength)
+        elapsed = 0
+        sawSample = false
+        lastSampleAt = now
+        settle = 0
+    }
+
+    private func enterWorking(now: CFTimeInterval) {
+        guard phase != .working else { return }
+        if phase != .recording {
+            settle = 1
+        } else {
+            settleStartedAt = now
+        }
+        phase = .working
+    }
+
+    private static func tidy(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.hasSuffix("...") {
+            result = String(result.dropLast(3)) + "…"
+        }
+        return result
+    }
+
+    private static func sentenceCase(_ text: String) -> String {
+        guard let first = text.first, first.isLowercase else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
+
+    // MARK: Size
+
+    private var captionFont: NSFont { .systemFont(ofSize: 13, weight: .regular) }
+    private var labelFont: NSFont { .systemFont(ofSize: 13, weight: .medium) }
+
+    private func captionString(_ palette: PillPalette?, transcript: Bool, emphasized: Bool = false) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = transcript ? .byTruncatingHead : .byTruncatingTail
+        let color = palette.map { transcript || emphasized ? $0.primary : $0.secondary } ?? NSColor.labelColor
+        let result = NSMutableAttributedString()
+        if systemMode {
+            result.append(NSAttributedString(string: "System  ", attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.controlAccentColor,
+                .paragraphStyle: paragraph,
+            ]))
+        }
+        result.append(NSAttributedString(string: caption, attributes: [
+            .font: transcript ? captionFont : labelFont,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+        ]))
+        return result
+    }
+
+    private var captionIsTranscript: Bool {
+        !(caption == "Polishing…" || caption == "Transcribing…")
+    }
+
+    /// The pill grows to fit its caption. Widths snap to 16 pt steps so a
+    /// stream of partials does not make the window twitch.
+    var preferredSize: NSSize {
+        let width: CGFloat
+        let height: CGFloat
+        switch phase {
+        case .idle:
+            width = Self.captureWidth
+            height = Self.rowHeight
+        case .recording, .working:
+            let hasCaption = !caption.isEmpty || systemMode
+            let textWidth = hasCaption ? ceil(captionString(nil, transcript: captionIsTranscript).size().width) : 0
+            width = max(Self.captureWidth, Self.ribbonLeft + textWidth + 20)
+            height = Self.rowHeight + (hasCaption ? Self.captionHeight : 0)
+        case .busy, .attention, .error, .notice:
+            let textWidth = ceil(captionString(nil, transcript: false).size().width)
+            width = max(150, Self.ribbonLeft + textWidth + 20)
+            height = Self.rowHeight
+        }
+        let snapped = min(Self.maxWidth, ceil(width / 16) * 16)
+        return NSSize(width: snapped, height: height)
+    }
+
+    // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let bounds = self.bounds
-        let pillWidth: CGFloat = 214
-        let pillHeight: CGFloat = 34
-        let pillRect = NSRect(
-            x: max(0, (bounds.width - pillWidth) / 2.0),
-            y: 0,
-            width: min(pillWidth, bounds.width),
-            height: pillHeight
+        let palette = PillPalette.resolve(for: effectiveAppearance)
+        let body = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let radius = min(body.height / 2, 20)
+        let shape = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
+        palette.body.setFill()
+        shape.fill()
+        palette.edge.setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+
+        switch phase {
+        case .idle:
+            break
+        case .recording, .working:
+            drawCapture(palette)
+        case .busy:
+            drawSpinner(palette)
+            drawLabel(palette)
+        case .attention, .error:
+            drawWarning(palette)
+            drawLabel(palette)
+        case .notice:
+            drawNotice(palette)
+            drawLabel(palette)
+        }
+    }
+
+    private var center: CGFloat { Self.rowHeight / 2 }
+    private let markX: CGFloat = 21
+
+    private func drawCapture(_ palette: PillPalette) {
+        let live = systemMode ? NSColor.controlAccentColor : palette.voice
+        let settled = systemMode ? NSColor.controlAccentColor : palette.ink
+        let latest = levels.last ?? 0
+
+        // The dot breathes with your voice while recording, then crossfades
+        // from red to ink as the sound settles (a hue blend would pass
+        // through purple, which reads as System mode).
+        let radius = 4.5 + (phase == .recording ? latest * 1.8 : 0)
+        if phase == .recording, latest > 0.05 {
+            live.withAlphaComponent(0.2 * min(1, latest * 1.5)).setFill()
+            let halo = radius + 4
+            NSBezierPath(ovalIn: NSRect(x: markX - halo, y: center - halo, width: halo * 2, height: halo * 2)).fill()
+        }
+        let dot = NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)
+        live.withAlphaComponent(1 - settle).setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        settled.withAlphaComponent(settle).setFill()
+        NSBezierPath(ovalIn: dot).fill()
+
+        let left = Self.ribbonLeft
+        let right = bounds.width - Self.timerWidth
+        drawRibbon(from: left, to: right, tint: live, settled: settled, palette: palette)
+        drawTimer(palette, right: bounds.width - 16)
+
+        if !caption.isEmpty || systemMode {
+            let rect = NSRect(x: left, y: Self.rowHeight - 6, width: bounds.width - left - 18, height: 18)
+            captionString(palette, transcript: captionIsTranscript)
+                .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        }
+    }
+
+    private func drawRibbon(from left: CGFloat, to right: CGFloat, tint: NSColor, settled: NSColor, palette: PillPalette) {
+        guard right > left else { return }
+        let spacing = Self.sampleSpacing
+        let maxAmplitude: CGFloat = 10
+        let drift = phase == .recording && sawSample
+            ? CGFloat(min(1, (clock - lastSampleAt) / Self.sampleInterval)) : 0
+        var points: [NSPoint] = []
+        var step = 0
+        while step < levels.count {
+            let x = right - (CGFloat(step) + drift) * spacing
+            if x < left { break }
+            let taper = min(1, (x - left) / 30) * min(1, (right - x) / 8 + 0.35)
+            let amplitude = levels[levels.count - 1 - step] * maxAmplitude * (1 - settle) * max(0, taper)
+            points.append(NSPoint(x: x, y: amplitude))
+            step += 1
+        }
+        points.reverse()
+
+        // The baseline: faint while you talk, the full ink line once settled.
+        let baseAlpha = 0.22 + 0.33 * settle
+        settled.withAlphaComponent(baseAlpha).setFill()
+        let lineHeight: CGFloat = 1 + settle
+        NSRect(x: left, y: center - lineHeight / 2, width: right - left, height: lineHeight).fill()
+
+        if settle < 1, points.count > 2 {
+            let ribbon = NSBezierPath()
+            ribbon.move(to: NSPoint(x: points[0].x, y: center))
+            for index in 1..<points.count {
+                let previous = NSPoint(x: points[index - 1].x, y: center - points[index - 1].y)
+                let current = NSPoint(x: points[index].x, y: center - points[index].y)
+                let mid = NSPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
+                ribbon.curve(to: mid, controlPoint1: previous, controlPoint2: previous)
+            }
+            ribbon.line(to: NSPoint(x: points[points.count - 1].x, y: center))
+            for index in stride(from: points.count - 1, to: 0, by: -1) {
+                let previous = NSPoint(x: points[index].x, y: center + points[index].y)
+                let current = NSPoint(x: points[index - 1].x, y: center + points[index - 1].y)
+                let mid = NSPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
+                ribbon.curve(to: mid, controlPoint1: previous, controlPoint2: previous)
+            }
+            ribbon.close()
+            tint.withAlphaComponent(0.92 * (1 - settle)).setFill()
+            ribbon.fill()
+        }
+
+        // While Sunoto works, a glint runs along the line.
+        if phase == .working, settle >= 1, !reduceMotion {
+            let progress = CGFloat(clock.truncatingRemainder(dividingBy: Self.glintPeriod) / Self.glintPeriod)
+            let eased = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
+            let glintWidth: CGFloat = 64
+            let x = left - glintWidth + (right - left + glintWidth) * eased
+            NSGraphicsContext.saveGraphicsState()
+            NSRect(x: left, y: center - 1.5, width: right - left, height: 3).clip()
+            NSGradient(colors: [settled.withAlphaComponent(0), settled, settled.withAlphaComponent(0)])?
+                .draw(in: NSRect(x: x, y: center - 1.5, width: glintWidth, height: 3), angle: 0)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+
+    private func drawTimer(_ palette: PillPalette, right: CGFloat) {
+        let seconds = Int(elapsed.rounded(.down))
+        let text = String(format: "%d:%02d", seconds / 60, seconds % 60)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .right
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
+            .foregroundColor: phase == .recording ? palette.secondary : palette.secondary.withAlphaComponent(0.4),
+            .paragraphStyle: paragraph,
+        ]
+        let height: CGFloat = 15
+        (text as NSString).draw(
+            in: NSRect(x: right - 40, y: center - height / 2, width: 40, height: height),
+            withAttributes: attributes
         )
+    }
 
-        NSColor(calibratedWhite: 0.05, alpha: 0.86).setFill()
-        NSBezierPath(roundedRect: pillRect, xRadius: pillRect.height / 2.0, yRadius: pillRect.height / 2.0).fill()
+    private func drawLabel(_ palette: PillPalette) {
+        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bounds.width - Self.ribbonLeft - 18, height: 18)
+        captionString(palette, transcript: false, emphasized: true)
+            .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
 
-        let dotRect = NSRect(x: pillRect.minX + 14, y: pillRect.minY + (pillRect.height - 10) / 2.0, width: 10, height: 10)
-        let systemMode = status.lowercased().hasPrefix("system")
-        let dotColor: NSColor
-        if attention {
-            dotColor = NSColor(calibratedWhite: 0.55, alpha: 1.0)
-        } else if systemMode {
-            dotColor = NSColor.controlAccentColor
-        } else {
-            dotColor = NSColor(calibratedRed: 0.94, green: 0.26, blue: 0.26, alpha: 1.0)
-        }
-        dotColor.setFill()
-        NSBezierPath(ovalIn: dotRect).fill()
+    private func drawSpinner(_ palette: PillPalette) {
+        let radius: CGFloat = 6.5
+        let ring = NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2))
+        ring.lineWidth = 2
+        palette.faint.setStroke()
+        ring.stroke()
+        guard !reduceMotion else { return }
+        let start = CGFloat(clock.truncatingRemainder(dividingBy: 1.1) / 1.1) * 360
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: NSPoint(x: markX, y: center), radius: radius, startAngle: start, endAngle: start + 100)
+        arc.lineWidth = 2
+        arc.lineCapStyle = .round
+        palette.secondary.setStroke()
+        arc.stroke()
+    }
 
-        let meterX = pillRect.minX + 36
-        let meterWidth: CGFloat = 150
-        let meterRect = NSRect(x: meterX, y: pillRect.minY + (pillRect.height - 5) / 2.0, width: meterWidth, height: 5)
-        NSColor(calibratedWhite: 1.0, alpha: 0.12).setFill()
-        NSBezierPath(roundedRect: meterRect, xRadius: 2.5, yRadius: 2.5).fill()
+    private func drawWarning(_ palette: PillPalette) {
+        let radius: CGFloat = 7.5
+        palette.amber.setFill()
+        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
+        palette.onAmber.setFill()
+        NSBezierPath(roundedRect: NSRect(x: markX - 0.9, y: center - 4.2, width: 1.8, height: 5), xRadius: 0.9, yRadius: 0.9).fill()
+        NSBezierPath(ovalIn: NSRect(x: markX - 1.05, y: center + 2.1, width: 2.1, height: 2.1)).fill()
+    }
 
-        let fillWidth = max(2, min(meterWidth, meterWidth * level))
-        NSColor(calibratedWhite: 0.88, alpha: 1.0).setFill()
-        NSBezierPath(
-            roundedRect: NSRect(x: meterX, y: meterRect.minY, width: fillWidth, height: meterRect.height),
-            xRadius: 2.5,
-            yRadius: 2.5
-        ).fill()
-
-        if !status.isEmpty {
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            paragraph.lineBreakMode = .byTruncatingTail
-            let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor(calibratedWhite: 0.92, alpha: 1.0),
-                .font: NSFont.systemFont(ofSize: 12.5, weight: .medium),
-                .paragraphStyle: paragraph,
-            ]
-            let textSize = (status as NSString).size(withAttributes: attrs)
-            let captionWidth = min(bounds.width, max(112, ceil(textSize.width) + 32))
-            let statusRect = NSRect(
-                x: (bounds.width - captionWidth) / 2.0,
-                y: pillRect.maxY + 7,
-                width: captionWidth,
-                height: 27
-            )
-            let path = NSBezierPath(roundedRect: statusRect, xRadius: 13.5, yRadius: 13.5)
-            NSColor(calibratedWhite: 0.04, alpha: 0.72).setFill()
-            path.fill()
-            NSColor(calibratedWhite: 1.0, alpha: 0.10).setStroke()
-            path.lineWidth = 1.0
-            path.stroke()
-
-            let textRect = statusRect.insetBy(dx: 14, dy: 5.5)
-            (status as NSString).draw(in: textRect, withAttributes: attrs)
-        }
+    private func drawNotice(_ palette: PillPalette) {
+        let radius: CGFloat = 4.5
+        let tint = systemMode ? NSColor.controlAccentColor : palette.ink
+        tint.setFill()
+        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
     }
 }
 
@@ -253,8 +629,8 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
         modeIcon.contentTintColor = PaletteLayout.accent
         queryLabel.font = .systemFont(ofSize: 15, weight: .medium)
         queryLabel.lineBreakMode = .byTruncatingTail
-        let modeLabel = NSTextField(labelWithString: "SYSTEM")
-        modeLabel.font = .systemFont(ofSize: 9.5, weight: .semibold)
+        let modeLabel = NSTextField(labelWithString: "System")
+        modeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         modeLabel.textColor = PaletteLayout.accent
         modeLabel.alignment = .right
 
@@ -287,7 +663,7 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
         headerSeparator.boxType = .separator
         let footerSeparator = NSBox()
         footerSeparator.boxType = .separator
-        let help = NSTextField(labelWithString: "Click or ↵ to open   ·   esc to cancel")
+        let help = NSTextField(labelWithString: "Click or press Return to open. Esc cancels.")
         help.font = .systemFont(ofSize: 10.5)
         help.textColor = .tertiaryLabelColor
         help.alignment = .center
@@ -426,6 +802,88 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
     }
 }
 
+/// A numbered circle on a vertical rail. The rail below a finished step
+/// turns green, so progress reads top to bottom.
+private final class StepMarker: NSView {
+    enum State { case waiting, current, done }
+
+    var number = 1
+    var state: State = .waiting { didSet { needsDisplay = true } }
+    var railAbove = false
+    var railBelow = false
+    var aboveDone = false { didSet { needsDisplay = true } }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let cx = bounds.midX
+        let cy = bounds.midY
+        let radius: CGFloat = 12
+        func rail(from top: CGFloat, to bottom: CGFloat, done: Bool) {
+            (done ? NSColor.systemGreen : NSColor.separatorColor).setFill()
+            NSRect(x: cx - 1, y: top, width: 2, height: max(0, bottom - top)).fill()
+        }
+        if railAbove { rail(from: 0, to: cy - radius - 4, done: aboveDone) }
+        if railBelow { rail(from: cy + radius + 4, to: bounds.maxY, done: state == .done) }
+
+        let circle = NSBezierPath(ovalIn: NSRect(x: cx - radius, y: cy - radius, width: radius * 2, height: radius * 2))
+        switch state {
+        case .done:
+            NSColor.systemGreen.setFill()
+            circle.fill()
+            let check = NSBezierPath()
+            check.move(to: NSPoint(x: cx - 4.5, y: cy + 0.2))
+            check.line(to: NSPoint(x: cx - 1.3, y: cy + 3.6))
+            check.line(to: NSPoint(x: cx + 4.8, y: cy - 3.6))
+            check.lineWidth = 2
+            check.lineCapStyle = .round
+            check.lineJoinStyle = .round
+            NSColor.white.setStroke()
+            check.stroke()
+        case .current:
+            NSColor.controlAccentColor.setFill()
+            circle.fill()
+            drawNumber(color: .white)
+        case .waiting:
+            circle.lineWidth = 1.5
+            NSColor.tertiaryLabelColor.setStroke()
+            circle.stroke()
+            drawNumber(color: .secondaryLabelColor)
+        }
+    }
+
+    private func drawNumber(color: NSColor) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+        ]
+        ("\(number)" as NSString).draw(
+            in: NSRect(x: bounds.midX - 12, y: bounds.midY - 8, width: 24, height: 16),
+            withAttributes: attributes
+        )
+    }
+}
+
+/// One permission step. The current step sits on a soft accent wash.
+private final class StepRowView: NSView {
+    var highlighted = false { didSet { needsDisplay = true } }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard highlighted else { return }
+        let path = NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12)
+        NSColor.controlAccentColor.withAlphaComponent(0.09).setFill()
+        path.fill()
+        NSColor.controlAccentColor.withAlphaComponent(0.28).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
 /// First-run permission guide. Only the next missing permission is actionable;
 /// the panel stays open until every grant is live and the user clicks Done.
 private final class OnboardingController: NSObject, NSWindowDelegate {
@@ -437,45 +895,58 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         let anchor: String
     }
 
+    private static let width: CGFloat = 500
+    private static let inset: CGFloat = 32
+
+    // Accessibility covers both noticing the shortcut in other apps and
+    // pasting into them; Input Monitoring would only add the first half.
     private let rows: [Row] = [
-        Row(
-            key: "listen",
-            permission: "input_monitoring",
-            title: "Input Monitoring",
-            subtitle: "Lets Sunoto hear your shortcut in other apps",
-            anchor: "Privacy_ListenEvent"
-        ),
         Row(
             key: "accessibility",
             permission: "accessibility",
             title: "Accessibility",
-            subtitle: "Lets Sunoto paste text where you are typing",
+            subtitle: "Notices %@ and pastes your words.",
             anchor: "Privacy_Accessibility"
         ),
         Row(
             key: "microphone",
             permission: "microphone",
             title: "Microphone",
-            subtitle: "Lets Sunoto listen while you hold the shortcut",
+            subtitle: "Hears you while you dictate.",
             anchor: "Privacy_Microphone"
         ),
     ]
 
     private let panel: NSPanel
-    private var dots: [String: NSImageView] = [:]
+    private var markers: [String: StepMarker] = [:]
+    private var rowViews: [String: StepRowView] = [:]
+    private var titles: [String: NSTextField] = [:]
     private var buttons: [String: NSButton] = [:]
-    private var cards: [String: NSBox] = [:]
+    private var allowedLabels: [String: NSTextField] = [:]
+    private var subtitles: [String: NSTextField] = [:]
+    private let hint = NSTextField(labelWithString: "")
     private var attempted: Set<String> = []
+    private let progressLabel = NSTextField(labelWithString: "")
     private let doneButton: NSButton
     private let onAction: (String) -> Void
     private let onDone: () -> Void
     private(set) var visible = false
     private var dismissed = false
 
-    private static func roundedFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont {
+    private static func serifFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont {
         let base = NSFont.systemFont(ofSize: size, weight: weight)
-        guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+        guard let descriptor = base.fontDescriptor.withDesign(.serif) else { return base }
         return NSFont(descriptor: descriptor, size: size) ?? base
+    }
+
+    private static func wrappingLabel(_ text: String, size: CGFloat, color: NSColor, alignment: NSTextAlignment, width: CGFloat) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: size)
+        label.textColor = color
+        label.alignment = alignment
+        label.preferredMaxLayoutWidth = width
+        label.isSelectable = false
+        return label
     }
 
     init(onAction: @escaping (String) -> Void, onDone: @escaping () -> Void) {
@@ -483,14 +954,16 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         self.onDone = onDone
         doneButton = NSButton(title: "Done", target: nil, action: nil)
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 326),
-            styleMask: [.titled, .closable, .nonactivatingPanel],
+            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 520),
+            styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         super.init()
 
         panel.title = "Sunoto"
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
         panel.delegate = self
         panel.isFloatingPanel = true
         panel.level = .floating
@@ -499,77 +972,121 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.animationBehavior = .utilityWindow
 
-        let heading = NSTextField(labelWithString: "Set up permissions")
-        heading.font = .systemFont(ofSize: 20, weight: .semibold)
+        let textWidth = Self.width - Self.inset * 2
+
+        // The pill as it will look while you talk, so setup also shows how to use it.
+        let hero = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
+        hero.showDemo()
+        hero.translatesAutoresizingMaskIntoConstraints = false
+        hero.setAccessibilityElement(true)
+        hero.setAccessibilityRole(.image)
+        hero.setAccessibilityLabel("The Sunoto pill while recording")
+        hint.font = .systemFont(ofSize: 12.5, weight: .medium)
+        hint.textColor = .secondaryLabelColor
+        hint.alignment = .center
+
+        let heading = NSTextField(labelWithString: "Let Sunoto listen")
+        heading.font = Self.serifFont(ofSize: 27, weight: .semibold)
         heading.textColor = .labelColor
-        let subtitle = NSTextField(labelWithString: "Grant access one step at a time. Your choices stay on this Mac.")
-        subtitle.font = .systemFont(ofSize: 12.5, weight: .regular)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.maximumNumberOfLines = 2
-        subtitle.lineBreakMode = .byWordWrapping
+        heading.alignment = .center
+        let subtitle = Self.wrappingLabel(
+            "macOS asks for two permissions, one at a time. Nothing you say leaves this Mac.",
+            size: 13,
+            color: .secondaryLabelColor,
+            alignment: .center,
+            width: textWidth - 40
+        )
 
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 18, right: 22)
+        stack.alignment = .centerX
+        stack.spacing = 0
+        stack.edgeInsets = NSEdgeInsets(top: 44, left: Self.inset - 10, bottom: 22, right: Self.inset - 10)
+        stack.addArrangedSubview(hero)
+        stack.setCustomSpacing(10, after: hero)
+        stack.addArrangedSubview(hint)
+        stack.setCustomSpacing(22, after: hint)
         stack.addArrangedSubview(heading)
+        stack.setCustomSpacing(6, after: heading)
         stack.addArrangedSubview(subtitle)
-        stack.setCustomSpacing(16, after: subtitle)
+        stack.setCustomSpacing(22, after: subtitle)
+        NSLayoutConstraint.activate([
+            hero.widthAnchor.constraint(equalToConstant: PillView.captureWidth),
+            hero.heightAnchor.constraint(equalToConstant: PillView.rowHeight),
+        ])
 
-        for row in rows {
-            let dot = NSImageView()
-            dot.image = NSImage(systemSymbolName: "circle", accessibilityDescription: "status")?
-                .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-            dot.contentTintColor = .tertiaryLabelColor
-            dot.widthAnchor.constraint(equalToConstant: 16).isActive = true
-            dots[row.key] = dot
+        for (index, row) in rows.enumerated() {
+            let marker = StepMarker()
+            marker.number = index + 1
+            marker.railAbove = index > 0
+            marker.railBelow = index < rows.count - 1
+            markers[row.key] = marker
 
             let title = NSTextField(labelWithString: row.title)
-            title.font = Self.roundedFont(ofSize: 13.5, weight: .semibold)
+            title.font = .systemFont(ofSize: 14, weight: .semibold)
             title.textColor = .labelColor
+            titles[row.key] = title
             let sub = NSTextField(labelWithString: row.subtitle)
-            sub.font = .systemFont(ofSize: 11.5, weight: .regular)
+            subtitles[row.key] = sub
+            sub.font = .systemFont(ofSize: 12)
             sub.textColor = .secondaryLabelColor
             sub.lineBreakMode = .byTruncatingTail
             let labels = NSStackView(views: [title, sub])
             labels.orientation = .vertical
             labels.alignment = .leading
             labels.spacing = 2
-            labels.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
-            let button = NSButton(title: "Request Access", target: self, action: #selector(openPermission(_:)))
+            let button = NSButton(title: "Allow", target: self, action: #selector(openPermission(_:)))
             button.bezelStyle = .rounded
-            button.font = .systemFont(ofSize: 12, weight: .medium)
+            button.bezelColor = .controlAccentColor
+            button.font = .systemFont(ofSize: 12.5, weight: .semibold)
             button.identifier = NSUserInterfaceItemIdentifier(row.key)
             buttons[row.key] = button
 
-            let rowView = NSStackView(views: [dot, labels, button])
-            rowView.orientation = .horizontal
-            rowView.alignment = .centerY
-            rowView.spacing = 9
-            rowView.distribution = .gravityAreas
-            labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            button.widthAnchor.constraint(equalToConstant: 106).isActive = true
+            let allowed = NSTextField(labelWithString: "Allowed")
+            allowed.font = .systemFont(ofSize: 12, weight: .medium)
+            allowed.textColor = .systemGreen
+            allowed.alignment = .right
+            allowedLabels[row.key] = allowed
 
-            let card = NSBox()
-            card.boxType = .custom
-            card.borderColor = .separatorColor
-            card.borderWidth = 1
-            card.cornerRadius = 9
-            card.fillColor = .controlBackgroundColor
-            card.contentViewMargins = NSSize(width: 10, height: 8)
-            card.contentView = rowView
-            card.widthAnchor.constraint(equalToConstant: 436).isActive = true
-            card.heightAnchor.constraint(equalToConstant: 56).isActive = true
-            cards[row.key] = card
-            stack.addArrangedSubview(card)
+            let rowView = StepRowView()
+            rowViews[row.key] = rowView
+            for view in [marker, labels, button, allowed] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                rowView.addSubview(view)
+            }
+            rowView.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                rowView.widthAnchor.constraint(equalToConstant: textWidth + 20),
+                rowView.heightAnchor.constraint(equalToConstant: 64),
+                marker.leadingAnchor.constraint(equalTo: rowView.leadingAnchor, constant: 10),
+                marker.topAnchor.constraint(equalTo: rowView.topAnchor),
+                marker.bottomAnchor.constraint(equalTo: rowView.bottomAnchor),
+                marker.widthAnchor.constraint(equalToConstant: 28),
+                labels.leadingAnchor.constraint(equalTo: marker.trailingAnchor, constant: 12),
+                labels.centerYAnchor.constraint(equalTo: rowView.centerYAnchor),
+                labels.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -12),
+                button.trailingAnchor.constraint(equalTo: rowView.trailingAnchor, constant: -14),
+                button.centerYAnchor.constraint(equalTo: rowView.centerYAnchor),
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 96),
+                allowed.trailingAnchor.constraint(equalTo: rowView.trailingAnchor, constant: -16),
+                allowed.centerYAnchor.constraint(equalTo: rowView.centerYAnchor),
+            ])
+            stack.addArrangedSubview(rowView)
         }
 
-        let footer = NSTextField(labelWithString: "Done becomes available when all three permissions are allowed.")
-        footer.font = .systemFont(ofSize: 11.5)
-        footer.textColor = .tertiaryLabelColor
-        footer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let rule = NSBox()
+        rule.boxType = .separator
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        stack.setCustomSpacing(20, after: stack.arrangedSubviews.last!)
+        stack.addArrangedSubview(rule)
+        rule.widthAnchor.constraint(equalToConstant: textWidth + 20).isActive = true
+
+        progressLabel.font = .systemFont(ofSize: 12)
+        progressLabel.textColor = .secondaryLabelColor
+        progressLabel.lineBreakMode = .byTruncatingTail
+        progressLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        progressLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         doneButton.target = self
         doneButton.action = #selector(finishOnboarding)
@@ -577,15 +1094,18 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         doneButton.font = .systemFont(ofSize: 12.5, weight: .semibold)
         doneButton.keyEquivalent = "\r"
         doneButton.isEnabled = false
-        doneButton.widthAnchor.constraint(equalToConstant: 88).isActive = true
+        doneButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 88).isActive = true
 
-        let footerRow = NSStackView(views: [footer, doneButton])
-        footerRow.orientation = .horizontal
-        footerRow.alignment = .centerY
-        footerRow.distribution = .gravityAreas
-        footerRow.widthAnchor.constraint(equalToConstant: 436).isActive = true
-        stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(footerRow)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let footer = NSStackView(views: [progressLabel, spacer, doneButton])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 12
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        footer.widthAnchor.constraint(equalToConstant: textWidth).isActive = true
+        stack.setCustomSpacing(16, after: rule)
+        stack.addArrangedSubview(footer)
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
@@ -595,35 +1115,54 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            content.widthAnchor.constraint(equalToConstant: Self.width),
         ])
         panel.contentView = content
+        content.layoutSubtreeIfNeeded()
+        panel.setContentSize(NSSize(width: Self.width, height: content.fittingSize.height))
+        setShortcut("Right Option")
+        update(accessibility: false, microphone: false, reveal: false)
     }
 
-    func update(listen: Bool, accessibility: Bool, microphone: Bool) {
-        let states: [String: Bool] = [
-            "listen": listen,
-            "accessibility": accessibility,
-            "microphone": microphone,
-        ]
-        let orderedStates = [listen, accessibility, microphone]
+    func update(accessibility: Bool, microphone: Bool, shortcut: String?) {
+        if let shortcut, !shortcut.isEmpty {
+            setShortcut(shortcut)
+        }
+        update(accessibility: accessibility, microphone: microphone, reveal: true)
+    }
+
+    /// Teach the real shortcut: hold it to talk, or tap it to go hands-free.
+    private func setShortcut(_ label: String) {
+        hint.stringValue = "Hold \(label) and talk, or tap it to talk hands-free."
+        for row in rows {
+            subtitles[row.key]?.stringValue = row.subtitle.replacingOccurrences(of: "%@", with: label)
+        }
+    }
+
+    private func update(accessibility: Bool, microphone: Bool, reveal: Bool) {
+        let orderedStates = [accessibility, microphone]
         let firstMissing = orderedStates.firstIndex(of: false)
         for (index, row) in rows.enumerated() {
-            let granted = states[row.key] ?? false
+            let granted = orderedStates[index]
             let actionable = firstMissing == index
-            dots[row.key]?.image = NSImage(
-                systemSymbolName: granted ? "checkmark.circle.fill" : (actionable ? "arrow.right.circle.fill" : "circle"),
-                accessibilityDescription: granted ? "allowed" : (actionable ? "next step" : "waiting")
-            )?.withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-            dots[row.key]?.contentTintColor = granted ? .systemGreen : (actionable ? .controlAccentColor : .tertiaryLabelColor)
-            cards[row.key]?.borderColor = actionable
-                ? .controlAccentColor.withAlphaComponent(0.65)
-                : .separatorColor
+            markers[row.key]?.state = granted ? .done : (actionable ? .current : .waiting)
+            markers[row.key]?.aboveDone = index > 0 && orderedStates[index - 1]
+            rowViews[row.key]?.highlighted = actionable
+            titles[row.key]?.textColor = granted || actionable ? .labelColor : .secondaryLabelColor
+            allowedLabels[row.key]?.isHidden = !granted
             let button = buttons[row.key]
-            button?.title = granted ? "Allowed" : (attempted.contains(row.key) ? "Open Settings" : "Request Access")
-            button?.isEnabled = actionable
+            button?.isHidden = !actionable
+            button?.title = attempted.contains(row.key) ? "Open Settings" : "Allow"
         }
-        doneButton.isEnabled = listen && accessibility && microphone
-        show()
+        if let firstMissing {
+            progressLabel.stringValue = "Step \(firstMissing + 1) of \(rows.count): \(rows[firstMissing].title)"
+        } else {
+            progressLabel.stringValue = "All set. Click Done and Sunoto restarts once."
+        }
+        doneButton.isEnabled = firstMissing == nil
+        if reveal {
+            show()
+        }
     }
 
     func hide() {
@@ -682,15 +1221,19 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
 
 private final class OverlayApp: NSObject, NSApplicationDelegate {
     private let panel: NSPanel
-    private let pill = PillView(frame: NSRect(x: 0, y: 0, width: 214, height: 34))
+    private let pill = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
     private var visible = false
+    /// Bumped on every show/hide so a finished fade-out never hides a pill
+    /// that was shown again meanwhile.
+    private var visibilityGeneration = 0
+    private var displayClock: Timer?
     private let stdoutLock = NSLock()
 
     override init() {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 214, height: 34),
+            contentRect: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -716,6 +1259,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                 self?.emit(["type": "onboarding_done"])
             }
         )
+        pill.autoresizingMask = [.width, .height]
         panel.contentView = pill
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -728,7 +1272,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        hide()
+        hide(animated: false)
         emit(["type": "ready", "backend": "overlay"])
         DispatchQueue.global(qos: .utility).async { self.pumpStdin() }
     }
@@ -754,38 +1298,35 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     private func handle(_ message: [String: Any]) {
+        let now = CACurrentMediaTime()
         switch message["type"] as? String {
         case "show":
+            pill.beginIfIdle(now: now)
             show()
         case "hide":
-            hide()
+            hide(animated: true)
         case "recording":
             let peak = number(message["peak"])
             let rms = number(message["rms"])
-            pill.attention = false
-            pill.level = min(1.0, max(0.0, CGFloat(peak * 8.0), CGFloat(rms * 35.0)))
+            let level = min(1.0, max(0.0, CGFloat(peak * 8.0), CGFloat(rms * 35.0)))
+            pill.pushLevel(level, elapsed: number(message["elapsed_s"]), now: now)
         case "status":
-            pill.attention = false
-            pill.status = (message["text"] as? String) ?? ""
-            resizeForStatus()
+            pill.setStatus((message["text"] as? String) ?? "", error: message["error"] as? Bool ?? false)
         case "state":
             let name = (message["name"] as? String) ?? ""
             if name == "ready" {
-                pill.attention = false
-                pill.status = ""
-                hide()
+                if pill.phase == .busy || pill.phase == .attention {
+                    hide(animated: true)
+                }
             } else {
-                pill.attention = true
-                pill.level = 0
-                pill.status = (message["detail"] as? String) ?? name
-                resizeForStatus()
+                pill.setHealth(name: name, detail: (message["detail"] as? String) ?? "")
                 show()
             }
         case "onboarding":
             onboarding.update(
-                listen: message["listen"] as? Bool ?? false,
                 accessibility: message["accessibility"] as? Bool ?? false,
-                microphone: message["microphone"] as? Bool ?? false
+                microphone: message["microphone"] as? Bool ?? false,
+                shortcut: message["shortcut"] as? String
             )
         case "system_palette":
             guard let sessionID = uint64(message["session_id"]),
@@ -802,7 +1343,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                     actionLabel: actionLabel
                 )
             }
-            hide()
+            hide(animated: false)
             palette.show(sessionID: sessionID, transcript: transcript, suggestions: suggestions)
         case "dismiss_system_palette":
             if let sessionID = uint64(message["session_id"]) {
@@ -814,6 +1355,10 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         default:
             break
+        }
+        if visible {
+            fitToContent()
+            runClockIfNeeded()
         }
     }
 
@@ -829,34 +1374,95 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    private func resizeForStatus() {
-        let width: CGFloat = pill.status.isEmpty ? 214 : 420
-        let height: CGFloat = pill.status.isEmpty ? 34 : 68
-        var frame = panel.frame
-        frame.size = NSSize(width: width, height: height)
-        panel.setFrame(frame, display: true)
-        pill.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        place()
+    // MARK: Display clock
+
+    private func runClockIfNeeded() {
+        guard visible, pill.isAnimating, displayClock == nil else { return }
+        let clock = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.advance()
+        }
+        RunLoop.main.add(clock, forMode: .common)
+        displayClock = clock
+    }
+
+    private func advance() {
+        let keepRunning = pill.tick(now: CACurrentMediaTime())
+        fitToContent()
+        if !keepRunning || !visible {
+            displayClock?.invalidate()
+            displayClock = nil
+        }
+    }
+
+    // MARK: Window
+
+    private func targetFrame(for size: NSSize) -> NSRect? {
+        guard let screen = NSScreen.main else { return nil }
+        let frame = screen.visibleFrame
+        return NSRect(
+            x: (frame.midX - size.width / 2).rounded(),
+            y: frame.maxY - size.height - 14,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    /// Resize around the top edge so the pill grows downward and sideways.
+    private func fitToContent() {
+        let size = pill.preferredSize
+        guard let target = targetFrame(for: size) else { return }
+        if panel.frame == target { return }
+        if visible && panel.alphaValue > 0 && panel.frame.size != size {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(target, display: true)
+            }
+        } else {
+            panel.setFrame(target, display: true)
+        }
+        panel.invalidateShadow()
     }
 
     private func show() {
+        visibilityGeneration += 1
+        let wasVisible = visible
         visible = true
-        place()
-        panel.setIsVisible(true)
-        panel.orderFrontRegardless()
+        fitToContent()
+        if !wasVisible || panel.alphaValue < 1 {
+            if !wasVisible {
+                panel.alphaValue = 0
+            }
+            panel.setIsVisible(true)
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                panel.animator().alphaValue = 1
+            }
+        }
+        runClockIfNeeded()
     }
 
-    private func hide() {
+    private func hide(animated: Bool) {
+        visibilityGeneration += 1
+        let generation = visibilityGeneration
         visible = false
-        panel.orderOut(nil)
-    }
-
-    private func place() {
-        guard visible, let screen = NSScreen.main else { return }
-        let frame = screen.visibleFrame
-        let x = frame.midX - panel.frame.width / 2.0
-        let y = frame.maxY - panel.frame.height - 16
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        displayClock?.invalidate()
+        displayClock = nil
+        let finish = { [weak self] in
+            guard let self, self.visibilityGeneration == generation else { return }
+            self.panel.orderOut(nil)
+            self.panel.alphaValue = 1
+            self.pill.reset()
+        }
+        guard animated, panel.isVisible else {
+            finish()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            panel.animator().alphaValue = 0
+        }, completionHandler: finish)
     }
 }
 

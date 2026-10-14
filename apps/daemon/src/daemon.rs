@@ -7,11 +7,13 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use sunoto_audio::AudioEvent;
-use sunoto_core::{AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState};
+use sunoto_core::{
+    AudioPreRoll, SessionAction, SessionMachine, SessionMode, SessionState, TriggerAction,
+    TriggerGestures, TriggerInput,
+};
 use sunoto_desktop::{
-    BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, hotkey_block_reason,
-    keep_process_responsive, permission_preflights, request_accessibility,
-    request_input_monitoring,
+    BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, accessibility_granted,
+    hotkey_block_reason, keep_process_responsive, request_accessibility,
 };
 use sunoto_ipc::{
     OverlayRequest, OverlaySuggestion, PermissionKind, SidecarEvent, SidecarMessage, SidecarRequest,
@@ -48,13 +50,34 @@ const TICK: Duration = Duration::from_millis(50);
 /// follow-up dictation still finds a warm GPU.
 const KEEPALIVE_GRACE: Duration = Duration::from_secs(20);
 
+/// A hands-free recording (tap to start) finishes on its own after this, in
+/// case the user forgot it was on.
+const HANDS_FREE_LIMIT: Duration = Duration::from_secs(5 * 60);
+
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-fn onboarding_request(state: (bool, bool, bool)) -> OverlayRequest {
+fn onboarding_request(state: (bool, bool), shortcut: &str) -> OverlayRequest {
     OverlayRequest::Onboarding {
-        listen: state.0,
-        accessibility: state.1,
-        microphone: state.2,
+        accessibility: state.0,
+        microphone: state.1,
+        shortcut: Some(crate::settings::shortcut_label(shortcut)),
+    }
+}
+
+/// Shortcut edges that go through the hold/tap gesture router.
+fn trigger_input(edge: HotkeyEvent) -> Option<TriggerInput> {
+    match edge {
+        HotkeyEvent::Pressed => Some(TriggerInput::Press),
+        HotkeyEvent::Released => Some(TriggerInput::Release),
+        HotkeyEvent::Cancelled => Some(TriggerInput::Cancel),
+        HotkeyEvent::Blocked | HotkeyEvent::Available => None,
+    }
+}
+
+fn recording_mode(machine: &SessionMachine) -> Option<SessionMode> {
+    match machine.state() {
+        SessionState::Recording { mode, .. } => Some(*mode),
+        _ => None,
     }
 }
 
@@ -91,11 +114,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     }
     // Permission requests are initiated one at a time from the onboarding
     // panel. Startup only preflights, so macOS never stacks several dialogs.
-    let (listen_granted, accessibility_granted) = permission_preflights();
-    if !listen_granted || !accessibility_granted {
-        logging::warn(&format!(
-            "permissions not yet granted (Input Monitoring: {listen_granted}, Accessibility: {accessibility_granted}); the onboarding panel tracks them"
-        ));
+    // Accessibility covers both the shortcut's event tap and pasting.
+    let accessibility_at_start = accessibility_granted();
+    if !accessibility_at_start {
+        logging::warn(
+            "Accessibility is not yet granted; the onboarding panel asks for it, then for the microphone",
+        );
     }
     let backend = desktop_backend(&settings);
     // Wayland has no global-grab primitive; it relies on compositor bindings
@@ -144,10 +168,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     // Persistent microphone capture bridged into the event channel.
     let capture_stop = Arc::new(AtomicBool::new(false));
-    let coordinated_onboarding =
-        cfg!(target_os = "macos") && (!listen_granted || !accessibility_granted);
+    let coordinated_onboarding = cfg!(target_os = "macos") && !accessibility_at_start;
     // On a first install, defer CoreAudio so its Microphone dialog cannot
-    // race the two keyboard permission steps. Existing granted installs keep
+    // race the Accessibility step. Existing granted installs keep
     // their normal immediate capture startup.
     let capture_wanted = Arc::new(AtomicBool::new(!coordinated_onboarding));
     let capture_handle = spawn_capture_thread(
@@ -238,14 +261,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut grants_seen_at: Option<Instant> = None;
     let mut permission_db_stamp = crate::setup::permission_db_stamp();
     let mut relaunch_due: Option<Instant> = None;
-    // Onboarding panel state, edge-triggered: the last (listen,
-    // accessibility, microphone) triple sent to the overlay. `None` re-sends
-    // on the next poll, which is how a respawned overlay learns the state.
-    let mut last_onboarding: Option<(bool, bool, bool)> = None;
+    // Onboarding panel state, edge-triggered: the last (accessibility,
+    // microphone) pair sent to the overlay. `None` re-sends on the next
+    // poll, which is how a respawned overlay learns the state.
+    let mut last_onboarding: Option<(bool, bool)> = None;
     let mut last_onboarding_poll = Instant::now();
     let mut onboarding_in_progress = coordinated_onboarding;
-    let mut onboarding_listen_granted = listen_granted;
-    let mut onboarding_accessibility_granted = accessibility_granted;
+    let mut onboarding_accessibility_granted = accessibility_at_start;
     let mut pending_permission: Option<PermissionKind> = None;
     let mut warmup_pending = false;
     let mut capture_idle = false;
@@ -253,10 +275,88 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut keepalive_active = false;
     let mut active_system_resolution: Option<u64> = None;
     let mut pending_system: Option<PendingSystemSelection> = None;
+    let mut gestures = TriggerGestures::new(settings.tap_to_lock);
+    // Set when a hands-free recording hits HANDS_FREE_LIMIT: the next loop
+    // turn finishes it through the ordinary release path.
+    let mut forced_finish: Option<SessionMode> = None;
     let mut exit_error: Option<String> = None;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
-        match events.recv_timeout(TICK) {
+        let forced = forced_finish.take();
+        let received = match forced {
+            Some(mode) => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                mode,
+                edge: HotkeyEvent::Released,
+            })),
+            None => events.recv_timeout(TICK),
+        };
+        // Hold to talk, tap to talk hands-free, Esc to cancel. The router
+        // turns raw key edges into the press and release the arms below
+        // already handle, so those paths are unchanged.
+        let received = match received {
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent { mode, edge }))
+                if forced.is_none() && trigger_input(edge).is_some() =>
+            {
+                let input = trigger_input(edge).expect("checked above");
+                let recording = recording_mode(&machine);
+                match gestures.route(mode, input, recording, Instant::now()) {
+                    TriggerAction::Start => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                        mode,
+                        edge: HotkeyEvent::Pressed,
+                    })),
+                    TriggerAction::Finish => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                        mode,
+                        edge: HotkeyEvent::Released,
+                    })),
+                    TriggerAction::Lock => {
+                        if let Some(session_id) = machine.current_session() {
+                            logging::info(&format!(
+                                "session {session_id}: hands-free; tap {} again to finish",
+                                crate::settings::shortcut_label(&settings.shortcut)
+                            ));
+                        }
+                        let hint = match (mode, cfg!(target_os = "macos")) {
+                            (SessionMode::System, _) => "System — tap again to finish",
+                            (SessionMode::Dictation, true) => "Tap again to finish, Esc to cancel",
+                            (SessionMode::Dictation, false) => "Tap again to finish",
+                        };
+                        ui.show(BubbleKind::Recording, hint);
+                        continue;
+                    }
+                    TriggerAction::Cancel => {
+                        if let SessionState::Recording {
+                            session_id,
+                            mode: cancelled_mode,
+                        } = *machine.state()
+                        {
+                            if let Some(client) = sidecar.as_mut() {
+                                let _ = client.send(&SidecarRequest::CancelSession { session_id });
+                            }
+                            let _ = machine.fail("cancelled");
+                            if cancelled_mode == SessionMode::System {
+                                system_worker.invalidate_sessions();
+                            }
+                            logging::info(&format!("session {session_id}: cancelled"));
+                            timing = None;
+                            audio_stats = None;
+                            transcribe_deadline = None;
+                            bubble_hide_at = None;
+                            last_activity = Instant::now();
+                            ui.hide();
+                        }
+                        continue;
+                    }
+                    TriggerAction::Ignore => continue,
+                }
+            }
+            other => other,
+        };
+        match received {
+            // Routed above; never reaches this match.
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                edge: HotkeyEvent::Cancelled,
+                ..
+            })) => {}
             Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
                 mode,
                 edge: HotkeyEvent::Blocked,
@@ -353,7 +453,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         mic = MicState::Starting;
                         capture_wanted.store(true, Ordering::SeqCst);
                         capture_requested_at = Some(Instant::now());
-                        logging::info("microphone starting after idle; keep holding the key");
+                        logging::info("microphone starting after idle");
                     }
                     if mode == SessionMode::Dictation
                         && let Some(client) = llm_polish.as_mut()
@@ -1083,18 +1183,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             }))) => {
                 onboarding_in_progress = true;
                 match permission {
-                    PermissionKind::InputMonitoring => {
-                        logging::info("onboarding requested Input Monitoring");
-                        let _ = request_input_monitoring();
-                        pending_permission = Some(permission);
-                        // Requesting can create the initial TCC row. Treat the
-                        // next database change as the user's switch action.
-                        permission_db_stamp = crate::setup::permission_db_stamp();
-                    }
                     PermissionKind::Accessibility => {
                         logging::info("onboarding requested Accessibility");
                         let _ = request_accessibility();
                         pending_permission = Some(permission);
+                        // Requesting can create the initial TCC row. Treat the
+                        // next database change as the user's switch action.
                         permission_db_stamp = crate::setup::permission_db_stamp();
                     }
                     PermissionKind::Microphone => {
@@ -1110,7 +1204,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::OnboardingDone))) => {
                 let microphone = onboarding_microphone_granted(mic, microphone_verified);
-                if onboarding_listen_granted && onboarding_accessibility_granted && microphone {
+                if onboarding_accessibility_granted && microphone {
                     onboarding_in_progress = false;
                     logging::info("permission onboarding completed");
                     // Keyboard grants only take effect in a newly launched
@@ -1553,42 +1647,29 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         // held closed until the Microphone row is clicked on a first install.
         if cfg!(target_os = "macos") && last_onboarding_poll.elapsed() >= Duration::from_secs(1) {
             last_onboarding_poll = Instant::now();
-            let (listen, accessibility) = permission_preflights();
-            onboarding_listen_granted |= listen;
-            onboarding_accessibility_granted |= accessibility;
+            onboarding_accessibility_granted |= accessibility_granted();
             let stamp = crate::setup::permission_db_stamp();
             if stamp.is_some() && stamp != permission_db_stamp {
                 permission_db_stamp = stamp;
-                match pending_permission.take() {
-                    Some(PermissionKind::InputMonitoring) => {
-                        onboarding_listen_granted = true;
-                        logging::info("onboarding observed the Input Monitoring switch change");
-                    }
-                    Some(PermissionKind::Accessibility) => {
-                        onboarding_accessibility_granted = true;
-                        logging::info("onboarding observed the Accessibility switch change");
-                    }
-                    _ => {}
+                if pending_permission.take() == Some(PermissionKind::Accessibility) {
+                    onboarding_accessibility_granted = true;
+                    logging::info("onboarding observed the Accessibility switch change");
                 }
             }
             // Releasing capture while idle does not revoke permission. Keep
             // the successful capture evidence while idle or reopening, and
             // never present model warmup as evidence of microphone access.
             let microphone = onboarding_microphone_granted(mic, microphone_verified);
-            let state = (
-                onboarding_listen_granted,
-                onboarding_accessibility_granted,
-                microphone,
-            );
+            let state = (onboarding_accessibility_granted, microphone);
             let initial_capture_pending = mic == MicState::Starting
                 && capture_wanted.load(Ordering::SeqCst)
                 && !(sidecar_ready && llm_post_asr_warmed);
-            if !state.0 || !state.1 || (!state.2 && !initial_capture_pending) {
+            if !state.0 || (!state.1 && !initial_capture_pending) {
                 onboarding_in_progress = true;
             }
             if onboarding_in_progress && last_onboarding != Some(state) {
                 last_onboarding = Some(state);
-                ui.overlay_send(onboarding_request(state));
+                ui.overlay_send(onboarding_request(state, &settings.shortcut));
             }
         }
         if !onboarding_in_progress
@@ -1605,11 +1686,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 logging::info("privacy settings changed; relaunching shortly to apply them");
                 relaunch_due = Some(Instant::now() + Duration::from_millis(1500));
             }
-            // Signal 2: the preflights themselves report granted while
-            // delivery is still blocked (seen when the grant existed before
-            // this process started).
-            let (listen, accessibility) = permission_preflights();
-            if listen && accessibility {
+            // Signal 2: the preflight itself reports granted while delivery
+            // is still blocked (seen when the grant existed before this
+            // process started).
+            if accessibility_granted() {
                 let seen = *grants_seen_at.get_or_insert_with(Instant::now);
                 if seen.elapsed() >= Duration::from_secs(2) && relaunch_due.is_none() {
                     relaunch_due = Some(Instant::now());
@@ -1665,6 +1745,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             capture_requested_at.is_some(),
         )) {
             publish_health(next, &mut ui, &settings);
+        }
+        if let Some(mode) =
+            gestures.expire(recording_mode(&machine), HANDS_FREE_LIMIT, Instant::now())
+        {
+            logging::info("hands-free recording reached 5 minutes; finishing it");
+            forced_finish = Some(mode);
         }
         if let Some(deadline) = transcribe_deadline
             && Instant::now() >= deadline
@@ -1800,11 +1886,11 @@ mod onboarding_tests {
     #[test]
     fn publishes_the_latched_permission_state() {
         assert_eq!(
-            onboarding_request((true, false, true)),
+            onboarding_request((false, true), "RightOption"),
             OverlayRequest::Onboarding {
-                listen: true,
                 accessibility: false,
                 microphone: true,
+                shortcut: Some("Right Option".into()),
             }
         );
     }

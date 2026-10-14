@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 /// Product mode attached to one capture/transcription session.
 ///
@@ -196,9 +197,316 @@ impl AudioPreRoll {
     }
 }
 
+/// One edge from a shortcut key, as the gesture router sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerInput {
+    Press,
+    Release,
+    /// Esc, or another key typed while the trigger key is held.
+    Cancel,
+}
+
+/// What the daemon should do with a shortcut edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerAction {
+    /// Start recording: the ordinary press path.
+    Start,
+    /// Stop recording and transcribe: the ordinary release path.
+    Finish,
+    /// A short tap: keep recording hands-free until the next press.
+    Lock,
+    /// Throw the recording away; nothing is transcribed or inserted.
+    Cancel,
+    Ignore,
+}
+
+/// Turns raw shortcut edges into hold-to-talk and tap-to-lock gestures.
+///
+/// Holding the key records until it is released, as before. Releasing it
+/// within [`TriggerGestures::TAP_THRESHOLD`] locks the recording on instead;
+/// the next press finishes it and that press's release is swallowed. Pure, so
+/// the daemon's existing press and release paths stay unchanged.
+#[derive(Debug)]
+pub struct TriggerGestures {
+    tap_to_lock: bool,
+    pressed: Option<(SessionMode, Instant)>,
+    locked: Option<(SessionMode, Instant)>,
+    swallow_release: Option<SessionMode>,
+}
+
+impl TriggerGestures {
+    /// Nobody finishes a spoken sentence this fast, so a release sooner than
+    /// this is a tap.
+    pub const TAP_THRESHOLD: Duration = Duration::from_millis(350);
+
+    pub fn new(tap_to_lock: bool) -> Self {
+        Self {
+            tap_to_lock,
+            pressed: None,
+            locked: None,
+            swallow_release: None,
+        }
+    }
+
+    /// Route one edge. `recording` is the mode of the session currently
+    /// recording, if any.
+    pub fn route(
+        &mut self,
+        mode: SessionMode,
+        input: TriggerInput,
+        recording: Option<SessionMode>,
+        now: Instant,
+    ) -> TriggerAction {
+        // A lock never outlives its recording (finished, failed, cancelled).
+        if self
+            .locked
+            .is_some_and(|(locked, _)| recording != Some(locked))
+        {
+            self.locked = None;
+        }
+        match input {
+            TriggerInput::Press => {
+                if self.locked.is_some_and(|(locked, _)| locked == mode) {
+                    self.locked = None;
+                    self.pressed = None;
+                    self.swallow_release = Some(mode);
+                    return TriggerAction::Finish;
+                }
+                self.pressed = Some((mode, now));
+                TriggerAction::Start
+            }
+            TriggerInput::Release => {
+                if self.swallow_release == Some(mode) {
+                    self.swallow_release = None;
+                    return TriggerAction::Ignore;
+                }
+                let pressed_at = match self.pressed {
+                    Some((pressed_mode, at)) if pressed_mode == mode => {
+                        self.pressed = None;
+                        Some(at)
+                    }
+                    _ => None,
+                };
+                let tapped = pressed_at
+                    .is_some_and(|at| now.saturating_duration_since(at) < Self::TAP_THRESHOLD);
+                if self.tap_to_lock && tapped && recording == Some(mode) {
+                    self.locked = Some((mode, now));
+                    return TriggerAction::Lock;
+                }
+                TriggerAction::Finish
+            }
+            TriggerInput::Cancel => {
+                if recording != Some(mode) {
+                    return TriggerAction::Ignore;
+                }
+                self.locked = None;
+                self.pressed = None;
+                TriggerAction::Cancel
+            }
+        }
+    }
+
+    pub fn locked_mode(&self) -> Option<SessionMode> {
+        self.locked.map(|(mode, _)| mode)
+    }
+
+    /// A hands-free recording that has run for `limit` stops itself, in case
+    /// the user forgot it was on. Returns the mode to finish.
+    pub fn expire(
+        &mut self,
+        recording: Option<SessionMode>,
+        limit: Duration,
+        now: Instant,
+    ) -> Option<SessionMode> {
+        let (mode, since) = self.locked?;
+        if recording != Some(mode) {
+            self.locked = None;
+            return None;
+        }
+        if now.saturating_duration_since(since) < limit {
+            return None;
+        }
+        self.locked = None;
+        Some(mode)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod gestures {
+        use super::super::*;
+
+        const DICTATION: SessionMode = SessionMode::Dictation;
+        const SYSTEM: SessionMode = SessionMode::System;
+
+        fn ms(start: Instant, millis: u64) -> Instant {
+            start + Duration::from_millis(millis)
+        }
+
+        #[test]
+        fn holding_the_key_records_until_release() {
+            let t0 = Instant::now();
+            let mut gestures = TriggerGestures::new(true);
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Press, None, t0),
+                TriggerAction::Start
+            );
+            assert_eq!(
+                gestures.route(
+                    DICTATION,
+                    TriggerInput::Release,
+                    Some(DICTATION),
+                    ms(t0, 2400)
+                ),
+                TriggerAction::Finish
+            );
+            assert_eq!(gestures.locked_mode(), None);
+        }
+
+        #[test]
+        fn a_tap_locks_and_the_next_tap_finishes() {
+            let t0 = Instant::now();
+            let mut gestures = TriggerGestures::new(true);
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Press, None, t0),
+                TriggerAction::Start
+            );
+            assert_eq!(
+                gestures.route(
+                    DICTATION,
+                    TriggerInput::Release,
+                    Some(DICTATION),
+                    ms(t0, 120)
+                ),
+                TriggerAction::Lock
+            );
+            assert_eq!(gestures.locked_mode(), Some(DICTATION));
+            assert_eq!(
+                gestures.route(
+                    DICTATION,
+                    TriggerInput::Press,
+                    Some(DICTATION),
+                    ms(t0, 9000)
+                ),
+                TriggerAction::Finish
+            );
+            // The finishing tap's own release does nothing, even if quick.
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Release, None, ms(t0, 9080)),
+                TriggerAction::Ignore
+            );
+            // The next press starts a fresh session.
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Press, None, ms(t0, 12000)),
+                TriggerAction::Start
+            );
+        }
+
+        #[test]
+        fn tap_to_lock_can_be_turned_off() {
+            let t0 = Instant::now();
+            let mut gestures = TriggerGestures::new(false);
+            gestures.route(DICTATION, TriggerInput::Press, None, t0);
+            assert_eq!(
+                gestures.route(
+                    DICTATION,
+                    TriggerInput::Release,
+                    Some(DICTATION),
+                    ms(t0, 100)
+                ),
+                TriggerAction::Finish
+            );
+        }
+
+        #[test]
+        fn a_tap_that_did_not_start_a_recording_does_not_lock() {
+            // The press was refused (speech model still loading).
+            let t0 = Instant::now();
+            let mut gestures = TriggerGestures::new(true);
+            gestures.route(DICTATION, TriggerInput::Press, None, t0);
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Release, None, ms(t0, 100)),
+                TriggerAction::Finish
+            );
+            assert_eq!(gestures.locked_mode(), None);
+        }
+
+        #[test]
+        fn cancel_only_applies_to_the_recording_mode() {
+            let t0 = Instant::now();
+            let mut gestures = TriggerGestures::new(true);
+            gestures.route(DICTATION, TriggerInput::Press, None, t0);
+            gestures.route(
+                DICTATION,
+                TriggerInput::Release,
+                Some(DICTATION),
+                ms(t0, 100),
+            );
+            assert_eq!(
+                gestures.route(SYSTEM, TriggerInput::Cancel, Some(DICTATION), ms(t0, 500)),
+                TriggerAction::Ignore
+            );
+            assert_eq!(gestures.locked_mode(), Some(DICTATION));
+            assert_eq!(
+                gestures.route(
+                    DICTATION,
+                    TriggerInput::Cancel,
+                    Some(DICTATION),
+                    ms(t0, 600)
+                ),
+                TriggerAction::Cancel
+            );
+            assert_eq!(gestures.locked_mode(), None);
+            // Esc while idle is just a key press in some app.
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Cancel, None, ms(t0, 700)),
+                TriggerAction::Ignore
+            );
+        }
+
+        #[test]
+        fn a_lock_is_forgotten_once_its_recording_ends() {
+            let t0 = Instant::now();
+            let mut gestures = TriggerGestures::new(true);
+            gestures.route(DICTATION, TriggerInput::Press, None, t0);
+            gestures.route(
+                DICTATION,
+                TriggerInput::Release,
+                Some(DICTATION),
+                ms(t0, 100),
+            );
+            // The recording failed meanwhile; the next press starts a new one.
+            assert_eq!(
+                gestures.route(DICTATION, TriggerInput::Press, None, ms(t0, 3000)),
+                TriggerAction::Start
+            );
+        }
+
+        #[test]
+        fn a_forgotten_hands_free_recording_expires() {
+            let t0 = Instant::now();
+            let limit = Duration::from_secs(300);
+            let mut gestures = TriggerGestures::new(true);
+            gestures.route(DICTATION, TriggerInput::Press, None, t0);
+            gestures.route(
+                DICTATION,
+                TriggerInput::Release,
+                Some(DICTATION),
+                ms(t0, 100),
+            );
+            assert_eq!(
+                gestures.expire(Some(DICTATION), limit, ms(t0, 60_000)),
+                None
+            );
+            assert_eq!(
+                gestures.expire(Some(DICTATION), limit, ms(t0, 300_100)),
+                Some(DICTATION)
+            );
+            assert_eq!(gestures.locked_mode(), None);
+        }
+    }
 
     #[test]
     fn push_to_talk_transitions_are_idempotent() {

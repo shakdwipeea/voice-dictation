@@ -147,7 +147,7 @@ phase3() {
   else
     fail "sunoto-macos CGEventTap hotkey not implemented"
   fi
-  manual "live event tap needs Accessibility/Input Monitoring TCC permission"
+  manual "live event tap needs Accessibility TCC permission"
 }
 
 phase4() {

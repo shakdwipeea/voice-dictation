@@ -14,6 +14,10 @@ pub enum SidecarRequest {
     CancelSession { session_id: u64 },
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Commands for the GTK overlay UI sidecar (ui_sidecar.py). Same NDJSON
 /// transport as the ASR protocol; the overlay answers only with `Ready`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -29,6 +33,11 @@ pub enum OverlayRequest {
     },
     Status {
         text: String,
+        /// A failure the user should notice (timeout, focus moved, password
+        /// field). The macOS pill draws it with a warning mark instead of as
+        /// a live transcript. Omitted from the wire when false.
+        #[serde(default, skip_serializing_if = "is_false")]
+        error: bool,
     },
     /// Daemon health for the idle pill: `loading_asr`, `warming_polish`,
     /// `hotkey_blocked`, `mic_unavailable`, or `ready`. Anything but `ready`
@@ -55,9 +64,12 @@ pub enum OverlayRequest {
     /// live TCC state edge-triggered. The overlay enables one row at a time
     /// and remains visible until all flags are true and the user clicks Done.
     Onboarding {
-        listen: bool,
         accessibility: bool,
         microphone: bool,
+        /// The dictation shortcut as people read it ("Right Option"), so the
+        /// panel can teach it. Omitted when unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shortcut: Option<String>,
     },
     Shutdown,
 }
@@ -73,7 +85,6 @@ pub struct OverlaySuggestion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionKind {
-    InputMonitoring,
     Accessibility,
     Microphone,
 }
@@ -322,10 +333,31 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&OverlayRequest::Status {
-                text: "transcribing".into()
+                text: "transcribing".into(),
+                error: false,
             })
             .unwrap(),
             r#"{"type":"status","text":"transcribing"}"#
+        );
+        let failure = OverlayRequest::Status {
+            text: "ASR timed out".into(),
+            error: true,
+        };
+        let encoded = serde_json::to_string(&failure).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"status","text":"ASR timed out","error":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
+            failure
+        );
+        assert_eq!(
+            serde_json::from_str::<OverlayRequest>(r#"{"type":"status","text":"x"}"#).unwrap(),
+            OverlayRequest::Status {
+                text: "x".into(),
+                error: false,
+            }
         );
         assert_eq!(
             serde_json::to_string(&OverlayRequest::Show).unwrap(),
@@ -351,26 +383,26 @@ mod tests {
         assert!(!encoded.contains("path"));
 
         let onboarding = OverlayRequest::Onboarding {
-            listen: true,
             accessibility: false,
             microphone: true,
+            shortcut: None,
         };
         let encoded = serde_json::to_string(&onboarding).unwrap();
         assert_eq!(
             encoded,
-            r#"{"type":"onboarding","listen":true,"accessibility":false,"microphone":true}"#
+            r#"{"type":"onboarding","accessibility":false,"microphone":true}"#
         );
         assert_eq!(
             serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
             onboarding
         );
         let action = SidecarEvent::PermissionAction {
-            permission: PermissionKind::InputMonitoring,
+            permission: PermissionKind::Accessibility,
         };
         let encoded = serde_json::to_string(&action).unwrap();
         assert_eq!(
             encoded,
-            r#"{"type":"permission_action","permission":"input_monitoring"}"#
+            r#"{"type":"permission_action","permission":"accessibility"}"#
         );
         assert_eq!(
             serde_json::from_str::<SidecarEvent>(&encoded).unwrap(),

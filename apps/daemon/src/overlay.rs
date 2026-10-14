@@ -141,12 +141,14 @@ impl UiFront {
             if matches!(kind, BubbleKind::Recording) && text == "recording..." {
                 self.overlay_send(OverlayRequest::Status {
                     text: String::new(),
+                    error: false,
                 });
             } else if matches!(kind, BubbleKind::Transcribing) && text == "transcribing..." {
                 // Preserve the current partial/caption until the final arrives.
             } else {
                 self.overlay_send(OverlayRequest::Status {
                     text: text.to_string(),
+                    error: matches!(kind, BubbleKind::Error),
                 });
             }
         } else {

@@ -71,6 +71,13 @@ pub const kCGEventFlagMaskShift: u64 = 1 << 17;
 pub const kCGEventFlagMaskControl: u64 = 1 << 18;
 pub const kCGEventFlagMaskAlternate: u64 = 1 << 19;
 pub const kCGEventFlagMaskCommand: u64 = 1 << 20;
+pub const kCGEventFlagMaskSecondaryFn: u64 = 1 << 23;
+// Device-dependent bits (IOKit NX_DEVICE*KEYMASK) in the same flags word.
+// They tell the left and right copies of a modifier apart.
+pub const NX_DEVICERSHIFTKEYMASK: u64 = 0x0000_0004;
+pub const NX_DEVICERCMDKEYMASK: u64 = 0x0000_0010;
+pub const NX_DEVICERALTKEYMASK: u64 = 0x0000_0040;
+pub const NX_DEVICERCTLKEYMASK: u64 = 0x0000_2000;
 
 // CGEventTypes
 pub const kCGEventNull: CGEventType = 0;
@@ -139,8 +146,6 @@ unsafe extern "C" {
         source: CGEventSourceRef,
         eventType: CGEventType,
     ) -> f64;
-    pub fn CGPreflightListenEventAccess() -> bool;
-    pub fn CGRequestListenEventAccess() -> bool;
     pub fn CGPreflightPostEventAccess() -> bool;
 
     // Accessibility (HIServices, inside ApplicationServices): the focused

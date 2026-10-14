@@ -12,7 +12,7 @@ verification: `scripts/macos-port/verify-phase.sh`.
 | 0 ASR feasibility (Nemotron offline MPS default) | ✅ done | `verify-phase.sh 0` | — | MPS is default; HF real-speech run: 1.015s p50 / 2.123s p95 over 5 clips, faster than CPU with same WER. See `docs/macos-phase-0-results.md` |
 | 1 build skeleton (cfg-gate, facade, stubs) | ✅ done | `verify-phase.sh 1` | — | builds + clippy + tests green on macOS |
 | 2 CoreAudio capture | ✅ done (compile) | `verify-phase.sh 2` | | live capture needs Microphone TCC |
-| 3 CGEventTap hotkey | ✅ done (compile) | `verify-phase.sh 3` | | live tap needs Accessibility/Input Monitoring TCC |
+| 3 CGEventTap hotkey | ✅ done (compile) | `verify-phase.sh 3` | | live tap needs Accessibility TCC |
 | 4 CGEvent insertion + clipboard + focus | ✅ done (compile) | `verify-phase.sh 4` | | live insertion needs Accessibility TCC |
 | 5 offline Nemotron sidecar + wiring | ✅ done | `verify-phase.sh 5` | — | `nemotron_offline` backend wired |
 | 6 overlay UI (NSPanel) | ✅ done | `verify-phase.sh 6` | | native Swift NSPanel overlay sidecar wired via `overlay_backend=macos`; visual screenshot captured |

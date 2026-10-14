@@ -5,17 +5,18 @@
 //! down/up) and pushes [`HotkeyEvent`]s into an mpsc channel; [`wait`] polls
 //! that channel with a timeout, matching the Linux `HotkeyListener` contract.
 //!
-//! Requires Accessibility (and Input Monitoring on recent macOS) TCC
-//! permission. If `CGEventTapCreate` returns null the listener reports
-//! `DisplayUnavailable`; the daemon logs it and the user is guided to grant
-//! permission.
+//! Requires the Accessibility TCC permission, which covers listening to
+//! keyboard events as well as posting them (Input Monitoring only covers
+//! listening, so Sunoto does not ask for it). If `CGEventTapCreate` returns
+//! null the listener reports `DisplayUnavailable`; the daemon logs it and the
+//! user is guided to grant permission.
 //!
 //! # Delivery probe
 //!
 //! Creating a tap and even `CGEventTapIsEnabled` can both succeed while macOS
-//! delivers nothing to the callback (missing or stale Input Monitoring
-//! grant, launchd context without a responsible process). The only honest
-//! check is end to end: post a tagged, no-op `flagsChanged` event and see it
+//! delivers nothing to the callback (missing or stale Accessibility grant
+//! bound to an old signature, launchd context without a responsible
+//! process). The only honest check is end to end: post a tagged, no-op `flagsChanged` event and see it
 //! arrive in the callback. The worker thread runs that probe right after the
 //! tap is armed and after every re-arm (the re-arm paths are exactly where
 //! "enabled" and "delivering" disagree). It is deliberately not periodic: a
@@ -32,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use crate::ffi;
 use crate::permissions;
-use crate::types::{HotkeyEvent, Shortcut, X11Error};
+use crate::types::{HotkeyEvent, LoneModifier, Shortcut, X11Error};
 
 /// How long the probe waits for its own event to come back through the tap.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -97,6 +98,15 @@ fn modifier_keycodes(mask: u64) -> Vec<u16> {
     keycodes
 }
 
+/// Esc's virtual key code. A bare Esc cancels a recording; the app still
+/// receives it, because the tap only listens.
+const ESCAPE_KEY_CODE: u16 = 0x35;
+/// Modifiers that turn a key press into someone else's shortcut.
+const CHORD_FLAGS: u64 = ffi::kCGEventFlagMaskControl
+    | ffi::kCGEventFlagMaskShift
+    | ffi::kCGEventFlagMaskAlternate
+    | ffi::kCGEventFlagMaskCommand;
+
 /// Bitmask of "interesting" event types for the tap: key down/up + flags
 /// changed. (The tap-disabled timeout is not a real bitmask bit.)
 const EVENT_MASK: u64 = (1u64 << ffi::kCGEventKeyDown)
@@ -106,6 +116,8 @@ const EVENT_MASK: u64 = (1u64 << ffi::kCGEventKeyDown)
 struct TapState {
     key_code: u16,
     modifier_mask: u64,
+    /// Set when the shortcut is a single modifier key such as Right Option.
+    lone: Option<LoneModifier>,
     key_down: bool,
     tx: mpsc::Sender<HotkeyEvent>,
     /// The Mach port backing the event tap. Stored so the callback can
@@ -171,19 +183,63 @@ unsafe extern "C" fn tap_callback(
 }
 
 fn handle_key_event(state: &mut TapState, type_: ffi::CGEventType, keycode: u16, flags: u64) {
-    let modifiers_match = (flags & state.modifier_mask) == state.modifier_mask;
-    let is_target_key = keycode == state.key_code;
+    if let Some(lone) = state.lone {
+        handle_lone_modifier(state, lone, type_, keycode, flags);
+    } else {
+        let modifiers_match = (flags & state.modifier_mask) == state.modifier_mask;
+        let is_target_key = keycode == state.key_code;
 
+        match type_ {
+            ffi::kCGEventKeyDown if is_target_key && modifiers_match => {
+                if !state.key_down {
+                    state.key_down = true;
+                    let _ = state.tx.send(HotkeyEvent::Pressed);
+                }
+            }
+            ffi::kCGEventKeyUp if is_target_key && state.key_down => {
+                state.key_down = false;
+                let _ = state.tx.send(HotkeyEvent::Released);
+            }
+            _ => {}
+        }
+    }
+    // A bare Esc cancels a recording. Cmd+Esc and friends belong to apps.
+    if type_ == ffi::kCGEventKeyDown && keycode == ESCAPE_KEY_CODE && flags & CHORD_FLAGS == 0 {
+        let _ = state.tx.send(HotkeyEvent::Cancelled);
+    }
+}
+
+/// A single modifier as the shortcut. It goes down and up through
+/// `flagsChanged` events; any other key while it is held means the user is
+/// typing a shortcut or a special character (Option-E), not dictating, so
+/// the recording that the press started is cancelled.
+fn handle_lone_modifier(
+    state: &mut TapState,
+    lone: LoneModifier,
+    type_: ffi::CGEventType,
+    keycode: u16,
+    flags: u64,
+) {
     match type_ {
-        ffi::kCGEventKeyDown if is_target_key && modifiers_match => {
-            if !state.key_down {
-                state.key_down = true;
-                let _ = state.tx.send(HotkeyEvent::Pressed);
+        ffi::kCGEventFlagsChanged if keycode == lone.key_code => {
+            let down = flags & lone.device_mask != 0;
+            if down && !state.key_down {
+                // Already holding another modifier: a chord such as
+                // Cmd+Right Option, not a press of ours.
+                let others =
+                    flags & (CHORD_FLAGS | ffi::kCGEventFlagMaskSecondaryFn) & !lone.flag_mask;
+                if others == 0 {
+                    state.key_down = true;
+                    let _ = state.tx.send(HotkeyEvent::Pressed);
+                }
+            } else if !down && state.key_down {
+                state.key_down = false;
+                let _ = state.tx.send(HotkeyEvent::Released);
             }
         }
-        ffi::kCGEventKeyUp if is_target_key && state.key_down => {
+        ffi::kCGEventKeyDown | ffi::kCGEventFlagsChanged if state.key_down => {
             state.key_down = false;
-            let _ = state.tx.send(HotkeyEvent::Released);
+            let _ = state.tx.send(HotkeyEvent::Cancelled);
         }
         _ => {}
     }
@@ -213,29 +269,22 @@ unsafe fn post_probe_event() -> bool {
     true
 }
 
-/// Human explanation for a failed probe, built from the two TCC preflights.
-/// Both can report "granted" while delivery is still blocked (stale grant
-/// bound to an old code signature), so the wording covers that case too.
+/// Human explanation for a failed probe. Accessibility can report "granted"
+/// while delivery is still blocked (stale grant bound to an old code
+/// signature, or a process started before the grant), so the wording covers
+/// that case too.
 pub fn hotkey_block_reason() -> String {
-    let listen = unsafe { ffi::CGPreflightListenEventAccess() };
-    let post = unsafe { ffi::CGPreflightPostEventAccess() };
     let exe = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "sunoto-daemon".to_string());
-    match (listen, post) {
-        (false, false) => format!(
-            "Input Monitoring and Accessibility are not granted to {exe}; grant both in System Settings > Privacy & Security"
-        ),
-        (false, true) => format!(
-            "Input Monitoring is not granted to {exe}; grant it in System Settings > Privacy & Security > Input Monitoring"
-        ),
-        (true, false) => format!(
+    if !permissions::accessibility_granted() {
+        return format!(
             "Accessibility is not granted to {exe}; grant it in System Settings > Privacy & Security > Accessibility"
-        ),
-        (true, true) => format!(
-            "macOS reports permissions granted but delivers no events to {exe}; remove and re-add it under Input Monitoring (a rebuilt binary keeps a stale grant), or launch it from a GUI context instead of launchd"
-        ),
+        );
     }
+    format!(
+        "macOS reports Accessibility granted but delivers no key events to {exe}; quit and reopen Sunoto, then remove and re-add it under Accessibility if that does not help (a rebuilt binary keeps a stale grant). Launch it from a GUI context, never from launchd"
+    )
 }
 
 struct TapHandle {
@@ -327,33 +376,31 @@ pub struct HotkeyListener {
     tap: Arc<TapHandle>,
     key_code: u16,
     modifier_mask: u64,
+    lone: Option<LoneModifier>,
     probe_state: Arc<AtomicU8>,
 }
 
-fn missing_permission_error(listen: bool, accessibility: bool) -> Option<X11Error> {
-    if !listen {
-        Some(X11Error::InputMonitoringPermission)
-    } else if !accessibility {
-        Some(X11Error::EventPostingPermission)
-    } else {
-        None
-    }
+fn missing_permission_error(accessibility: bool) -> Option<X11Error> {
+    (!accessibility).then_some(X11Error::EventPostingPermission)
 }
 
 impl HotkeyListener {
     pub fn open(shortcut: &Shortcut) -> Result<Self, X11Error> {
         // Creating a CGEventTap while Accessibility is missing makes macOS
-        // raise its Accessibility dialog implicitly. That bypasses the
-        // onboarding order (Input Monitoring must be first) even though this
-        // function never calls a request API. Preflight before creating any
-        // CoreGraphics object; the onboarding actions are the only request
-        // site, and setup relaunches us after all grants are live.
-        let (listen, accessibility) = permissions::permission_preflights();
-        if let Some(error) = missing_permission_error(listen, accessibility) {
+        // raise a permission dialog implicitly, outside the onboarding
+        // panel, even though this function never calls a request API.
+        // Preflight before creating any CoreGraphics object; the onboarding
+        // actions are the only request site, and the daemon relaunches
+        // after the grant is live.
+        if let Some(error) = missing_permission_error(permissions::accessibility_granted()) {
             return Err(error);
         }
-        let key_code = keycode_for_name(&shortcut.key_name)
-            .ok_or_else(|| X11Error::HotkeyUnavailable(shortcut.key_name.clone()))?;
+        let lone = shortcut.lone_modifier;
+        let key_code = match lone {
+            Some(lone) => lone.key_code,
+            None => keycode_for_name(&shortcut.key_name)
+                .ok_or_else(|| X11Error::HotkeyUnavailable(shortcut.key_name.clone()))?,
+        };
 
         let (tx, rx) = mpsc::channel::<HotkeyEvent>();
         let probe_seen = Arc::new(AtomicBool::new(false));
@@ -364,6 +411,7 @@ impl HotkeyListener {
         let state = Box::new(TapState {
             key_code,
             modifier_mask: shortcut.modifier_mask,
+            lone,
             key_down: false,
             tx: tx.clone(),
             tap: std::ptr::null_mut(),
@@ -503,6 +551,7 @@ impl HotkeyListener {
             tap,
             key_code,
             modifier_mask: shortcut.modifier_mask,
+            lone,
             probe_state,
         })
     }
@@ -560,6 +609,7 @@ impl HotkeyListener {
         let mut state = TapState {
             key_code: self.key_code,
             modifier_mask: self.modifier_mask,
+            lone: self.lone,
             key_down: false,
             tx,
             tap: std::ptr::null_mut(),
@@ -567,6 +617,12 @@ impl HotkeyListener {
             real_event_seen: Arc::new(AtomicBool::new(false)),
             rearmed: Arc::new(AtomicBool::new(false)),
         };
+        if let Some(lone) = self.lone {
+            let held = lone.flag_mask | lone.device_mask;
+            handle_key_event(&mut state, ffi::kCGEventFlagsChanged, lone.key_code, held);
+            handle_key_event(&mut state, ffi::kCGEventFlagsChanged, lone.key_code, 0);
+            return rx.try_iter().collect();
+        }
         // Exercise the same regression case as the Linux self-test: the
         // target key is released after the modifier state clears.
         handle_key_event(
@@ -634,16 +690,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_permissions_stop_before_event_tap_creation_in_onboarding_order() {
+    fn missing_accessibility_stops_before_event_tap_creation() {
         assert!(matches!(
-            missing_permission_error(false, false),
-            Some(X11Error::InputMonitoringPermission)
-        ));
-        assert!(matches!(
-            missing_permission_error(true, false),
+            missing_permission_error(false),
             Some(X11Error::EventPostingPermission)
         ));
-        assert!(missing_permission_error(true, true).is_none());
+        assert!(missing_permission_error(true).is_none());
     }
 
     #[test]
@@ -662,6 +714,7 @@ mod tests {
         let mut state = TapState {
             key_code: keycode_for_name("F1").unwrap(),
             modifier_mask: shortcut.modifier_mask,
+            lone: None,
             key_down: false,
             tx,
             tap: std::ptr::null_mut(),
@@ -685,6 +738,115 @@ mod tests {
 
         let received: Vec<_> = rx.try_iter().collect();
         assert_eq!(received, [HotkeyEvent::Pressed, HotkeyEvent::Released]);
+    }
+
+    fn state_for(shortcut: &Shortcut) -> (TapState, Receiver<HotkeyEvent>) {
+        let (tx, rx) = mpsc::channel::<HotkeyEvent>();
+        let state = TapState {
+            key_code: shortcut
+                .lone_modifier
+                .map(|lone| lone.key_code)
+                .or_else(|| keycode_for_name(&shortcut.key_name))
+                .unwrap(),
+            modifier_mask: shortcut.modifier_mask,
+            lone: shortcut.lone_modifier,
+            key_down: false,
+            tx,
+            tap: std::ptr::null_mut(),
+            probe_seen: Arc::new(AtomicBool::new(false)),
+            real_event_seen: Arc::new(AtomicBool::new(false)),
+            rearmed: Arc::new(AtomicBool::new(false)),
+        };
+        (state, rx)
+    }
+
+    const RIGHT_OPTION_DOWN: u64 = ffi::kCGEventFlagMaskAlternate | ffi::NX_DEVICERALTKEYMASK;
+
+    #[test]
+    fn parses_right_hand_modifiers_as_single_key_shortcuts() {
+        for name in ["RightOption", "Right Option", "right-option", "rightalt"] {
+            let shortcut = Shortcut::parse(name).unwrap();
+            assert_eq!(shortcut.key_name, "RightOption");
+            assert_eq!(shortcut.lone_modifier.unwrap().key_code, 0x3d);
+        }
+        assert_eq!(
+            Shortcut::parse("RightCommand")
+                .unwrap()
+                .lone_modifier
+                .unwrap()
+                .key_code,
+            0x36
+        );
+        assert!(Shortcut::parse("Ctrl+F1").unwrap().lone_modifier.is_none());
+        assert!(Shortcut::parse("LeftOption").is_err());
+        assert!(Shortcut::parse("Ctrl+RightOption").is_err());
+    }
+
+    #[test]
+    fn right_option_alone_presses_and_releases() {
+        let (mut state, rx) = state_for(&Shortcut::parse("RightOption").unwrap());
+        handle_key_event(
+            &mut state,
+            ffi::kCGEventFlagsChanged,
+            0x3d,
+            RIGHT_OPTION_DOWN,
+        );
+        handle_key_event(&mut state, ffi::kCGEventFlagsChanged, 0x3d, 0);
+        let received: Vec<_> = rx.try_iter().collect();
+        assert_eq!(received, [HotkeyEvent::Pressed, HotkeyEvent::Released]);
+    }
+
+    #[test]
+    fn typing_with_right_option_held_cancels_instead_of_dictating() {
+        let (mut state, rx) = state_for(&Shortcut::parse("RightOption").unwrap());
+        handle_key_event(
+            &mut state,
+            ffi::kCGEventFlagsChanged,
+            0x3d,
+            RIGHT_OPTION_DOWN,
+        );
+        // Option-E for an accent.
+        handle_key_event(&mut state, ffi::kCGEventKeyDown, 0x0e, RIGHT_OPTION_DOWN);
+        handle_key_event(&mut state, ffi::kCGEventFlagsChanged, 0x3d, 0);
+        let received: Vec<_> = rx.try_iter().collect();
+        assert_eq!(received, [HotkeyEvent::Pressed, HotkeyEvent::Cancelled]);
+    }
+
+    #[test]
+    fn right_option_after_another_modifier_is_someone_elses_shortcut() {
+        let (mut state, rx) = state_for(&Shortcut::parse("RightOption").unwrap());
+        let command = ffi::kCGEventFlagMaskCommand;
+        handle_key_event(
+            &mut state,
+            ffi::kCGEventFlagsChanged,
+            0x3d,
+            command | RIGHT_OPTION_DOWN,
+        );
+        handle_key_event(&mut state, ffi::kCGEventFlagsChanged, 0x3d, command);
+        assert!(rx.try_iter().next().is_none());
+    }
+
+    #[test]
+    fn left_option_does_not_trigger_right_option() {
+        let (mut state, rx) = state_for(&Shortcut::parse("RightOption").unwrap());
+        let left_option = ffi::kCGEventFlagMaskAlternate | 0x20;
+        handle_key_event(&mut state, ffi::kCGEventFlagsChanged, 0x3a, left_option);
+        handle_key_event(&mut state, ffi::kCGEventFlagsChanged, 0x3a, 0);
+        assert!(rx.try_iter().next().is_none());
+    }
+
+    #[test]
+    fn bare_escape_cancels_but_modified_escape_does_not() {
+        let (mut state, rx) = state_for(&Shortcut::parse("Ctrl+F1").unwrap());
+        handle_key_event(&mut state, ffi::kCGEventKeyDown, ESCAPE_KEY_CODE, 0);
+        handle_key_event(
+            &mut state,
+            ffi::kCGEventKeyDown,
+            ESCAPE_KEY_CODE,
+            ffi::kCGEventFlagMaskCommand,
+        );
+        let received: Vec<_> = rx.try_iter().collect();
+        assert_eq!(received, [HotkeyEvent::Cancelled]);
     }
 
     #[test]
