@@ -417,11 +417,21 @@ fn ensure_llm_model(
 ) -> Result<Settings, Box<dyn Error>> {
     section("polish model");
     if !settings.llm_polish_enabled && choice != LlmChoice::Download {
-        note("LLM polish is off in the config; deterministic polish only");
+        note(
+            "LLM polish is off (the default); `sunoto setup --with-llm` downloads the 2.7 GB model and turns it on",
+        );
         return Ok(settings);
     }
     if let Some(existing) = settings.llm_polish_model_file().filter(|p| p.is_file()) {
         ok(&format!("model present: {}", existing.display()));
+        // Only reachable with --with-llm: the user asked for it on.
+        if !settings.llm_polish_enabled {
+            settings.llm_polish_enabled = true;
+            if !dry_run {
+                settings.save(config_path)?;
+            }
+            ok("LLM polish switched on in the config");
+        }
         return Ok(settings);
     }
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);

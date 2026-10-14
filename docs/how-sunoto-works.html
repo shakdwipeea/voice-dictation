@@ -529,7 +529,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
   <ol class="steps">
     <li><strong>Run the installer</strong><span>It puts Sunoto.app in the user’s Applications folder and adds it as a Login Item, so it starts at login.</span></li>
     <li><strong>Speech model downloads</strong><span>About 600 MB, once.</span></li>
-    <li><strong>AI editor: yes or no</strong><span>The installer asks before downloading its 2.7 GB model. Without it, dictation still works with the tidy-up rules.</span></li>
+    <li><strong>AI editor stays off</strong><span>It is optional and off by default. <code>sunoto setup --with-llm</code> downloads its 2.7 GB model and turns it on.</span></li>
     <li><strong>Grant two permissions</strong><span>An onboarding panel asks for Accessibility, then Microphone, with an Allow button per row.</span></li>
     <li><strong>Click Done</strong><span>Sunoto restarts once and the installer prints “Sunoto is ready”.</span></li>
   </ol>
@@ -584,7 +584,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
     <li><strong>Built for English</strong><span>The tidy-up rules and the AI editor’s instructions are English only.</span></li>
     <li><strong>No spoken formatting</strong><span>Saying “new line”, “comma” or “bullet point” types those words. Punctuation comes only from the speech engine.</span></li>
     <li><strong>Short wait after start-up</strong><span>The speech engine needs a few seconds to load on a Mac and up to about 30 seconds on Linux. The pill shows this; the shortcut works once it clears.</span></li>
-    <li><strong>Large optional download</strong><span>The AI editor’s model is 2.7 GB, which is why the installer asks first.</span></li>
+    <li><strong>AI editor is off by default</strong><span>It adds about a second per dictation, needs a 2.7 GB download, and occasionally over-edits, so new installs leave it off.</span></li>
     <li><strong>Linux is for developers today</strong><span>Install is a script that builds from source, and Wayland desktops need the shortcut set up by hand.</span></li>
     <li><strong>No settings window</strong><span>Preferences such as the shortcut, custom spellings and snippets live in a text file and need a restart to apply.</span></li>
   </ul>

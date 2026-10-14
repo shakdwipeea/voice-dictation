@@ -303,7 +303,7 @@ File: `~/Library/Application Support/sunoto/config.json` on macOS,
 | `allow_enter_and_tab` | false | otherwise both become space |
 | `overlay_enabled` / `overlay_backend` | true / macOS `macos`, else `auto` | `auto`, `x11`, `wayland`, `macos`, `mock` |
 | `polish_enabled` | true | deterministic pipeline |
-| `llm_polish_enabled` | true | |
+| `llm_polish_enabled` | false | off since 2026-10-15; `setup --with-llm` turns it on |
 | `llm_polish_model` | `phi4_mini` | Q5_K_M GGUF under `models/llm-polish-hf/` |
 | `llm_polish_mode` | `constrained_one_call` | also `one_pass_minimal`, `two_step` |
 | `llm_polish_timeout_ms` | 10000 | |

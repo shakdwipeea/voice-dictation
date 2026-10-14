@@ -175,12 +175,13 @@ pub(crate) fn publish_health(health: DaemonHealth, ui: &mut UiFront, settings: &
             if settings.system_mode_enabled {
                 logging::info(&format!(
                     "Sunoto ready. Tap {} to dictate or {} for System mode.",
-                    settings.shortcut, settings.system_shortcut
+                    crate::settings::shortcut_label(&settings.shortcut),
+                    crate::settings::shortcut_label(&settings.system_shortcut)
                 ));
             } else {
                 logging::info(&format!(
                     "Sunoto ready for dictation. Tap {} to dictate.",
-                    settings.shortcut
+                    crate::settings::shortcut_label(&settings.shortcut)
                 ));
             }
         }

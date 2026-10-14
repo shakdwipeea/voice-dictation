@@ -176,8 +176,10 @@ pub struct Settings {
     pub overlay_backend: String,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
-    /// Experimental local LLM cleanup after deterministic polish. Enabled by
-    /// default; a warm sidecar loads the model once at startup.
+    /// Optional local LLM cleanup after deterministic polish. Off by default:
+    /// it adds roughly a second per dictation, holds a 2.7 GB model in memory,
+    /// and dictation waits for its warm-up at startup. `setup --with-llm`
+    /// downloads the model and turns it on.
     pub llm_polish_enabled: bool,
     /// Override the Python interpreter used by the LLM polish sidecar.
     pub llm_polish_python: Option<String>,
@@ -263,7 +265,7 @@ impl Default for Settings {
             overlay_enabled: true,
             overlay_backend: default_overlay_backend().to_string(),
             polish_enabled: true,
-            llm_polish_enabled: true,
+            llm_polish_enabled: false,
             llm_polish_python: None,
             llm_polish_script: None,
             llm_polish_model_path: None,
@@ -938,9 +940,9 @@ mod tests {
     }
 
     #[test]
-    fn llm_polish_defaults_to_enabled_phi4_mini_sidecar() {
+    fn llm_polish_defaults_to_off_with_the_phi4_mini_sidecar() {
         let settings = Settings::default();
-        assert!(settings.llm_polish_enabled);
+        assert!(!settings.llm_polish_enabled);
         assert_eq!(settings.llm_polish_model, "phi4_mini");
         assert_eq!(settings.llm_polish_mode, "constrained_one_call");
         assert_eq!(settings.llm_polish_timeout_ms, 10_000);

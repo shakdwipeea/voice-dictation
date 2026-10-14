@@ -13,8 +13,9 @@
 #       Rust, the Xcode command line tools, and the Python runtimes.
 #
 # Both paths end in `sunoto-daemon setup`, which registers the Login Item,
-# starts the app, offers the polish model download, and watches the app's
-# own health until the hotkey is verified. Nothing here needs sudo.
+# starts the app, downloads the optional polish model only with --with-llm,
+# and watches the app's own health until the hotkey is verified. Nothing
+# here needs sudo.
 #
 # Options are passed through to setup: --with-llm, --without-llm,
 # --no-login-item, --timeout-secs N, --dry-run.
