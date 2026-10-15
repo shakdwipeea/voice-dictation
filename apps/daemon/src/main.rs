@@ -32,6 +32,7 @@ use settings::Settings;
 const USAGE: &str = "Usage: sunoto-daemon COMMAND [OPTIONS]
 
 Commands:
+  --version                 print the Sunoto version
   check                     verify hotkey, insertion, shortcut, and the mock sidecar
   selftest                  run insertion, push-to-talk, clipboard self-tests
   selftest hotkey           synthesize the configured shortcut and verify press/release
@@ -132,7 +133,11 @@ fn run_from_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn Error>> {
         dup2(log.as_raw_fd(), 2);
     }
     std::mem::forget(log);
-    logging::info(&format!("Sunoto starting from {}", bundle.display()));
+    logging::info(&format!(
+        "Sunoto {} starting from {}",
+        env!("CARGO_PKG_VERSION"),
+        bundle.display()
+    ));
     daemon::run(load_settings(&[])?)
 }
 
@@ -143,6 +148,10 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
     };
     let rest = &args[1..];
     match command {
+        "--version" | "-V" | "version" => {
+            println!("Sunoto {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         "check" => check(rest),
         "selftest" if rest.first().is_some_and(|arg| arg == "hotkey") => {
             selftest_hotkey(&rest[1..])

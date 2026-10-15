@@ -1627,6 +1627,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         SessionState::Transcribing { .. } => "transcribing",
                     },
                     "shortcut": settings.shortcut,
+                    "version": env!("CARGO_PKG_VERSION"),
                     "pid": std::process::id(),
                     "uptime_s": started_at.elapsed().as_secs(),
                 });

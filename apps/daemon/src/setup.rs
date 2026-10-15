@@ -239,8 +239,26 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     ok(&format!("daemon:  {}", daemon.display()));
     ok(&format!("overlay: {}", overlay.display()));
     let config_path = settings::config_path();
-    let loaded = Settings::load(&config_path)?;
-    if config_path.is_file() {
+    let mut loaded = Settings::load(&config_path)?;
+    // Installs from before 0.1.7 saved the old macOS default, Ctrl+F1, so
+    // an upgrade would keep it. Move them to Right Option, the default since.
+    let old_shortcut = config_path.is_file() && is_old_default_shortcut(&loaded.shortcut);
+    if old_shortcut {
+        loaded.shortcut = Settings::default().shortcut;
+        if !args.dry_run {
+            set_config_value(&config_path, "shortcut", loaded.shortcut.clone().into())?;
+        }
+        ok(&format!(
+            "config:  {} (shortcut {} from Control-F1 to {}, the default since 0.1.7; set \"shortcut\" there to change it)",
+            config_path.display(),
+            if args.dry_run {
+                "would change"
+            } else {
+                "changed"
+            },
+            settings::shortcut_label(&loaded.shortcut)
+        ));
+    } else if config_path.is_file() {
         ok(&format!(
             "config:  {} (left untouched)",
             config_path.display()
@@ -352,6 +370,31 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     section("permissions");
     watch_until_ready(args.timeout, &installed)
+}
+
+/// Change one key in the config file and leave the rest as written, so
+/// settings the user never chose keep following the defaults.
+fn set_config_value(
+    path: &Path,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), Box<dyn Error>> {
+    let mut config: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+    config
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", path.display()))?
+        .insert(key.to_string(), value);
+    fs::write(path, serde_json::to_string_pretty(&config)? + "\n")?;
+    Ok(())
+}
+
+/// Ctrl+F1 in any spelling: the macOS default before 0.1.7.
+fn is_old_default_shortcut(shortcut: &str) -> bool {
+    let parts: Vec<String> = shortcut
+        .split('+')
+        .map(|part| part.trim().to_ascii_lowercase())
+        .collect();
+    matches!(parts.as_slice(), [modifier, key] if (modifier == "ctrl" || modifier == "control") && key == "f1")
 }
 
 /// Returns the ASR Python interpreter when the backend needs one.
@@ -651,8 +694,27 @@ pub fn follow_log() -> Result<(), Box<dyn Error>> {
 
 /// `sunoto-daemon uninstall`: stop the app, drop the Login Item, remove the
 /// bundle. Config, logs, and downloaded models stay unless `--purge`.
+const UNINSTALL_USAGE: &str = "usage: sunoto-daemon uninstall [--purge]
+
+  --purge   also remove settings, logs, and downloaded models
+";
+
+/// `Some(purge)` to go ahead, `None` for help. This command deletes the
+/// app, so anything it does not recognise, a typo included, stops it.
+fn parse_uninstall_args(args: &[String]) -> Result<Option<bool>, String> {
+    match args {
+        [] => Ok(Some(false)),
+        [flag] if flag == "--purge" => Ok(Some(true)),
+        [flag] if flag == "-h" || flag == "--help" => Ok(None),
+        _ => Err(format!("unexpected arguments {args:?}\n{UNINSTALL_USAGE}")),
+    }
+}
+
 pub fn uninstall(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let purge = args.iter().any(|arg| arg == "--purge");
+    let Some(purge) = parse_uninstall_args(args)? else {
+        print!("{UNINSTALL_USAGE}");
+        return Ok(());
+    };
     let home = PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?);
     let installed = home.join("Applications").join(format!("{APP_NAME}.app"));
     section("uninstall");
@@ -1194,7 +1256,8 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
             {
                 let shortcut = crate::settings::shortcut_label(&field("shortcut"));
                 ok(&format!(
-                    "{APP_NAME} is ready. In any app, tap {shortcut}, speak, and tap it again to paste. Esc cancels."
+                    "{APP_NAME} {} is ready. In any app, tap {shortcut}, speak, and tap it again to paste. Esc cancels.",
+                    env!("CARGO_PKG_VERSION")
                 ));
                 return Ok(());
             }
@@ -1265,6 +1328,12 @@ pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
             })
             .unwrap_or_else(|| "?".to_string())
     };
+    // Daemons before 0.1.9 do not report a version.
+    let version = status
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("before 0.1.9");
+    println!("version:       {version}");
     println!("health:        {} {}", field("health"), field("detail"));
     println!("hotkey:        {} ({})", field("hotkey"), field("shortcut"));
     if field("hotkey") == "blocked" {
@@ -1290,6 +1359,45 @@ mod tests {
         assert!(plist.contains(BUNDLE_ID));
         assert!(plist.contains("<key>LSUIElement</key><true/>"));
         assert!(plist.contains("NSMicrophoneUsageDescription"));
+    }
+
+    #[test]
+    fn set_config_value_changes_only_that_key() {
+        let path = std::env::temp_dir().join(format!("sunoto-config-{}.json", std::process::id()));
+        fs::write(
+            &path,
+            r#"{"shortcut": "Ctrl+F1", "backend": "parakeet_mlx_streaming"}"#,
+        )
+        .unwrap();
+        set_config_value(&path, "shortcut", "RightOption".into()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let _ = fs::remove_file(&path);
+        assert_eq!(
+            written,
+            serde_json::json!({"shortcut": "RightOption", "backend": "parakeet_mlx_streaming"})
+        );
+    }
+
+    #[test]
+    fn only_the_old_default_shortcut_is_migrated() {
+        for old in ["Ctrl+F1", "ctrl+f1", "Control + F1"] {
+            assert!(is_old_default_shortcut(old), "{old}");
+        }
+        for kept in ["RightOption", "Ctrl+F2", "Cmd+F1", "Ctrl+Shift+F1", "F1"] {
+            assert!(!is_old_default_shortcut(kept), "{kept}");
+        }
+    }
+
+    #[test]
+    fn uninstall_runs_only_on_known_arguments() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_uninstall_args(&args(&[])), Ok(Some(false)));
+        assert_eq!(parse_uninstall_args(&args(&["--purge"])), Ok(Some(true)));
+        assert_eq!(parse_uninstall_args(&args(&["--help"])), Ok(None));
+        assert_eq!(parse_uninstall_args(&args(&["-h"])), Ok(None));
+        assert!(parse_uninstall_args(&args(&["--pruge"])).is_err());
+        assert!(parse_uninstall_args(&args(&["--purge", "now"])).is_err());
     }
 
     #[test]
