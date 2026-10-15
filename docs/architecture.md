@@ -310,6 +310,7 @@ File: `~/Library/Application Support/sunoto/config.json` on macOS,
 | `llm_polish_keepalive_secs` | 1.0 | 0 disables |
 | `llm_polish_stream_insert` | false | types LLM deltas live |
 | `system_mode_enabled` | false | |
+| `auto_update` | `install` | `notify`, `off`; macOS release installs only (`update.rs`) |
 | `system_shortcut` | `Ctrl+F2` | must differ from `shortcut` |
 | `system_search_roots` | Desktop, Documents, Downloads, workspace | under `$HOME`, max 16, no `/` or `..` |
 

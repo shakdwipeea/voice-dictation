@@ -56,7 +56,7 @@ const SIGNING_IDENTITY: &str = "Sunoto Local Code Signing";
 const SIGNING_IDENTITY_MARKER: &str = "signing-identity";
 
 /// Environment variable naming the bundle a detached installer works on.
-const SETUP_BUNDLE_ENV: &str = "SUNOTO_SETUP_BUNDLE";
+pub(crate) const SETUP_BUNDLE_ENV: &str = "SUNOTO_SETUP_BUNDLE";
 
 /// The installer must not run as the app's own executable: Launch Services
 /// then counts it as "Sunoto is running" and ignores `open` for the real
@@ -141,10 +141,13 @@ pub fn apply_bundle_environment(bundle: &Path) {
     }
 }
 
-const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--with-llm|--without-llm] [--timeout-secs N]
+const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--with-llm|--without-llm] [--timeout-secs N] [--update]
 
   --dry-run          assemble target/release/Sunoto.app only; install nothing
   --no-login-item    install and start the app without registering it at login
+  --update           replace an installed release in place (used by the updater):
+                     keep the Login Item, never prompt, and refuse to sign with
+                     anything but the identity the installed app was signed with
   --with-llm         download the LLM polish model (about 2.7 GB) without asking
   --without-llm      skip the LLM polish model; dictation uses deterministic polish only
   --timeout-secs N   how long to wait for the daemon to report ready (default 600)
@@ -169,6 +172,7 @@ enum LlmChoice {
 struct Args {
     dry_run: bool,
     login_item: bool,
+    update: bool,
     llm: LlmChoice,
     timeout: Duration,
 }
@@ -177,6 +181,7 @@ fn parse_args(args: &[String]) -> Result<Args, Box<dyn Error>> {
     let mut parsed = Args {
         dry_run: false,
         login_item: true,
+        update: false,
         llm: LlmChoice::Ask,
         timeout: Duration::from_secs(600),
     };
@@ -185,6 +190,11 @@ fn parse_args(args: &[String]) -> Result<Args, Box<dyn Error>> {
         match arg.as_str() {
             "--dry-run" => parsed.dry_run = true,
             "--no-login-item" => parsed.login_item = false,
+            // Stable since 0.1.11: older updaters call newer setups with it.
+            "--update" => {
+                parsed.update = true;
+                parsed.login_item = false;
+            }
             "--with-llm" => parsed.llm = LlmChoice::Download,
             "--without-llm" => parsed.llm = LlmChoice::Skip,
             "--print-plist" => {}
@@ -273,7 +283,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         ok(&format!("config:  created {}", config_path.display()));
     }
     let asr_python = preflight_asr_runtime(&root, &loaded)?;
-    let loaded = ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?;
+    // An update leaves the polish model and its setting as the user had them.
+    let loaded = if args.update {
+        loaded
+    } else {
+        ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?
+    };
     if let Some(python) = asr_python.filter(|_| loaded.backend.starts_with("parakeet_mlx")) {
         ensure_asr_model(&python, &loaded, args.dry_run)?;
     }
@@ -298,8 +313,16 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     section("install");
+    if args.update {
+        // A new identity would reset this app's permissions, for the old
+        // copy as well, and the updater could not roll back to a working app.
+        require_installed_identity(&home)?;
+    } else {
+        // Both talk to System Events, which an update started by the app
+        // itself may not be allowed to do; the Login Item already exists.
+        remove_legacy_login_item(&home);
+    }
     stop_running_daemons();
-    remove_legacy_login_item(&home);
     let same_place = staging
         .canonicalize()
         .ok()
@@ -364,7 +387,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         ok(&format!("{APP_NAME} registered in Login Items"));
     }
     fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
-    let _ = fs::write(&log_path, b"");
+    // An update keeps the log, so the old version's lines about it stay.
+    if !args.update {
+        let _ = fs::write(&log_path, b"");
+    }
     launch_app(&installed)?;
     ok(&format!("started {APP_NAME}; log: {}", log_path.display()));
 
@@ -986,6 +1012,24 @@ const DAEMON_PATTERNS: [&str; 4] = [
     "Sunoto Login.app/Contents/MacOS/sunoto-login",
 ];
 
+/// The stable signing identity exists and is the one the installed app was
+/// signed with.
+pub(crate) fn require_installed_identity(home: &Path) -> Result<(), Box<dyn Error>> {
+    let identity = find_signing_identity()?
+        .ok_or("the local signing identity is missing; run the installer once by hand")?;
+    let marker = home
+        .join("Library/Application Support/sunoto")
+        .join(SIGNING_IDENTITY_MARKER);
+    let recorded = fs::read_to_string(&marker).unwrap_or_default();
+    if recorded.trim() != identity.fingerprint {
+        return Err(
+            "the installed app was signed with another identity; run the installer once by hand"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn daemons_running() -> bool {
     DAEMON_PATTERNS.iter().any(|pattern| {
         Command::new("pgrep")
@@ -1000,7 +1044,7 @@ fn daemons_running() -> bool {
 /// Terminate every daemon and wait until they are really gone. Launch
 /// Services refuses to relaunch an app it still considers quitting, so a
 /// fixed sleep is not enough.
-fn stop_running_daemons() {
+pub(crate) fn stop_running_daemons() {
     for pattern in DAEMON_PATTERNS {
         let _ = Command::new("pkill")
             .args(["-f", pattern])
@@ -1020,7 +1064,7 @@ fn stop_running_daemons() {
 /// socket (it binds within a second of starting, before the models load).
 /// Process names are not trusted here: an installer running from a bundle
 /// looked like the app once and left the user with nothing running.
-fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
     // Callers stop every daemon and overlay first, so `-n` (a new instance
     // regardless of what Launch Services believes) is always right here.
     let status = Command::new("open").arg("-n").arg(app).status()?;
@@ -1344,6 +1388,9 @@ pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
     println!("polish:        {}", field("polish"));
     println!("overlay:       {}", field("overlay"));
     println!("session:       {}", field("session"));
+    if status.get("updates").is_some() {
+        println!("updates:       {}", field("updates"));
+    }
     println!("pid / uptime:  {} / {}s", field("pid"), field("uptime_s"));
     Ok(())
 }
@@ -1408,7 +1455,10 @@ mod tests {
         assert_eq!(args.timeout, Duration::from_secs(9));
         let args = parse_args(&["--no-login-item".into()]).unwrap();
         assert!(!args.login_item);
+        assert!(!args.update);
         assert_eq!(args.llm, LlmChoice::Ask);
+        let args = parse_args(&["--update".into()]).unwrap();
+        assert!(args.update && !args.login_item);
         assert_eq!(args.timeout, Duration::from_secs(600));
         assert_eq!(
             parse_args(&["--with-llm".into()]).unwrap().llm,

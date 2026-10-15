@@ -99,6 +99,27 @@ comes up. The quick facts:
 
 ## macOS operations
 
+### Releases and automatic updates
+
+- Tag `vX.Y.Z` matching `Cargo.toml`. `.github/workflows/release.yml` builds
+  the app and signs the zip with minisign: the secret is
+  `MINISIGN_SECRET_KEY`, and the public half is
+  `packaging/macos/release-signing.pub`, which is compiled into the daemon.
+  The trusted comment is `Sunoto X.Y.Z Sunoto-macos-arm64.zip`.
+  Without that `.minisig` asset, installed apps will not update to the release.
+- Release installs update themselves (`apps/daemon/src/update.rs`, setting
+  `auto_update`). They check daily, verify the download, and install after
+  10 idle minutes. The installer is a copy of the old binary: it runs the new
+  bundle's `setup --update` and puts the old app back on failure. Keep
+  `setup --update` working; older installs call newer setups with it.
+- Test without publishing: `launchctl setenv SUNOTO_UPDATE_FEED
+  file://.../latest.json` (GitHub's latest-release JSON shape),
+  `SUNOTO_UPDATE_KEY` (a test public key file), `SUNOTO_UPDATE_IDLE_SECS`.
+  Restart the app, and `launchctl unsetenv` them afterwards. Progress goes to
+  `~/Library/Logs/sunoto/update.log`.
+
+### Recurring issues
+
 The macOS port has repeatedly bitten us with "Ctrl+F1 stopped working"
 and "nothing gets pasted." The detailed symptoms, root causes, and verified
 fixes for every issue that has recurred more than once live in

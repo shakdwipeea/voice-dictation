@@ -144,6 +144,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "minisign-verify"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -243,6 +249,7 @@ version = "0.1.10"
 name = "sunoto-daemon"
 version = "0.1.10"
 dependencies = [
+ "minisign-verify",
  "serde",
  "serde_json",
  "sunoto-audio",

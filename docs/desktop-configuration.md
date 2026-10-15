@@ -46,6 +46,28 @@ Idle and privacy keys (all optional):
   after a paste.
 - `log_transcripts`: `false` replaces transcript text in the log with its
   length and a short hash.
+
+Updates (macOS release installs):
+
+```json
+{
+  "auto_update": "install"
+}
+```
+
+- `auto_update`: `"install"` (the default) checks GitHub a minute after
+  launch and then daily. A newer release is downloaded and must carry a
+  minisign signature from the release key built into the app. The signature
+  also names the version, so an older release cannot pose as a newer one.
+  The update installs after 10 minutes without dictation, with no panel open.
+  A copy of the running version moves the app aside, runs the new app's
+  `setup --update` (same signing identity, so permissions stay; the Login
+  Item is left alone), and puts the old app back if the new one does not
+  report ready. Versions that failed are not retried automatically.
+  `"notify"` only logs that a release is out; `"off"` never checks.
+  `sunoto update` installs the newest release on request (`--check` only
+  reports). Builds from a checkout never update themselves.
+  Progress goes to `~/Library/Logs/sunoto/update.log`.
 - `llm_polish_keepalive_secs`: GPU ping interval while a dictation session
   is in flight (press until 20 s after the polish result). `0` disables.
 - `llm_polish_keepalive_always`: ping all day, as before 2026-09-17. Costs

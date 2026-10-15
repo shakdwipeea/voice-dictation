@@ -289,6 +289,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut keepalive_active = false;
     let mut active_system_resolution: Option<u64> = None;
     let mut pending_system: Option<PendingSystemSelection> = None;
+    let update_mode = crate::update::Mode::from_setting(&settings.auto_update);
+    let update_blocker = crate::update::blocker(update_mode);
+    match &update_blocker {
+        None => crate::update::spawn_checker(update_mode, events_tx.clone()),
+        Some(reason) => logging::info(&format!("automatic updates: {reason}")),
+    }
+    // A verified newer release, installed at the first long idle moment.
+    let mut pending_update: Option<crate::update::Staged> = None;
     let mut gestures = TriggerGestures::new();
     // Set when a recording hits RECORDING_LIMIT: the next loop turn finishes
     // it through the ordinary release path.
@@ -1610,12 +1618,24 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         SessionState::Transcribing { .. } => "transcribing",
                     },
                     "shortcut": settings.shortcut,
+                    "updates": match (&update_blocker, &pending_update) {
+                        (Some(reason), _) => reason.clone(),
+                        (None, Some(staged)) => format!(
+                            "Sunoto {} downloaded; installs after {} without dictation",
+                            staged.version,
+                            crate::update::idle_wait_label()
+                        ),
+                        (None, None) => format!("{} (checked daily)", settings.auto_update),
+                    },
                     "version": env!("CARGO_PKG_VERSION"),
                     "pid": std::process::id(),
                     "uptime_s": started_at.elapsed().as_secs(),
                 });
                 let _ = serde_json::to_writer(&mut response, &payload);
                 let _ = response.write_all(b"\n");
+            }
+            Ok(DaemonEvent::UpdateReady(staged)) => {
+                pending_update = Some(staged);
             }
             Ok(DaemonEvent::Fatal(message)) => {
                 exit_error = Some(message);
@@ -1700,6 +1720,29 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
         if matches!(machine.state(), SessionState::Idle) {
             let idle_for = last_activity.elapsed();
+            // Restarting for an update must never cut into use: only when
+            // nothing happened for a while and no panel is waiting on the user.
+            if pending_update.is_some()
+                && idle_for >= crate::update::idle_before_install()
+                && health.current().is_ready()
+                && !onboarding_in_progress
+                && pending_system.is_none()
+            {
+                let staged = pending_update.take().expect("checked above");
+                match crate::update::start_install(&staged) {
+                    Ok(()) => {
+                        logging::info(&format!(
+                            "installing Sunoto {}; this app restarts as the new version (log: ~/Library/Logs/sunoto/update.log)",
+                            staged.version
+                        ));
+                        STOP_REQUESTED.store(true, Ordering::SeqCst);
+                    }
+                    Err(error) => logging::error(&format!(
+                        "could not start the update to Sunoto {}: {error}",
+                        staged.version
+                    )),
+                }
+            }
             if keepalive_active
                 && idle_for >= KEEPALIVE_GRACE
                 && let Some(client) = llm_polish.as_mut()

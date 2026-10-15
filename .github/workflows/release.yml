@@ -27,12 +27,28 @@ jobs:
           fi
       - name: Build Sunoto.app
         run: bash packaging/macos/build-app.sh
+      # Installed apps update themselves only to a zip signed with this key
+      # (public half: packaging/macos/release-signing.pub). The trusted
+      # comment names the version, so an older zip cannot pose as a newer one.
+      - name: Sign the zip for the in-app updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          brew install minisign
+          key="$RUNNER_TEMP/release.key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          minisign -S -s "$key" -m dist/Sunoto-macos-arm64.zip \
+            -t "Sunoto ${GITHUB_REF_NAME#v} Sunoto-macos-arm64.zip"
+          rm -f "$key"
+          minisign -V -p packaging/macos/release-signing.pub -m dist/Sunoto-macos-arm64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Sunoto-macos-arm64
           path: |
             dist/Sunoto-macos-arm64.zip
             dist/Sunoto-macos-arm64.zip.sha256
+            dist/Sunoto-macos-arm64.zip.minisig
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -40,3 +56,4 @@ jobs:
           files: |
             dist/Sunoto-macos-arm64.zip
             dist/Sunoto-macos-arm64.zip.sha256
+            dist/Sunoto-macos-arm64.zip.minisig

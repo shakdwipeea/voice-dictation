@@ -16,6 +16,7 @@ mod sidecars;
 mod system_dispatch;
 mod system_mode;
 mod system_worker;
+mod update;
 
 use std::error::Error;
 use std::io::{Read, Write};
@@ -48,6 +49,8 @@ Commands:
   setup [OPTIONS]           macOS: build Sunoto.app, register it at login, start it,
                             and wait until it reports ready (see setup --help)
   restart                   macOS: quit and reopen the installed Sunoto.app
+  update [--check]          macOS: install the newest release now (--check only reports it);
+                            release installs also update themselves when idle
   log                       macOS: follow ~/Library/Logs/sunoto/daemon.log
   uninstall [--purge]       macOS: remove Sunoto.app and its Login Item
   bench [OPTIONS]           measure release-to-insertion latency percentiles
@@ -178,13 +181,19 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             print!("{}", setup::info_plist());
             Ok(())
         }
-        "setup" | "restart" | "uninstall" => {
+        "setup" | "restart" | "uninstall" | "update" => {
             setup::reexec_outside_bundle(command, rest)?;
             match command {
                 "setup" => setup::run(rest),
                 "restart" => setup::restart(),
+                "update" => update::run_cli(rest),
                 _ => setup::uninstall(rest),
             }
+        }
+        // Started by the daemon (a copy of it, outside the bundle) when an
+        // update is due; not for interactive use.
+        "apply-update" if rest.len() == 2 => {
+            update::apply(PathBuf::from(&rest[0]).as_path(), &rest[1])
         }
         "log" => setup::follow_log(),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),

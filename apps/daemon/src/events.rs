@@ -38,6 +38,8 @@ pub enum DaemonEvent {
     ControlStatus {
         response: UnixStream,
     },
+    /// A newer release, verified and unpacked, waiting for an idle moment.
+    UpdateReady(crate::update::Staged),
     Fatal(String),
 }
 

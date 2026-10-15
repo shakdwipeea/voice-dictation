@@ -225,6 +225,11 @@ pub struct Settings {
     /// follow-ups, which then get the 300 ms pre-roll, at the cost of the
     /// menu-bar microphone indicator staying on.
     pub capture_idle_stop_secs: u64,
+    /// What a release install does when a newer release is published:
+    /// "install" (the default) downloads and verifies it, then installs it
+    /// after 10 minutes without dictation; "notify" only logs that it is
+    /// available; "off" never checks. Builds from a checkout never update.
+    pub auto_update: String,
     /// Write transcripts and polish stages to the log. Off replaces the text
     /// with its length and a short hash.
     pub log_transcripts: bool,
@@ -280,6 +285,7 @@ impl Default for Settings {
             llm_polish_keepalive_secs: 1.0,
             llm_polish_keepalive_always: false,
             capture_idle_stop_secs: 0,
+            auto_update: "install".to_string(),
             log_transcripts: true,
             llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
@@ -492,6 +498,12 @@ impl Settings {
             | "parakeet_mlx_offline"
             | "parakeet_mlx_streaming" => {}
             other => return Err(format!("unknown ASR backend: {other}")),
+        }
+        if !matches!(self.auto_update.as_str(), "install" | "notify" | "off") {
+            return Err(format!(
+                "unsupported auto_update {:?}; use install, notify, or off",
+                self.auto_update
+            ));
         }
         match self.profile_ms {
             80 | 160 | 560 | 1120 => {}
@@ -1279,6 +1291,23 @@ mod tests {
             };
             assert!(without.validate().is_ok());
         }
+    }
+
+    #[test]
+    fn auto_update_defaults_to_install_and_rejects_unknown_values() {
+        assert_eq!(Settings::default().auto_update, "install");
+        for value in ["install", "notify", "off"] {
+            let settings = Settings {
+                auto_update: value.to_string(),
+                ..Settings::default()
+            };
+            assert!(settings.validate().is_ok(), "{value}");
+        }
+        let settings = Settings {
+            auto_update: "always".to_string(),
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_err());
     }
 
     #[test]

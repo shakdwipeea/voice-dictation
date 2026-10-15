@@ -38,8 +38,17 @@ sunoto status              # shortcut, microphone, speech model
 sunoto restart
 sunoto log                 # follow the log
 sunoto setup --with-llm    # add AI polish later
+sunoto update              # install the newest release now (--check only looks)
 sunoto uninstall           # --purge also removes settings and models
 ```
+
+Sunoto updates itself. Once a day it checks for a new release, downloads it,
+and checks its signature. It installs the update after 10 minutes without
+dictation, and restarts in a few seconds with your settings and permissions
+kept. If the new version does not start, the old one comes back.
+`"auto_update": "notify"` in the settings only logs that an update is out,
+and `"off"` stops the checks. The update log is
+`~/Library/Logs/sunoto/update.log`.
 
 Settings live in `~/Library/Application Support/sunoto/config.json`; for
 example `"shortcut"` picks another key. Every option is described in
