@@ -510,7 +510,6 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
         <tr><td class="nowrap"><span class="pill">polishing...</span></td><td>The AI editor is checking the sentence.</td><td>Wait a moment.</td></tr>
         <tr><td class="nowrap"><span class="pill">loading speech model...</span></td><td>Sunoto just started and the speech engine is loading. A few seconds on a Mac.</td><td>Wait for it to clear.</td></tr>
         <tr><td class="nowrap"><span class="pill">warming polish...</span></td><td>The AI editor is getting ready.</td><td>Wait for it to clear.</td></tr>
-        <tr><td class="nowrap"><span class="pill">microphone starting...</span></td><td>The mic was switched off after 2 idle minutes and is turning back on.</td><td>Nothing.</td></tr>
         <tr><td class="nowrap"><span class="pill">waiting for microphone access</span></td><td>First run: macOS is asking for microphone permission.</td><td>Click Allow.</td></tr>
         <tr><td class="nowrap"><span class="pill">microphone unavailable</span></td><td>The mic was unplugged or its permission was removed.</td><td>Check the sound input settings.</td></tr>
         <tr><td class="nowrap"><span class="pill">hotkey blocked: check permissions</span></td><td>macOS is not letting Sunoto see the shortcut.</td><td>Grant Accessibility.</td></tr>
@@ -560,7 +559,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
     <li><strong>Right window or nowhere</strong><span>Sunoto remembers which window you were in when you tapped to finish. If you switched since, it leaves the text on the clipboard and says so.</span></li>
     <li><strong>Stays out of password fields</strong><span>On a Mac, it refuses to insert into a password box and does not copy the text there either.</span></li>
     <li><strong>Gives your clipboard back</strong><span>It pastes through the clipboard, then restores what you had copied before.</span></li>
-    <li><strong>Microphone goes quiet when idle</strong><span>After 2 minutes without dictation the mic is released. The next press turns it back on.</span></li>
+    <li><strong>Microphone is on only while you dictate</strong><span>Your tap turns it on and it goes off as soon as the text is pasted, so the orange dot in the menu bar means Sunoto is listening. Words spoken in the first tenth of a second after the tap can be missed.</span></li>
     <li><strong>The AI editor has a short leash</strong><span>It may only merge self-corrections. If its answer drops too many words, errors, or takes too long, Sunoto uses the rules-only text.</span></li>
     <li><strong>Crashes are recoverable</strong><span>If a helper stops, the coordinator restarts it, waiting a bit longer after each failure.</span></li>
   </ul>
@@ -628,7 +627,6 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
     <div><dt>partials</dt><dd>The speech engine’s running guesses while you are still talking.</dd></div>
     <div><dt>hotkey, event tap</dt><dd>The shortcut and the macOS mechanism that listens for it.</dd></div>
     <div><dt>TCC</dt><dd>The macOS privacy system behind the permission prompts.</dd></div>
-    <div><dt>pre-roll</dt><dd>The 0.3 s of sound kept from just before you press, so a fast first word is not clipped.</dd></div>
     <div><dt>keepalive, warm-up</dt><dd>Small background pings that keep the AI editor ready, so it does not start cold.</dd></div>
     <div><dt>Metal, MLX, CUDA</dt><dd>Ways of running models on the graphics chip: Metal and MLX on Mac, CUDA on NVIDIA.</dd></div>
     <div><dt>focus</dt><dd>The window and text field your keystrokes currently go to.</dd></div>

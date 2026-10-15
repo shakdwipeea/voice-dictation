@@ -33,6 +33,11 @@ pub fn accessibility_granted() -> bool {
     true
 }
 
+/// No permission gate for the microphone either.
+pub fn microphone_authorized() -> bool {
+    true
+}
+
 /// X11 has no TCC-style permission prompts; this keeps the desktop facade
 /// platform-neutral.
 pub fn request_accessibility() -> bool {

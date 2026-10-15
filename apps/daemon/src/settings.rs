@@ -215,10 +215,11 @@ pub struct Settings {
     /// Ping all day instead of only around sessions. Costs battery; only for
     /// profiling the old behaviour.
     pub llm_polish_keepalive_always: bool,
-    /// Release the microphone after this many seconds without a session and
-    /// reopen it on the next key press. While active, capture stays on so
-    /// the 300 ms pre-roll catches the first word. 0 keeps the mic open
-    /// permanently (the pre-roll then also covers the first press).
+    /// How long the microphone stays on after a dictation ends. 0, the
+    /// default, turns it off right away, so it is on only while recording
+    /// and a tap turns it back on. A longer value keeps it on for quick
+    /// follow-ups, which then get the 300 ms pre-roll, at the cost of the
+    /// menu-bar microphone indicator staying on.
     pub capture_idle_stop_secs: u64,
     /// Write transcripts and polish stages to the log. Off replaces the text
     /// with its length and a short hash.
@@ -274,7 +275,7 @@ impl Default for Settings {
             llm_polish_timeout_ms: 10_000,
             llm_polish_keepalive_secs: 1.0,
             llm_polish_keepalive_always: false,
-            capture_idle_stop_secs: 120,
+            capture_idle_stop_secs: 0,
             log_transcripts: true,
             llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
@@ -803,7 +804,7 @@ mod tests {
     #[test]
     fn quiet_idle_defaults() {
         let settings = Settings::default();
-        assert_eq!(settings.capture_idle_stop_secs, 120);
+        assert_eq!(settings.capture_idle_stop_secs, 0);
         assert!(!settings.llm_polish_keepalive_always);
         assert!(settings.log_transcripts);
         assert!(settings.clipboard_restore);

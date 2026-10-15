@@ -314,7 +314,7 @@
   <h2>A dictation session</h2>
   <figure>
     <div class="fig-scroll">
-    <svg viewBox="0 0 1000 210" role="img" aria-label="Timeline of one session: idle with pre-roll, press starts recording, release starts transcribing with an adaptive watchdog, final text arrives, deterministic and LLM polish run, then paste.">
+    <svg viewBox="0 0 1000 210" role="img" aria-label="Timeline of one session: idle with the mic off, press turns the mic on and starts recording, release starts transcribing with an adaptive watchdog, final text arrives, deterministic and LLM polish run, then paste.">
       <g style="color: var(--ink-2)">
       <!-- state bar -->
       <rect x="20" y="60" width="110" height="34" rx="4" class="svg-box"/>
@@ -334,7 +334,7 @@
       <line x1="130" y1="50" x2="130" y2="104" class="svg-arrow"/>
       <text x="130" y="42" class="svg-lbl" text-anchor="middle">press</text>
       <text x="130" y="122" class="svg-sub" text-anchor="middle">refused until ASR ready + LLM warm</text>
-      <text x="130" y="138" class="svg-sub" text-anchor="middle">300 ms pre-roll flushed first</text>
+      <text x="130" y="138" class="svg-sub" text-anchor="middle">mic turns on here</text>
 
       <line x1="400" y1="50" x2="400" y2="104" class="svg-arrow"/>
       <text x="400" y="42" class="svg-lbl" text-anchor="middle">release</text>
@@ -367,8 +367,8 @@
   <table>
     <thead><tr><th>Step</th><th>What happens</th><th>Where</th></tr></thead>
     <tbody>
-      <tr><td>Idle</td><td>Mic is always open. Frames go into a 300 ms pre-roll ring so the first syllable is not lost.</td><td><code>sunoto-core::AudioPreRoll</code></td></tr>
-      <tr><td>Press</td><td>Refused if ASR is not ready or the LLM has not warmed. Else <code>Idle → Recording{id}</code>, pre-roll flushed as the first <code>audio_chunk</code>.</td><td><code>daemon.rs</code> hotkey arm</td></tr>
+      <tr><td>Idle</td><td>Mic is off. With <code>capture_idle_stop_secs</code> above 0 it stays on that long after a dictation, feeding a 300 ms pre-roll ring.</td><td><code>sunoto-core::AudioPreRoll</code></td></tr>
+      <tr><td>Press</td><td>Refused if ASR is not ready or the LLM has not warmed. Else <code>Idle → Recording{id}</code> and the mic turns on (first audio 70 to 105 ms later on a MacBook Pro). A kept-on mic flushes its pre-roll as the first <code>audio_chunk</code> instead.</td><td><code>daemon.rs</code> hotkey arm</td></tr>
       <tr><td>Recording</td><td>Each 20 ms frame is forwarded as a JSON array of 320 i16 samples and mirrored to the overlay as peak/rms. Streaming backends return <code>partial</code>.</td><td><code>daemon.rs</code>, ASR sidecar</td></tr>
       <tr><td>Release</td><td><code>Recording → Transcribing</code>. Focus captured now. Watchdog set to 8000 ms + 3.0 × recorded ms. <code>finish_session</code> sent.</td><td><code>daemon.rs</code></td></tr>
       <tr><td>Final</td><td><code>final{text}</code> arrives. Stale ids dropped. <code>Transcribing → Idle</code>.</td><td><code>sunoto-core::SessionMachine</code></td></tr>
@@ -417,7 +417,7 @@
     <thead><tr><th>Feature</th><th class="th-good">Works well</th><th class="th-bad">Weak or missing</th></tr></thead>
     <tbody>
       <tr><th>Push-to-talk hotkey</th><td>No silence timeout. Works in every app. Listen-only tap, so the key still reaches the app. Two independent shortcuts for dictation and System mode.</td><td>On macOS the tap can be silently dead after a rebuild or a launchd launch while the log says "ready". Only F-keys, space, return, tab, esc are valid key names on macOS. Wayland needs the user to edit compositor bindings.</td></tr>
-      <tr><th>Audio capture</th><td>Mic is always open so a 300 ms pre-roll catches the first word. Follows the default input device when it changes. Refuses speaker-loopback "monitor" sources. Logs rms/peak so a muted mic is diagnosable.</td><td>Always-on capture costs energy and is a privacy optic. Resampling is linear interpolation. Audio crosses to Python as JSON integers. No visual mic indicator when idle.</td></tr>
+      <tr><th>Audio capture</th><td>Mic is on only while recording, so the menu-bar indicator means Sunoto is listening. Logs how long the mic took to start on each dictation. Follows the default input device when it changes. Refuses speaker-loopback "monitor" sources. Logs rms/peak so a muted mic is diagnosable.</td><td>Speech in the first 70 to 105 ms after a tap is lost (about 180 ms on the first dictation after launch); <code>capture_idle_stop_secs</code> trades that back for an indicator that stays on. Resampling is linear interpolation. Audio crosses to Python as JSON integers.</td></tr>
       <tr><th>Transcription</th><td>Fully local. Streaming partials on the macOS default. About 240 ms final on an M1 Pro with 1.2 % WER on the sample set. Adaptive timeout so long utterances are not cut. CUDA backend refuses to load into a nearly full GPU.</td><td>English only. Press is silently ignored for 2 to 3 s after start (16 to 32 s on Nemotron) with no "warming up" indicator. A timed-out session cannot be cancelled on the sidecar. Model install is a manual <code>pip install</code>. Linux default is the mock backend.</td></tr>
       <tr><th>Deterministic polish</th><td>Resolves "next Tuesday, no wait, Wednesday" swaps and "scratch that". Strips fillers. User dictionary and snippets. Drops the trailing period in terminals. Idempotent, never panics.</td><td>No spoken commands ("new line", "comma", "all caps"). No spoken-number handling. Dictionary and snippets are edited by hand in JSON. Swap rules are conservative and defer harder cases to the LLM.</td></tr>
       <tr><th>LLM polish</th><td>Narrow, grammar-enforced scope: <code>OK</code> or <code>EDIT:</code>. Clean text costs one token, about 250 ms. Falls back to deterministic text on any error. Keepalive removed the multi-second GPU cold ramp.</td><td>Blocks the hotkey until warm-up finishes. Pings the GPU every second forever, including on battery. Edits add 400 to 900 ms. The 3 GB model is downloaded by hand into a hand-built venv. Content-loss guard misses short clause drops. Not validated on Linux.</td></tr>

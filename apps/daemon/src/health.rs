@@ -27,8 +27,6 @@ pub enum DaemonHealth {
     /// Everything else is up but the microphone has never delivered audio.
     /// On a fresh install this is the Microphone permission prompt.
     MicStarting,
-    /// The microphone was released while idle and is reopening for a press.
-    MicReopening,
     Ready,
 }
 
@@ -38,7 +36,7 @@ pub enum MicState {
     /// Capture requested, no `Started` event yet.
     Starting,
     Capturing,
-    /// Released on purpose after an idle stretch; reopens on the next press.
+    /// Off on purpose between dictations; the next tap opens it.
     Idle,
     /// Capture stopped without us asking.
     Unavailable,
@@ -64,7 +62,6 @@ impl DaemonHealth {
             Self::LoadingAsr => "loading_asr",
             Self::WarmingPolish => "warming_polish",
             Self::MicStarting => "mic_starting",
-            Self::MicReopening => "mic_reopening",
             Self::Ready => "ready",
         }
     }
@@ -78,7 +75,6 @@ impl DaemonHealth {
             Self::LoadingAsr => "loading speech model...",
             Self::WarmingPolish => "warming polish...",
             Self::MicStarting => "waiting for microphone access",
-            Self::MicReopening => "microphone starting...",
             Self::Ready => "",
         }
     }
@@ -100,7 +96,8 @@ pub struct HealthInputs {
     pub polish_warmed: bool,
     pub hotkey_blocked: bool,
     pub mic: MicState,
-    /// The daemon itself asked for the mic to reopen after an idle release.
+    /// The daemon itself turned the mic on for a tap, after having had it
+    /// working before.
     pub mic_reopening: bool,
 }
 
@@ -118,11 +115,11 @@ impl HealthInputs {
             DaemonHealth::LoadingAsr
         } else if !self.polish_warmed {
             DaemonHealth::WarmingPolish
-        } else if self.mic == MicState::Starting && self.mic_reopening {
-            DaemonHealth::MicReopening
-        } else if self.mic == MicState::Starting {
+        } else if self.mic == MicState::Starting && !self.mic_reopening {
             DaemonHealth::MicStarting
         } else {
+            // A mic turning on for a tap is part of recording: the pill
+            // already shows it, and a health change would replace the pill.
             DaemonHealth::Ready
         }
     }
@@ -240,10 +237,10 @@ mod tests {
         assert_eq!(inputs.health(), DaemonHealth::MicStarting);
         inputs.mic = MicState::Capturing;
         assert_eq!(inputs.health(), DaemonHealth::Ready);
-        // Reopening after an idle release is not a permission problem.
+        // Turning the mic on for a tap is not a permission problem.
         inputs.mic = MicState::Starting;
         inputs.mic_reopening = true;
-        assert_eq!(inputs.health(), DaemonHealth::MicReopening);
+        assert_eq!(inputs.health(), DaemonHealth::Ready);
         inputs.mic_reopening = false;
         // An idle release is not a problem.
         inputs.mic = MicState::Idle;
@@ -277,7 +274,6 @@ mod tests {
             DaemonHealth::LoadingAsr,
             DaemonHealth::WarmingPolish,
             DaemonHealth::MicStarting,
-            DaemonHealth::MicReopening,
         ] {
             assert!(!health.caption().is_empty());
             assert!(health.caption().len() <= 36, "{health}");

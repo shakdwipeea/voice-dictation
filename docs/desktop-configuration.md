@@ -27,7 +27,7 @@ Idle and privacy keys (all optional):
 
 ```json
 {
-  "capture_idle_stop_secs": 120,
+  "capture_idle_stop_secs": 0,
   "clipboard_restore": true,
   "log_transcripts": true,
   "llm_polish_keepalive_secs": 1.0,
@@ -35,10 +35,13 @@ Idle and privacy keys (all optional):
 }
 ```
 
-- `capture_idle_stop_secs`: the microphone is released after this long with
-  no dictation and reopened on the next press. While you are actively
-  dictating it stays open so the 300 ms pre-roll catches the first word.
-  `0` keeps it open permanently.
+- `capture_idle_stop_secs`: how long the microphone stays on after a
+  dictation ends. `0` (the default) turns it off right away, so the menu-bar
+  microphone indicator shows only while you dictate. A tap turns it back on;
+  on a MacBook Pro the first sound arrives 70 to 105 ms after the tap (about
+  180 ms for the first dictation after launch), and speech before that is not
+  recorded. A larger value keeps the mic on for quick follow-ups, which then
+  also get the 300 ms pre-roll.
 - `clipboard_restore` (macOS): put the previous clipboard back about 300 ms
   after a paste.
 - `log_transcripts`: `false` replaces transcript text in the log with its

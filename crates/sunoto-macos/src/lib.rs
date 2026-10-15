@@ -20,6 +20,6 @@ mod types;
 pub use appkit::{PasteboardSnapshot, keep_process_responsive};
 pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
 pub use insertion::{ProbeWindow, UiAdapter};
-pub use permissions::{accessibility_granted, request_accessibility};
+pub use permissions::{accessibility_granted, microphone_authorized, request_accessibility};
 pub use system::SystemPlatform;
 pub use types::{BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, X11Error};

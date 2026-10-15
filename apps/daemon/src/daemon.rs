@@ -13,7 +13,7 @@ use sunoto_core::{
 };
 use sunoto_desktop::{
     BubbleKind, HotkeyEvent, InsertionOutcome, Shortcut, accessibility_granted,
-    hotkey_block_reason, keep_process_responsive, request_accessibility,
+    hotkey_block_reason, keep_process_responsive, microphone_authorized, request_accessibility,
 };
 use sunoto_ipc::{
     OverlayRequest, OverlaySuggestion, PermissionKind, SidecarEvent, SidecarMessage, SidecarRequest,
@@ -167,13 +167,22 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // Persistent microphone capture bridged into the event channel.
+    // Microphone capture bridged into the event channel. The microphone is
+    // on only while a dictation records; a tap opens it.
     let capture_stop = Arc::new(AtomicBool::new(false));
     let coordinated_onboarding = cfg!(target_os = "macos") && !accessibility_at_start;
-    // On a first install, defer CoreAudio so its Microphone dialog cannot
-    // race the Accessibility step. Existing granted installs keep
-    // their normal immediate capture startup.
-    let capture_wanted = Arc::new(AtomicBool::new(!coordinated_onboarding));
+    let microphone_at_start = microphone_authorized();
+    // Without a Microphone grant, capture opens at startup so macOS asks for
+    // it, except on a first install, where CoreAudio waits for the
+    // onboarding row so its dialog cannot race the Accessibility step.
+    let capture_wanted = Arc::new(AtomicBool::new(
+        !coordinated_onboarding && !microphone_at_start,
+    ));
+    if microphone_at_start {
+        logging::info(
+            "microphone access granted; the microphone stays off until a dictation starts",
+        );
+    }
     let capture_handle = spawn_capture_thread(
         &settings,
         events_tx.clone(),
@@ -249,8 +258,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut health = HealthMonitor::default();
     let mut blocked_modes: Vec<SessionMode> = Vec::new();
     let mut hotkey_verified = false;
-    let mut mic = MicState::Starting;
-    let mut microphone_verified = false;
+    let mut mic = if microphone_at_start {
+        MicState::Idle
+    } else {
+        MicState::Starting
+    };
+    let mut microphone_verified = microphone_at_start;
     // Quiet-idle bookkeeping: the mic is released and the LLM keepalive
     // window closed after a stretch with no session.
     let mut last_activity = Instant::now();
@@ -271,7 +284,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut onboarding_accessibility_granted = accessibility_at_start;
     let mut pending_permission: Option<PermissionKind> = None;
     let mut warmup_pending = false;
-    let mut capture_idle = false;
+    let mut capture_idle = microphone_at_start;
     let mut capture_requested_at: Option<Instant> = None;
     let mut keepalive_active = false;
     let mut active_system_resolution: Option<u64> = None;
@@ -432,14 +445,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     last_pressed_at = Some(Instant::now());
                     last_activity = Instant::now();
                     if capture_idle {
-                        // The mic was released while idle; reopen it now.
-                        // This first session gets no pre-roll; every later
-                        // one does until the next idle stretch.
+                        // The microphone is off between dictations; open it
+                        // now. Sound from before it starts is not recorded,
+                        // so this session gets no pre-roll.
                         capture_idle = false;
                         mic = MicState::Starting;
                         capture_wanted.store(true, Ordering::SeqCst);
+                        capture_handle.thread().unpark();
                         capture_requested_at = Some(Instant::now());
-                        logging::info("microphone starting after idle");
+                        logging::info("microphone opening for this dictation");
                     }
                     if mode == SessionMode::Dictation
                         && let Some(client) = llm_polish.as_mut()
@@ -1187,6 +1201,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         capture_requested_at = Some(Instant::now());
                         last_activity = Instant::now();
                         capture_wanted.store(true, Ordering::SeqCst);
+                        capture_handle.thread().unpark();
                     }
                 }
                 last_onboarding = None;
@@ -1710,8 +1725,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     logging::warn(&format!("LLM keepalive stop failed: {error}"));
                 }
             }
-            if settings.capture_idle_stop_secs > 0
-                && !capture_idle
+            if !capture_idle
                 && mic == MicState::Capturing
                 && !onboarding_in_progress
                 && idle_for >= Duration::from_secs(settings.capture_idle_stop_secs)
@@ -1720,10 +1734,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 mic = MicState::Idle;
                 capture_wanted.store(false, Ordering::SeqCst);
                 preroll.clear();
-                logging::info(&format!(
-                    "microphone released after {}s idle; it reopens on the next press",
-                    settings.capture_idle_stop_secs
-                ));
+                if settings.capture_idle_stop_secs == 0 {
+                    logging::info("microphone off; the next tap turns it on");
+                } else {
+                    logging::info(&format!(
+                        "microphone off after {}s idle; the next tap turns it on",
+                        settings.capture_idle_stop_secs
+                    ));
+                }
             }
         }
         if let Some(next) = health.refresh(health_inputs(
@@ -1812,6 +1830,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     control_stop.store(true, Ordering::SeqCst);
     hotkey_stop.store(true, Ordering::SeqCst);
     capture_stop.store(true, Ordering::SeqCst);
+    capture_handle.thread().unpark();
     drop(sidecar);
     let _ = ui_handle.join();
     let _ = control_handle.join();

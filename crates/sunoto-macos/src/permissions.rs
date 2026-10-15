@@ -19,8 +19,41 @@
 //! report permission state instead of prompting under the terminal's own
 //! TCC identity, which used to add a confusing second entry to the panes.
 
+use std::os::raw::{c_char, c_void};
+
 use crate::accessibility;
 use crate::ffi;
+
+#[link(name = "AVFoundation", kind = "framework")]
+#[link(name = "objc")]
+unsafe extern "C" {
+    static AVMediaTypeAudio: *mut c_void;
+    fn objc_getClass(name: *const c_char) -> *mut c_void;
+    fn sel_registerName(name: *const c_char) -> *mut c_void;
+    fn objc_msgSend();
+}
+
+/// `AVAuthorizationStatusAuthorized`.
+const AV_AUTHORIZED: isize = 3;
+
+/// Whether Microphone access is already granted. Reads the decision only:
+/// it never prompts and never opens the device, so the daemon can keep the
+/// microphone off until a dictation starts.
+pub fn microphone_authorized() -> bool {
+    // SAFETY: `+[AVCaptureDevice authorizationStatusForMediaType:]` takes an
+    // NSString and returns an NSInteger; class, selector and constant are
+    // checked for null before the call.
+    unsafe {
+        let class = objc_getClass(c"AVCaptureDevice".as_ptr());
+        let selector = sel_registerName(c"authorizationStatusForMediaType:".as_ptr());
+        if class.is_null() || selector.is_null() || AVMediaTypeAudio.is_null() {
+            return false;
+        }
+        let status: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> isize =
+            std::mem::transmute(objc_msgSend as *const ());
+        status(class, selector, AVMediaTypeAudio) == AV_AUTHORIZED
+    }
+}
 
 /// Whether Accessibility is granted. Read through `AXIsProcessTrusted`, which
 /// reflects a toggle in System Settings without a restart; the daemon polls

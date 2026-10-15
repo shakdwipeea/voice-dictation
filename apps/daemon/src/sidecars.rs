@@ -131,13 +131,13 @@ pub(crate) fn spawn_capture_thread(
         while !stop.load(Ordering::SeqCst) {
             if !wanted.load(Ordering::SeqCst) {
                 // Idle: release the device so the mic indicator goes away
-                // and no audio is captured. Reopened as soon as `wanted`
-                // flips back.
+                // and no audio is captured. The daemon unparks this thread
+                // when it sets `wanted`, so a tap never waits for a poll.
                 if let Some(h) = capture.take() {
                     h.stop();
                     attempt = 0;
                 }
-                std::thread::sleep(Duration::from_millis(25));
+                std::thread::park_timeout(Duration::from_millis(250));
                 continue;
             }
             if capture.is_none() {
