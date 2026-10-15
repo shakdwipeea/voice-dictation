@@ -47,6 +47,6 @@ hotkey depends on. The Login Item that `sunoto setup` registers starts
 
 Release bundles are ad-hoc signed in CI. `sunoto setup` creates a stable,
 self-signed code-signing identity in the user's login keychain and re-signs
-the installed bundle. Input Monitoring and Accessibility grants therefore
+the installed bundle. Accessibility and Microphone grants therefore
 survive formula upgrades on that machine. A Developer ID signature is still
 required for notarization and cask distribution.

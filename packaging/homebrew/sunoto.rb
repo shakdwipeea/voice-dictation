@@ -71,14 +71,15 @@ class Sunoto < Formula
 
         sunoto setup
 
-      Then grant Accessibility and Input Monitoring to ~/Applications/Sunoto.app
-      when the installer opens those panes, and allow the Microphone prompt.
+      Then use the onboarding panel to grant Accessibility and Microphone to
+      ~/Applications/Sunoto.app.
 
       Everyday commands: sunoto status, sunoto restart, sunoto log,
       sunoto uninstall. Configuration:
       ~/Library/Application Support/sunoto/config.json
 
-      Upgrades re-sign the bundle, so macOS asks for the two grants again.
+      Upgrades keep both grants: setup re-signs the bundle with a stable
+      local signing identity.
     EOS
   end
 
