@@ -233,15 +233,15 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "sunoto-audio"
-version = "0.1.9"
+version = "0.1.10"
 
 [[package]]
 name = "sunoto-core"
-version = "0.1.9"
+version = "0.1.10"
 
 [[package]]
 name = "sunoto-daemon"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "sunoto-desktop"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "sunoto-linux",
  "sunoto-macos",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "sunoto-ipc"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "sunoto-linux"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde_json",
  "sunoto-system",
@@ -279,14 +279,14 @@ dependencies = [
 
 [[package]]
 name = "sunoto-macos"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "sunoto-system",
 ]
 
 [[package]]
 name = "sunoto-polish"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "sunoto-system"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
