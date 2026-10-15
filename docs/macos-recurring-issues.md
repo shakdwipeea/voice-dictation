@@ -316,3 +316,32 @@ bug — but it feels like "stopped working" if you don't wait for
 - `tail -f ~/Library/Logs/sunoto/daemon.log` and watch for it.
 - (Future improvement: show a "warming up…" overlay state during sidecar load
   so the silent ignore is visible. Not yet implemented.)
+
+## 7. Pill opens on another desktop; the paste still lands right
+
+### Symptom
+
+With two desktops (Spaces), you tap Right Option in one and no pill appears.
+Switching to the other desktop shows the pill there, and the transcript is
+still pasted into the window you were dictating into. Seen on 2026-10-16,
+after the overlay had been running for about 1.5 hours.
+
+### Root cause
+
+The pill's panel is set to join every desktop (`.canJoinAllSpaces`), but
+macOS can drop that for a hidden window and leave it tied to one desktop.
+The live pill window was in Space `[1]` only, while a fresh one is in
+`[4, 1]`. The trigger was not caught; a display change while the pill was
+hidden is the likely one. The paste is unaffected because insertion targets
+the focused app, not the pill's desktop.
+
+### Fix / guard
+
+- When the pill opens and `panel.isOnActiveSpace` is false, the overlay moves
+  the pill to a new panel, which joins every desktop again. The log then
+  shows `[overlay] pill was on another desktop; moved it to a new window`.
+- To check a live pill, look up its window id with `CGWindowListCopyWindowInfo`
+  (owner `Sunoto`, layer 25). Then read its desktops with SkyLight's
+  `SLSCopySpacesForWindows`. A healthy pill lists every desktop.
+- A fresh overlay process never shows this, so restarting the app also
+  clears it.

@@ -1558,7 +1558,7 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
 }
 
 private final class OverlayApp: NSObject, NSApplicationDelegate {
-    private let panel: NSPanel
+    private var panel = OverlayApp.makePillPanel()
     private let pill = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
@@ -1569,12 +1569,6 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     private let stdoutLock = NSLock()
 
     override init() {
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
         super.init()
         palette = SystemPaletteController(
             onSelect: { [weak self] sessionID, suggestionID in
@@ -1598,6 +1592,15 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         )
         pill.autoresizingMask = [.width, .height]
         panel.contentView = pill
+    }
+
+    private static func makePillPanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
         panel.isOpaque = false
         panel.backgroundColor = .clear
         // The pill draws its own shadow so it follows the open and close
@@ -1608,6 +1611,23 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false
+        return panel
+    }
+
+    /// macOS can leave the hidden pill tied to one desktop even though it
+    /// joins all of them: after an hour or so it opened on another desktop,
+    /// out of sight of the window being dictated into. A new window joins
+    /// every desktop again.
+    private func moveToFreshPanel() {
+        let stuck = panel
+        panel = OverlayApp.makePillPanel()
+        stuck.contentView = nil
+        stuck.orderOut(nil)
+        panel.contentView = pill
+        panel.setFrame(stuck.frame, display: false)
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
+        FileHandle.standardError.write(Data("[overlay] pill was on another desktop; moved it to a new window\n".utf8))
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1782,6 +1802,9 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             fitToContent(animated: panel.isVisible)
             panel.alphaValue = 1
             panel.orderFrontRegardless()
+            if !panel.isOnActiveSpace {
+                moveToFreshPanel()
+            }
             pill.beginOpening(now: CACurrentMediaTime())
         } else {
             fitToContent(animated: true)
