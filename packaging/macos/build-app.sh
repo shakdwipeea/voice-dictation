@@ -107,8 +107,10 @@ ok "$APP"
 
 bold "smoke test"
 "$APP/Contents/MacOS/sunoto-daemon" setup --print-plist >/dev/null
-SUNOTO_ROOT="$RES" "$RES/.venv-nemotron-mac/bin/python" -c "import parakeet_mlx, llama_cpp" \
-    || fail "venv-shaped symlinks do not resolve"
+# No bytecode: .pyc files written into the signed bundle break its seal.
+PYTHONDONTWRITEBYTECODE=1 SUNOTO_ROOT="$RES" "$RES/.venv-nemotron-mac/bin/python" \
+    -c "import parakeet_mlx, llama_cpp" || fail "venv-shaped symlinks do not resolve"
+codesign --verify --deep --strict "$APP" || fail "the smoke test changed the signed bundle"
 ok "bundle resolves its own runtime"
 
 bold "archive"
