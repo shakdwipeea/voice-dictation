@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "services" / "asr"))
 
 import parakeet_mlx_streaming_sidecar  # noqa: E402
+from nemotron_sidecar import samples_to_float32  # noqa: E402
 from parakeet_mlx_offline_sidecar import DEFAULT_MODEL  # noqa: E402
 from parakeet_mlx_streaming_sidecar import (  # noqa: E402
     BACKEND_NAME,
@@ -40,13 +41,7 @@ class _FakeStreamingEngine(StreamingParakeetMlxEngine):
         self.final_mode = final_mode
         self._stream_cm = None
         self._transcriber = None
-        self._pending = []
-        self._pending_len = 0
-        self._all_audio = []
-        self._last_text = ""
-        self._last_good_text = ""
-        self._seen_audio = False
-        self._chunk_count = 0
+        self._reset_session()
         self.texts = list(texts or [])
         self.current = ""
         self.open_count = 0
@@ -126,8 +121,17 @@ class StreamingEngineTest(unittest.TestCase):
         engine.cancel()
         self.assertEqual(engine.close_count, 1)
         self.assertEqual(engine._pending_len, 0)
-        self.assertEqual(engine._all_audio, [])
+        self.assertEqual(len(engine._all_audio), 0)
         self.assertEqual(engine.added_chunks, [])
+
+    def test_audio_is_kept_as_float32_not_python_floats(self):
+        engine = _FakeStreamingEngine(chunk_samples=1000)
+        engine.start(160)
+        engine.accept_audio(samples_to_float32([1, -2, 3]))
+        engine.accept_audio([4 / 32768.0])
+        for buffer in (engine._pending, engine._all_audio):
+            self.assertEqual((buffer.typecode, buffer.itemsize), ("f", 4))
+            self.assertEqual([round(v * 32768) for v in buffer], [1, -2, 3, 4])
 
     def test_empty_session_finishes_empty_string_without_chunks(self):
         engine = _FakeStreamingEngine()

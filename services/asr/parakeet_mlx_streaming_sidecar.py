@@ -29,6 +29,7 @@ import argparse
 import os
 import sys
 import time
+from array import array
 
 from nemotron_sidecar import PROFILE_CONTEXTS, SidecarServer, log, serve
 from parakeet_mlx_offline_sidecar import DEFAULT_MODEL, _dtype_name
@@ -42,6 +43,27 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be > 0")
     return parsed
+
+
+def _extend_float32(buffer: array, samples) -> None:
+    """Append float32 samples without boxing each one as a Python float.
+
+    SidecarServer hands over a numpy float32 array when numpy is installed
+    (always, in the MLX runtime) and a plain list otherwise. A list of Python
+    floats costs ~32 bytes per sample, eight times the float32 itself.
+    """
+    if str(getattr(samples, "dtype", "")) == "float32":
+        buffer.frombytes(samples.tobytes())
+    else:
+        buffer.extend(samples)
+
+
+def _as_mx(mx, samples):
+    # memoryview hands MLX the float32 buffer directly; a list goes element
+    # by element.
+    if isinstance(samples, array):
+        return mx.array(memoryview(samples))
+    return mx.array(samples, dtype=mx.float32)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -87,13 +109,7 @@ class StreamingParakeetMlxEngine:
 
         self._stream_cm = None
         self._transcriber = None
-        self._pending: list[float] = []
-        self._pending_len = 0
-        self._all_audio: list[float] = []
-        self._last_text = ""
-        self._last_good_text = ""
-        self._seen_audio = False
-        self._chunk_count = 0
+        self._reset_session()
 
         self._load(model_name, precision, cache_dir)
 
@@ -149,7 +165,7 @@ class StreamingParakeetMlxEngine:
         """Run one tiny streaming context so the first real session is warm."""
         try:
             self._open_stream()
-            self._add_audio_to_stream([0.0] * SAMPLE_RATE, reason="warmup")
+            self._add_audio_to_stream(array("f", bytes(4 * SAMPLE_RATE)), reason="warmup")
         except Exception as error:  # noqa: BLE001
             log(f"warmup parakeet-mlx streaming failed ({error!r}); continuing")
         finally:
@@ -164,13 +180,6 @@ class StreamingParakeetMlxEngine:
         if profile_ms not in PROFILE_CONTEXTS:
             raise ValueError(f"unsupported profile_ms: {profile_ms}")
         self.cancel()
-        self._pending = []
-        self._pending_len = 0
-        self._all_audio = []
-        self._last_text = ""
-        self._last_good_text = ""
-        self._seen_audio = False
-        self._chunk_count = 0
         self._open_stream()
 
     def accept_audio(self, samples) -> list[str]:
@@ -205,10 +214,10 @@ class StreamingParakeetMlxEngine:
                         f"finish: dropping tiny streaming tail {self._pending_len} samples "
                         f"({self._pending_len / SAMPLE_RATE:.3f}s)"
                     )
-                    self._pending = []
+                    self._pending = array("f")
                     self._pending_len = 0
             if self.flush_samples > 0:
-                self._add_audio_to_stream([0.0] * self.flush_samples, reason="flush")
+                self._add_audio_to_stream(array("f", bytes(4 * self.flush_samples)), reason="flush")
             streaming_text = self._current_text()
             if self.final_mode == "direct":
                 text = self._transcribe_direct_pcm(self._all_audio)
@@ -230,13 +239,7 @@ class StreamingParakeetMlxEngine:
             return text
         finally:
             self._close_stream()
-            self._pending = []
-            self._pending_len = 0
-            self._all_audio = []
-            self._last_text = ""
-            self._last_good_text = ""
-            self._seen_audio = False
-            self._chunk_count = 0
+            self._reset_session()
 
     def _synchronize_final_if_requested(self) -> float | None:
         if not env_bool("SUNOTO_ASR_MLX_SYNCHRONIZE_FINAL"):
@@ -253,9 +256,12 @@ class StreamingParakeetMlxEngine:
 
     def cancel(self) -> None:
         self._close_stream()
-        self._pending = []
+        self._reset_session()
+
+    def _reset_session(self) -> None:
+        self._pending = array("f")
         self._pending_len = 0
-        self._all_audio = []
+        self._all_audio = array("f")
         self._last_text = ""
         self._last_good_text = ""
         self._seen_audio = False
@@ -282,14 +288,16 @@ class StreamingParakeetMlxEngine:
                 self._transcriber = None
 
     def _append_pending(self, samples) -> None:
-        # SidecarServer already converted i16 PCM to float32 in [-1, 1]. Keep a
-        # plain list so this module remains importable without numpy.
-        values = [float(sample) for sample in samples]
-        self._pending.extend(values)
-        self._pending_len += len(values)
-        self._all_audio.extend(values)
+        # SidecarServer already converted i16 PCM to float32 in [-1, 1]. Keep
+        # it as float32 in stdlib arrays so this module stays importable
+        # without numpy.
+        before = len(self._pending)
+        _extend_float32(self._pending, samples)
+        added = self._pending[before:]
+        self._all_audio.extend(added)
+        self._pending_len += len(added)
 
-    def _take_pending(self, count: int) -> list[float]:
+    def _take_pending(self, count: int) -> array:
         chunk = self._pending[:count]
         del self._pending[:count]
         self._pending_len -= len(chunk)
@@ -299,7 +307,7 @@ class StreamingParakeetMlxEngine:
         if self._mx is None or self._transcriber is None:
             raise RuntimeError("no active streaming session")
         t0 = time.perf_counter()
-        audio = self._mx.array(samples, dtype=self._mx.float32)
+        audio = _as_mx(self._mx, samples)
         self._transcriber.add_audio(audio)
         self._chunk_count += 1
         text = self._current_text()
@@ -314,13 +322,13 @@ class StreamingParakeetMlxEngine:
             )
         return text
 
-    def _transcribe_direct_pcm(self, samples: list[float]) -> str:
+    def _transcribe_direct_pcm(self, samples: array) -> str:
         if self.model is None or self._mx is None or self._get_logmel is None:
             raise RuntimeError("Parakeet-MLX model is not loaded")
         if not samples:
             return ""
         t0 = time.perf_counter()
-        audio = self._mx.array(samples, dtype=self._mx.float32)
+        audio = _as_mx(self._mx, samples)
         t_audio = time.perf_counter() - t0
 
         t_mel0 = time.perf_counter()
