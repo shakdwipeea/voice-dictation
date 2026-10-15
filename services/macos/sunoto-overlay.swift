@@ -45,6 +45,32 @@ private struct PillPalette {
     }
 }
 
+/// Easing curves for the pill's open and close motion.
+private enum Ease {
+    static func clamp(_ t: CGFloat) -> CGFloat { max(0, min(1, t)) }
+    static func outCubic(_ t: CGFloat) -> CGFloat { 1 - pow(1 - clamp(t), 3) }
+    static func inCubic(_ t: CGFloat) -> CGFloat { pow(clamp(t), 3) }
+    /// Overshoots by a few percent, then settles: a gentle spring.
+    static func outBack(_ t: CGFloat) -> CGFloat {
+        let t = clamp(t), c1: CGFloat = 1.2, c3 = c1 + 1
+        return 1 + c3 * pow(t - 1, 3) + c1 * pow(t - 1, 2)
+    }
+}
+
+/// How the pill enters and leaves. The record dot appears first and the
+/// pill unrolls out of it to the right; closing rolls it back into the dot,
+/// which then shrinks away. With Reduce Motion both are a plain fade.
+private struct PillMotion {
+    /// Scale and opacity of the round cap that holds the dot.
+    var seedScale: CGFloat = 1
+    var seedAlpha: CGFloat = 1
+    /// 0 is just the round cap, 1 the full pill (briefly above 1 on open).
+    var unroll: CGFloat = 1
+    var contentAlpha: CGFloat = 1
+    /// Vertical offset; negative is up.
+    var lift: CGFloat = 0
+}
+
 private enum PillPhase {
     /// Nothing to show.
     case idle
@@ -78,6 +104,8 @@ private final class PillView: NSView {
     private static let releaseGap: CFTimeInterval = 0.14
     private static let settleDuration: CFTimeInterval = 0.36
     private static let glintPeriod: CFTimeInterval = 1.25
+    private static let openDuration: CFTimeInterval = 0.42
+    private static let closeDuration: CFTimeInterval = 0.3
 
     private(set) var phase: PillPhase = .idle
     private(set) var caption = ""
@@ -90,12 +118,27 @@ private final class PillView: NSView {
     private var settleStartedAt: CFTimeInterval = 0
     private var clock: CFTimeInterval = 0
     var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    /// Transparent room around the pill for its shadow and the spring's
+    /// overshoot. The onboarding panel's still copy uses none.
+    var margin: CGFloat = 16
+    private enum Transition {
+        case opening(since: CFTimeInterval)
+        case closing(since: CFTimeInterval)
+    }
+    private var transition: Transition?
+    /// Set when a close finishes; the app then hides the window.
+    private(set) var closeFinished = false
+    /// Width of the pill body, without the margin.
+    private var bodyWidth: CGFloat { bounds.width - margin * 2 }
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
 
     /// True while the pill changes on its own and needs the display clock.
     var isAnimating: Bool {
+        if transition != nil {
+            return true
+        }
         switch phase {
         case .recording: return true
         case .working: return settle < 1 || !reduceMotion
@@ -165,9 +208,86 @@ private final class PillView: NSView {
         needsDisplay = true
     }
 
+    // MARK: Open and close
+
+    /// How far the pill is shown, 0 to 1, assuming linear time. Used to turn
+    /// an interrupted close into an open (and back) without a jump.
+    private func presence(at now: CFTimeInterval) -> CGFloat {
+        switch transition {
+        case .opening(let since):
+            return Ease.clamp(CGFloat((now - since) / Self.openDuration))
+        case .closing(let since):
+            return 1 - Ease.clamp(CGFloat((now - since) / Self.closeDuration))
+        case nil:
+            return closeFinished ? 0 : 1
+        }
+    }
+
+    func beginOpening(now: CFTimeInterval) {
+        let shown = transition == nil && !closeFinished ? 0 : presence(at: now)
+        transition = .opening(since: now - CFTimeInterval(shown) * Self.openDuration)
+        closeFinished = false
+        clock = now
+        needsDisplay = true
+    }
+
+    func beginClosing(now: CFTimeInterval) {
+        let shown = presence(at: now)
+        transition = .closing(since: now - CFTimeInterval(1 - shown) * Self.closeDuration)
+        clock = now
+        needsDisplay = true
+    }
+
+    /// Stop any open or close motion and show the pill as it is.
+    func settleMotion() {
+        transition = nil
+        closeFinished = false
+    }
+
+    private var motion: PillMotion {
+        var motion = PillMotion()
+        switch transition {
+        case nil:
+            return motion
+        case .opening(let since):
+            let t = CGFloat((clock - since) / Self.openDuration)
+            if reduceMotion {
+                motion.seedAlpha = Ease.clamp(t)
+                return motion
+            }
+            motion.seedScale = 0.5 + 0.5 * Ease.outCubic(t / 0.35)
+            motion.seedAlpha = Ease.outCubic(t / 0.3)
+            motion.lift = -8 * (1 - Ease.outCubic(t / 0.6))
+            motion.unroll = Ease.outBack((t - 0.18) / 0.82)
+            motion.contentAlpha = Ease.outCubic((t - 0.25) / 0.5)
+        case .closing(let since):
+            let t = CGFloat((clock - since) / Self.closeDuration)
+            if reduceMotion {
+                motion.seedAlpha = 1 - Ease.clamp(t)
+                return motion
+            }
+            motion.contentAlpha = 1 - Ease.clamp(t / 0.35)
+            motion.unroll = 1 - Ease.inCubic(t / 0.6)
+            let shrink = Ease.inCubic((t - 0.5) / 0.5)
+            motion.seedScale = 1 - 0.5 * shrink
+            motion.seedAlpha = 1 - shrink
+            motion.lift = -4 * shrink
+        }
+        return motion
+    }
+
     /// Advance animations to `now`. Returns whether to keep the clock running.
     func tick(now: CFTimeInterval) -> Bool {
         clock = now
+        switch transition {
+        case .opening(let since) where now - since >= Self.openDuration:
+            transition = nil
+        case .closing(let since) where now - since >= Self.closeDuration:
+            transition = nil
+            closeFinished = true
+        default:
+            break
+        }
         if phase == .recording, sawSample, now - lastSampleAt > Self.releaseGap {
             enterWorking(now: now)
         }
@@ -180,6 +300,8 @@ private final class PillView: NSView {
     }
 
     func reset() {
+        transition = nil
+        closeFinished = false
         phase = .idle
         caption = ""
         systemMode = false
@@ -287,32 +409,109 @@ private final class PillView: NSView {
         return NSSize(width: snapped, height: height)
     }
 
+    /// The window around the pill: its body plus the margin on every side.
+    var windowSize: NSSize {
+        let body = preferredSize
+        return NSSize(width: body.width + margin * 2, height: body.height + margin * 2)
+    }
+
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
         let palette = PillPalette.resolve(for: effectiveAppearance)
-        let body = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let radius = min(body.height / 2, 20)
-        let shape = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
+        let motion = self.motion
+        let shape = bodyPath(motion)
+
+        // The pill with its own shadow, so the shadow follows the motion.
+        context.saveGState()
+        context.setAlpha(motion.seedAlpha)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        if margin > 0 {
+            let shadow = NSShadow()
+            shadow.shadowBlurRadius = 12
+            shadow.shadowOffset = NSSize(width: 0, height: -4)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(
+                effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.45 : 0.18
+            )
+            shadow.set()
+        }
         palette.body.setFill()
         shape.fill()
+        NSShadow().set()
         palette.edge.setStroke()
         shape.lineWidth = 1
         shape.stroke()
+        context.endTransparencyLayer()
+        context.restoreGState()
 
+        // The mark (dot, spinner, or warning) belongs to the round cap: it
+        // arrives first and leaves last. Everything else is laid out at full
+        // size and uncovered as the pill unrolls, so nothing reflows.
+        context.saveGState()
+        shape.addClip()
+        context.setAlpha(motion.seedAlpha)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        let cap = Self.rowHeight / 2
+        let scale = motion.seedScale
+        context.translateBy(x: margin + cap, y: margin + motion.lift + cap)
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: -cap, y: -cap)
+        drawMark(palette)
+        context.endTransparencyLayer()
+        context.restoreGState()
+
+        guard motion.contentAlpha > 0.01 else { return }
+        context.saveGState()
+        shape.addClip()
+        context.setAlpha(motion.contentAlpha * motion.seedAlpha)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        context.translateBy(x: margin, y: margin + motion.lift)
+        drawContents(palette)
+        context.endTransparencyLayer()
+        context.restoreGState()
+    }
+
+    private func drawMark(_ palette: PillPalette) {
+        switch phase {
+        case .idle, .recording, .working:
+            drawCaptureMark(palette)
+        case .busy:
+            drawSpinner(palette)
+        case .attention, .error:
+            drawWarning(palette)
+        case .notice:
+            drawNotice(palette)
+        }
+    }
+
+    /// The pill's outline for this frame of the open or close motion.
+    private func bodyPath(_ motion: PillMotion) -> NSBezierPath {
+        let fullWidth = bodyWidth
+        let fullHeight = bounds.height - margin * 2
+        let cap = min(Self.rowHeight, fullHeight)
+        let width = min(fullWidth + margin - 2, cap + (fullWidth - cap) * motion.unroll)
+        let height = cap + (fullHeight - cap) * Ease.clamp(motion.unroll)
+        // Scale about the centre of the round cap that holds the dot.
+        let scale = motion.seedScale
+        let center = NSPoint(x: margin + cap / 2, y: margin + cap / 2 + motion.lift)
+        let rect = NSRect(
+            x: center.x + (margin - center.x) * scale,
+            y: center.y + (margin + motion.lift - center.y) * scale,
+            width: width * scale,
+            height: height * scale
+        ).insetBy(dx: 0.5, dy: 0.5)
+        let radius = min(rect.height / 2, 20 * scale)
+        return NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+    }
+
+    private func drawContents(_ palette: PillPalette) {
         switch phase {
         case .idle:
             break
         case .recording, .working:
             drawCapture(palette)
-        case .busy:
-            drawSpinner(palette)
-            drawLabel(palette)
-        case .attention, .error:
-            drawWarning(palette)
-            drawLabel(palette)
-        case .notice:
-            drawNotice(palette)
+        case .busy, .attention, .error, .notice:
             drawLabel(palette)
         }
     }
@@ -320,14 +519,13 @@ private final class PillView: NSView {
     private var center: CGFloat { Self.rowHeight / 2 }
     private let markX: CGFloat = 21
 
-    private func drawCapture(_ palette: PillPalette) {
+    /// The record dot. It breathes with your voice while recording, then
+    /// crossfades from red to ink as the sound settles (a hue blend would
+    /// pass through purple, which reads as System mode).
+    private func drawCaptureMark(_ palette: PillPalette) {
         let live = systemMode ? NSColor.controlAccentColor : palette.voice
         let settled = systemMode ? NSColor.controlAccentColor : palette.ink
         let latest = levels.last ?? 0
-
-        // The dot breathes with your voice while recording, then crossfades
-        // from red to ink as the sound settles (a hue blend would pass
-        // through purple, which reads as System mode).
         let radius = 4.5 + (phase == .recording ? latest * 1.8 : 0)
         if phase == .recording, latest > 0.05 {
             live.withAlphaComponent(0.2 * min(1, latest * 1.5)).setFill()
@@ -339,14 +537,18 @@ private final class PillView: NSView {
         NSBezierPath(ovalIn: dot).fill()
         settled.withAlphaComponent(settle).setFill()
         NSBezierPath(ovalIn: dot).fill()
+    }
 
+    private func drawCapture(_ palette: PillPalette) {
+        let live = systemMode ? NSColor.controlAccentColor : palette.voice
+        let settled = systemMode ? NSColor.controlAccentColor : palette.ink
         let left = Self.ribbonLeft
-        let right = bounds.width - Self.timerWidth
+        let right = bodyWidth - Self.timerWidth
         drawRibbon(from: left, to: right, tint: live, settled: settled, palette: palette)
-        drawTimer(palette, right: bounds.width - 16)
+        drawTimer(palette, right: bodyWidth - 16)
 
         if !caption.isEmpty || systemMode {
-            let rect = NSRect(x: left, y: Self.rowHeight - 6, width: bounds.width - left - 18, height: 18)
+            let rect = NSRect(x: left, y: Self.rowHeight - 6, width: bodyWidth - left - 18, height: 18)
             captionString(palette, transcript: captionIsTranscript)
                 .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         }
@@ -429,7 +631,7 @@ private final class PillView: NSView {
     }
 
     private func drawLabel(_ palette: PillPalette) {
-        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bounds.width - Self.ribbonLeft - 18, height: 18)
+        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bodyWidth - Self.ribbonLeft - 18, height: 18)
         captionString(palette, transcript: false, emphasized: true)
             .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
@@ -595,6 +797,7 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
     private let onCancel: (UInt64) -> Void
     private var sessionID: UInt64?
     private var suggestions: [PaletteSuggestion] = []
+    private var closeGeneration = 0
 
     init(onSelect: @escaping (UInt64, String) -> Void, onCancel: @escaping (UInt64) -> Void) {
         self.onSelect = onSelect
@@ -736,21 +939,49 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         }
         positionPanel()
+        closeGeneration += 1
+        // Rise into place while fading in; Reduce Motion keeps the fade.
+        let resting = panel.frame
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !reduceMotion {
+            panel.setFrameOrigin(NSPoint(x: resting.minX, y: resting.minY - 10))
+        }
         panel.alphaValue = 0
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(table)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
             panel.animator().alphaValue = 1
+            panel.animator().setFrame(resting, display: true)
         }
+    }
+
+    /// Fade out while sinking a little, then remove the panel. A palette
+    /// shown again meanwhile cancels the removal.
+    private func closePanel() {
+        closeGeneration += 1
+        let generation = closeGeneration
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let sunk = panel.frame.offsetBy(dx: 0, dy: reduceMotion ? 0 : -6)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+            panel.animator().setFrame(sunk, display: true)
+        }, completionHandler: { [weak self] in
+            guard let self, self.closeGeneration == generation else { return }
+            self.panel.orderOut(nil)
+            self.panel.alphaValue = 1
+        })
     }
 
     func dismiss(sessionID: UInt64) {
         guard self.sessionID == sessionID else { return }
         self.sessionID = nil
         suggestions = []
-        panel.orderOut(nil)
+        closePanel()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -789,7 +1020,7 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
         let suggestionID = suggestions[table.selectedRow].id
         self.sessionID = nil
         suggestions = []
-        panel.orderOut(nil)
+        closePanel()
         onSelect(sessionID, suggestionID)
     }
 
@@ -797,7 +1028,7 @@ private final class SystemPaletteController: NSObject, NSTableViewDataSource, NS
         guard let sessionID else { return }
         self.sessionID = nil
         suggestions = []
-        panel.orderOut(nil)
+        closePanel()
         onCancel(sessionID)
     }
 }
@@ -976,6 +1207,7 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
 
         // The pill as it will look while you talk, so setup also shows how to use it.
         let hero = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
+        hero.margin = 0
         hero.showDemo()
         hero.translatesAutoresizingMaskIntoConstraints = false
         hero.setAccessibilityElement(true)
@@ -1225,9 +1457,6 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
     private var visible = false
-    /// Bumped on every show/hide so a finished fade-out never hides a pill
-    /// that was shown again meanwhile.
-    private var visibilityGeneration = 0
     private var displayClock: Timer?
     private let stdoutLock = NSLock()
 
@@ -1263,7 +1492,9 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         panel.contentView = pill
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // The pill draws its own shadow so it follows the open and close
+        // motion; a window shadow would outline the whole margin.
+        panel.hasShadow = false
         panel.ignoresMouseEvents = true
         panel.isReleasedWhenClosed = false
         panel.level = .statusBar
@@ -1357,7 +1588,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             break
         }
         if visible {
-            fitToContent()
+            fitToContent(animated: true)
             runClockIfNeeded()
         }
     }
@@ -1377,7 +1608,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     // MARK: Display clock
 
     private func runClockIfNeeded() {
-        guard visible, pill.isAnimating, displayClock == nil else { return }
+        guard panel.isVisible, pill.isAnimating, displayClock == nil else { return }
         let clock = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.advance()
         }
@@ -1387,8 +1618,14 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
 
     private func advance() {
         let keepRunning = pill.tick(now: CACurrentMediaTime())
-        fitToContent()
-        if !keepRunning || !visible {
+        if pill.closeFinished {
+            finishHiding()
+            return
+        }
+        if visible {
+            fitToContent(animated: true)
+        }
+        if !keepRunning {
             displayClock?.invalidate()
             displayClock = nil
         }
@@ -1396,23 +1633,25 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
 
     // MARK: Window
 
+    /// The window includes the pill's transparent margin; the pill body
+    /// itself sits 14 pt below the menu bar.
     private func targetFrame(for size: NSSize) -> NSRect? {
         guard let screen = NSScreen.main else { return nil }
         let frame = screen.visibleFrame
         return NSRect(
             x: (frame.midX - size.width / 2).rounded(),
-            y: frame.maxY - size.height - 14,
+            y: frame.maxY - 14 + pill.margin - size.height,
             width: size.width,
             height: size.height
         )
     }
 
     /// Resize around the top edge so the pill grows downward and sideways.
-    private func fitToContent() {
-        let size = pill.preferredSize
+    private func fitToContent(animated: Bool) {
+        let size = pill.windowSize
         guard let target = targetFrame(for: size) else { return }
         if panel.frame == target { return }
-        if visible && panel.alphaValue > 0 && panel.frame.size != size {
+        if animated && panel.isVisible && panel.frame.size != size {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.16
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -1421,48 +1660,38 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         } else {
             panel.setFrame(target, display: true)
         }
-        panel.invalidateShadow()
     }
 
     private func show() {
-        visibilityGeneration += 1
         let wasVisible = visible
         visible = true
-        fitToContent()
-        if !wasVisible || panel.alphaValue < 1 {
-            if !wasVisible {
-                panel.alphaValue = 0
-            }
-            panel.setIsVisible(true)
+        if !wasVisible {
+            // Fresh, or caught mid-close: open from wherever the pill is.
+            fitToContent(animated: panel.isVisible)
+            panel.alphaValue = 1
             panel.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.14
-                panel.animator().alphaValue = 1
-            }
+            pill.beginOpening(now: CACurrentMediaTime())
+        } else {
+            fitToContent(animated: true)
         }
         runClockIfNeeded()
     }
 
     private func hide(animated: Bool) {
-        visibilityGeneration += 1
-        let generation = visibilityGeneration
         visible = false
-        displayClock?.invalidate()
-        displayClock = nil
-        let finish = { [weak self] in
-            guard let self, self.visibilityGeneration == generation else { return }
-            self.panel.orderOut(nil)
-            self.panel.alphaValue = 1
-            self.pill.reset()
-        }
         guard animated, panel.isVisible else {
-            finish()
+            finishHiding()
             return
         }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.18
-            panel.animator().alphaValue = 0
-        }, completionHandler: finish)
+        pill.beginClosing(now: CACurrentMediaTime())
+        runClockIfNeeded()
+    }
+
+    private func finishHiding() {
+        displayClock?.invalidate()
+        displayClock = nil
+        panel.orderOut(nil)
+        pill.reset()
     }
 }
 
