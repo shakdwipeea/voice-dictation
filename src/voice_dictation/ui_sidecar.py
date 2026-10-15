@@ -43,6 +43,8 @@ def dispatch(overlay, msg: dict) -> bool:
             overlay.show()
         elif op == "hide":
             overlay.hide()
+        elif op == "pasted":
+            pass  # the hide that follows closes the overlay
         elif op == "recording":
             overlay.set_recording(
                 float(msg.get("elapsed_s", 0.0)),

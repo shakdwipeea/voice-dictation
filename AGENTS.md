@@ -226,8 +226,11 @@ muted; check System Settings → Sound → Input.
   session (real or synthetic Ctrl+F8) without first focusing a disposable
   target window; treat injection as a security surface (see the product
   plan's injection-safety section).
-- The recording overlay stays minimal while recording (dot + meter only);
-  status text appears only for transcribing/partial/error states.
+- The pill never shows partial transcripts: they are often wrong where the
+  final is right. While recording it shows the dot, sound ribbon, timer, and
+  a start hint that fades once you start talking (3 s at most). After the
+  second tap it shows words only if the wait passes 1.5 s, and a check mark
+  confirms the paste.
 
 ## Audio debugging
 

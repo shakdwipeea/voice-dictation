@@ -251,7 +251,8 @@ such as `"Ctrl+F1"` or `"Cmd+Shift+Space"` still work. Left-hand modifiers and
 the Globe/Fn key are not offered: macOS and other apps already use them.
 
 `backend = "parakeet_mlx_streaming"` is the default macOS backend. It uses
-parakeet-mlx `transcribe_stream()` for live partials while recording, then runs
+parakeet-mlx `transcribe_stream()` for partials while recording (never shown;
+they back up the final when it comes out garbled), then runs
 the final transcript from the full buffered utterance through the same direct
 PCM `get_logmel()` + `model.generate()` path as the offline backend. There is
 no WAV/ffmpeg/file-based fallback. The default chunk is 560ms
@@ -277,9 +278,9 @@ original otherwise; an install that already has the original keeps it.
 
 `backend = "parakeet_mlx_offline"` is the stable whole-utterance alternative:
 same parakeet-mlx `mlx-community/parakeet-tdt-0.6b-v3` model and direct PCM
-`get_logmel()` + `model.generate()` path, but no streaming partials (the overlay
-stays minimal until the final result arrives). Use it if streaming partials are
-unreliable or you only care about the final transcript.
+`get_logmel()` + `model.generate()` path, but no streaming partials, so no
+backup when the final comes out garbled. Use it if streaming partials are
+unreliable or to save the GPU work they take while you talk.
 
 `backend = "nemotron_offline"` remains available as the older whole-utterance
 RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU

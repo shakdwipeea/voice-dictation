@@ -73,7 +73,7 @@ Three things to hold in your head:
 | --- | --- | --- |
 | Idle | Mic is off. With `capture_idle_stop_secs` above 0 it stays on that long after a dictation, feeding a 300 ms pre-roll ring. | `daemon.rs` audio handler, `sunoto-core::AudioPreRoll` |
 | Press | Refused if ASR is not ready or the LLM has not warmed. Otherwise `SessionMachine` moves `Idle → Recording{id}` and the mic turns on (first audio 70 to 105 ms later on a MacBook Pro). A kept-on mic flushes its pre-roll to the sidecar as the first `audio_chunk` instead. | `daemon.rs` hotkey handler |
-| Recording | Each 20 ms frame is forwarded as a JSON array of 320 i16 samples and mirrored to the overlay as a peak/rms meter. Streaming backends return `partial` text. | `daemon.rs`, ASR sidecar |
+| Recording | Each 20 ms frame is forwarded as a JSON array of 320 i16 samples and mirrored to the overlay as a peak/rms meter. Streaming backends return `partial` text, kept as the final's fallback and never shown. | `daemon.rs`, ASR sidecar |
 | Release | `Recording → Transcribing`. Focus is captured now, not later. Watchdog set to `8000 ms + 3.0 × recorded_ms`. `finish_session` sent. | `daemon.rs` |
 | Final | Sidecar returns `final{text}`. Stale ids are dropped. `Transcribing → Idle`. | `sunoto-core::SessionMachine` |
 | Polish 1 | Deterministic pipeline: normalize → resolve "no wait, I mean" swaps → strip fillers → dictionary → snippets → style (terminal vs prose) → normalize. Style is picked by the focused window's class. | `crates/sunoto-polish` |

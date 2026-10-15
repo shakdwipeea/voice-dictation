@@ -701,27 +701,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     logging::info(&format!("session {session_id}: sidecar accepted"));
                 }
                 SidecarEvent::Partial { session_id, text } => {
-                    if let SessionAction::PartialUpdated { mode, text, .. } =
-                        machine.partial(session_id, text)
-                    {
-                        let kind = match machine.state() {
-                            SessionState::Transcribing { .. } => BubbleKind::Transcribing,
-                            _ => BubbleKind::Recording,
-                        };
-                        let tail: String = text
-                            .chars()
-                            .rev()
-                            .take(40)
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect();
-                        let visible = match mode {
-                            SessionMode::Dictation => tail,
-                            SessionMode::System => format!("System: {tail}"),
-                        };
-                        ui.show(kind, &visible);
-                    }
+                    // Partials are often wrong where the final is right, so
+                    // they are never shown; the sound ribbon says Sunoto
+                    // hears you.
+                    let _ = machine.partial(session_id, text);
                 }
                 SidecarEvent::Final { session_id, text } => {
                     if let SessionAction::Finalized {
@@ -1539,7 +1522,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     &mut bubble_hide_at,
                                 );
                             }
-                            InsertionOutcome::Typed | InsertionOutcome::Pasted => ui.hide(),
+                            InsertionOutcome::Typed | InsertionOutcome::Pasted => ui.pasted(),
                         }
                     }
                     Err(message) => {

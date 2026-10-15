@@ -135,16 +135,14 @@ impl UiFront {
     pub(crate) fn show(&self, kind: BubbleKind, text: &str) {
         if self.overlay_active() {
             self.overlay_send(OverlayRequest::Show);
-            // While recording, the pill's dot and meter say it all. While
-            // finalizing a streaming session, keep the latest partial visible
-            // instead of replacing it with a generic "transcribing..." label.
+            // While recording, the pill's dot and meter say it all. The
+            // macOS pill holds "transcribing..." back until the wait is long
+            // enough to need words.
             if matches!(kind, BubbleKind::Recording) && text == "recording..." {
                 self.overlay_send(OverlayRequest::Status {
                     text: String::new(),
                     error: false,
                 });
-            } else if matches!(kind, BubbleKind::Transcribing) && text == "transcribing..." {
-                // Preserve the current partial/caption until the final arrives.
             } else {
                 self.overlay_send(OverlayRequest::Status {
                     text: text.to_string(),
@@ -167,6 +165,14 @@ impl UiFront {
         let _ = self.bubble.send(UiCommand::HideBubble);
     }
 
+    /// The text landed at the cursor: confirm it, then close as `hide` does.
+    pub(crate) fn pasted(&self) {
+        if self.attention.is_none() {
+            self.overlay_send(OverlayRequest::Pasted);
+        }
+        self.hide();
+    }
+
     pub(crate) fn level(&self, elapsed_s: f64, peak: f64, rms: f64) {
         if self.overlay_active() {
             self.overlay_send(OverlayRequest::Recording {
@@ -182,4 +188,47 @@ impl UiFront {
 pub(crate) fn show_error(ui: &UiFront, message: &str, bubble_hide_at: &mut Option<Instant>) {
     ui.show(BubbleKind::Error, message);
     *bubble_hide_at = Some(Instant::now() + ERROR_BUBBLE_VISIBLE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn front() -> (UiFront, mpsc::Receiver<OverlayRequest>) {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let (bubble, _) = mpsc::channel();
+        let ui = UiFront {
+            bubble,
+            overlay: Some(OverlayHandle { tx }),
+            overlay_ready: true,
+            attention: None,
+        };
+        (ui, rx)
+    }
+
+    #[test]
+    fn transcribing_reaches_the_pill_instead_of_a_stale_partial() {
+        let (ui, rx) = front();
+        ui.show(BubbleKind::Transcribing, "transcribing...");
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [
+                OverlayRequest::Show,
+                OverlayRequest::Status {
+                    text: "transcribing...".into(),
+                    error: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_paste_is_confirmed_before_the_pill_closes() {
+        let (ui, rx) = front();
+        ui.pasted();
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [OverlayRequest::Pasted, OverlayRequest::Hide]
+        );
+    }
 }

@@ -354,7 +354,7 @@
 
       <!-- streaming note -->
       <text x="265" y="122" class="svg-sub" text-anchor="middle">320 samples / 20 ms → sidecar</text>
-      <text x="265" y="138" class="svg-sub" text-anchor="middle">partials + meter to overlay</text>
+      <text x="265" y="138" class="svg-sub" text-anchor="middle">meter to overlay</text>
 
       <text x="20" y="190" class="svg-sub">Session state lives in sunoto-core. Polish and insertion happen after the machine is already back in Idle, so a new press can start while the previous text is still being pasted.</text>
       </g>
@@ -369,7 +369,7 @@
     <tbody>
       <tr><td>Idle</td><td>Mic is off. With <code>capture_idle_stop_secs</code> above 0 it stays on that long after a dictation, feeding a 300 ms pre-roll ring.</td><td><code>sunoto-core::AudioPreRoll</code></td></tr>
       <tr><td>Press</td><td>Refused if ASR is not ready or the LLM has not warmed. Else <code>Idle → Recording{id}</code> and the mic turns on (first audio 70 to 105 ms later on a MacBook Pro). A kept-on mic flushes its pre-roll as the first <code>audio_chunk</code> instead.</td><td><code>daemon.rs</code> hotkey arm</td></tr>
-      <tr><td>Recording</td><td>Each 20 ms frame is forwarded as a JSON array of 320 i16 samples and mirrored to the overlay as peak/rms. Streaming backends return <code>partial</code>.</td><td><code>daemon.rs</code>, ASR sidecar</td></tr>
+      <tr><td>Recording</td><td>Each 20 ms frame is forwarded as a JSON array of 320 i16 samples and mirrored to the overlay as peak/rms. Streaming backends return <code>partial</code>, kept as the final's fallback and never shown.</td><td><code>daemon.rs</code>, ASR sidecar</td></tr>
       <tr><td>Release</td><td><code>Recording → Transcribing</code>. Focus captured now. Watchdog set to 8000 ms + 3.0 × recorded ms. <code>finish_session</code> sent.</td><td><code>daemon.rs</code></td></tr>
       <tr><td>Final</td><td><code>final{text}</code> arrives. Stale ids dropped. <code>Transcribing → Idle</code>.</td><td><code>sunoto-core::SessionMachine</code></td></tr>
       <tr><td>Polish 1</td><td>normalize → resolve "no wait, I mean" swaps → strip fillers → dictionary → snippets → style (terminal vs prose by window class) → normalize.</td><td><code>crates/sunoto-polish</code></td></tr>

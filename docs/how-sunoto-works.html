@@ -494,7 +494,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
 <section id="pill">
   <div class="prose">
     <h2>What the status pill says</h2>
-    <p>The pill is the only thing Sunoto shows on screen. While recording it stays small: a red dot and a sound meter. Words appear only when there is something to report.</p>
+    <p>The pill is the only thing Sunoto shows on screen. While recording it stays small: a red dot, a sound meter, and a hint that fades once you start talking. It never shows the speech engine’s guesses while you talk, because they are often wrong where the final text is right. After the second tap it shows a working line, and a check mark when the text is pasted. Words appear only when there is something to report.</p>
   </div>
   <div class="table-wrap">
     <table>
@@ -506,7 +506,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
           <td class="nowrap"><span class="pill"><span class="dot"></span><span class="bars"><i style="height:40%"></i><i style="height:80%"></i><i style="height:100%"></i><i style="height:60%"></i><i style="height:85%"></i><i style="height:35%"></i></span></span></td>
           <td>Recording.</td><td>Talk, then tap again to paste, or press Esc to throw it away.</td>
         </tr>
-        <tr><td class="nowrap"><span class="pill">transcribing...</span></td><td>The speech engine is finishing the sentence.</td><td>Wait a moment.</td></tr>
+        <tr><td class="nowrap"><span class="pill">transcribing...</span></td><td>The speech engine is taking longer than usual (shown only after 1.5 s).</td><td>Wait a moment.</td></tr>
         <tr><td class="nowrap"><span class="pill">polishing...</span></td><td>The AI editor is checking the sentence.</td><td>Wait a moment.</td></tr>
         <tr><td class="nowrap"><span class="pill">loading speech model...</span></td><td>Sunoto just started and the speech engine is loading. A few seconds on a Mac.</td><td>Wait for it to clear.</td></tr>
         <tr><td class="nowrap"><span class="pill">warming polish...</span></td><td>The AI editor is getting ready.</td><td>Wait for it to clear.</td></tr>
@@ -624,7 +624,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
     <div><dt>LLM polish</dt><dd>The AI editor. “LLM” means large language model.</dd></div>
     <div><dt>deterministic polish</dt><dd>The tidy-up rules. Deterministic means the same input always gives the same output.</dd></div>
     <div><dt>overlay</dt><dd>The status pill.</dd></div>
-    <div><dt>partials</dt><dd>The speech engine’s running guesses while you are still talking.</dd></div>
+    <div><dt>partials</dt><dd>The speech engine’s running guesses while you are still talking. Kept as a backup for the final text, never shown.</dd></div>
     <div><dt>hotkey, event tap</dt><dd>The shortcut and the macOS mechanism that listens for it.</dd></div>
     <div><dt>TCC</dt><dd>The macOS privacy system behind the permission prompts.</dd></div>
     <div><dt>keepalive, warm-up</dt><dd>Small background pings that keep the AI editor ready, so it does not start cold.</dd></div>

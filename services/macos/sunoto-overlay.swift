@@ -106,6 +106,27 @@ private final class PillView: NSView {
     private static let glintPeriod: CFTimeInterval = 1.25
     private static let openDuration: CFTimeInterval = 0.42
     private static let closeDuration: CFTimeInterval = 0.3
+    /// The recording hint fades once you start talking, or after this long,
+    /// and the pill narrows to the ribbon and timer.
+    private static let hintDuration: CFTimeInterval = 3
+    private static let hintFade: CFTimeInterval = 0.2
+    /// Talking means this many 20 ms frames in a row above `voiceLevel`, so
+    /// a click or a cough does not count.
+    private static let voiceLevel: CGFloat = 0.35
+    private static let voiceFrames = 4
+    /// Captions under the ribbon: the hint and the rare progress word, in
+    /// the serif italic of the setup panel's heading.
+    private static let captionFont: NSFont = {
+        let base = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let serif = base.fontDescriptor.withDesign(.serif)?.withSymbolicTraits(.italic)
+        return serif.flatMap { NSFont(descriptor: $0, size: 13) } ?? base
+    }()
+    /// After the second tap the pill shows no words unless the wait is
+    /// longer than this.
+    private static let slowWorkDelay: CFTimeInterval = 1.5
+    /// The check mark grows in, then holds this long before the pill closes.
+    private static let checkPop: CFTimeInterval = 0.18
+    private static let checkHold: CFTimeInterval = 0.45
 
     private(set) var phase: PillPhase = .idle
     private(set) var caption = ""
@@ -117,6 +138,14 @@ private final class PillView: NSView {
     private var settle: CGFloat = 0
     private var settleStartedAt: CFTimeInterval = 0
     private var clock: CFTimeInterval = 0
+    /// When the recording hint starts to fade.
+    private var hintFadeAt: CFTimeInterval = .infinity
+    private var voicedFrames = 0
+    private var workingSince: CFTimeInterval = 0
+    /// "Transcribing…" or "Polishing…", held back until the wait is long.
+    private var pendingCaption = ""
+    /// When the text was pasted: the dot turns into a check mark.
+    private var pastedAt: CFTimeInterval?
     var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     /// Transparent room around the pill for its shadow and the spring's
     /// overshoot. The onboarding panel's still copy uses none.
@@ -141,7 +170,9 @@ private final class PillView: NSView {
         }
         switch phase {
         case .recording: return true
-        case .working: return settle < 1 || !reduceMotion
+        case .working:
+            return settle < 1 || !reduceMotion || pastedAt != nil
+                || (caption.isEmpty && !pendingCaption.isEmpty)
         case .busy: return !reduceMotion
         default: return false
         }
@@ -166,6 +197,11 @@ private final class PillView: NSView {
         }
         levels.removeFirst()
         levels.append(max(0, min(1, level)))
+        voicedFrames = level > Self.voiceLevel ? voicedFrames + 1 : 0
+        if phase == .recording, voicedFrames >= Self.voiceFrames {
+            // You are talking: the hint has done its job.
+            hintFadeAt = min(hintFadeAt, now)
+        }
         elapsed = newElapsed
         sawSample = true
         lastSampleAt = now
@@ -173,13 +209,14 @@ private final class PillView: NSView {
         needsDisplay = true
     }
 
-    func setStatus(_ raw: String, error: Bool) {
+    func setStatus(_ raw: String, error: Bool, now: CFTimeInterval) {
         var text = raw
         for prefix in ["System — ", "System: "] where text.hasPrefix(prefix) {
             systemMode = true
             text = String(text.dropFirst(prefix.count))
         }
         text = Self.tidy(text)
+        clock = now
         if error {
             phase = .error
             caption = Self.sentenceCase(text)
@@ -187,12 +224,23 @@ private final class PillView: NSView {
             // Sent as a new recording starts: clear the caption.
             caption = ""
             systemMode = false
-        } else if ["polishing…", "transcribing…"].contains(text.lowercased()) {
-            enterWorking(now: clock)
+        } else if text.hasSuffix("…") {
+            // Progress after the second tap. Transcribing and polishing are
+            // usually over in under a second, so their words wait; a System
+            // step ("matching…") shows at once.
+            enterWorking(now: now)
+            if ["polishing…", "transcribing…"].contains(text.lowercased()) {
+                pendingCaption = Self.sentenceCase(text)
+                if !caption.isEmpty {
+                    caption = pendingCaption
+                }
+            } else {
+                caption = Self.sentenceCase(text)
+            }
+        } else if phase == .recording {
+            // The hint shown as a recording starts.
             caption = Self.sentenceCase(text)
-        } else if phase == .recording || phase == .working {
-            // A live partial transcript; the daemon sends its last 40 chars.
-            caption = text.count >= 40 ? "…" + text : text
+            hintFadeAt = now + Self.hintDuration
         } else {
             phase = .notice
             caption = Self.sentenceCase(text)
@@ -200,8 +248,28 @@ private final class PillView: NSView {
         needsDisplay = true
     }
 
+    /// The text landed at the cursor. Shown as a check mark in the dot.
+    func markPasted(now: CFTimeInterval) {
+        guard phase == .recording || phase == .working else { return }
+        enterWorking(now: now)
+        pendingCaption = ""
+        if !caption.isEmpty {
+            // A slow wait was showing "Transcribing…".
+            caption = "Pasted"
+        }
+        pastedAt = now
+        clock = now
+        needsDisplay = true
+    }
+
+    /// How long a close should wait so the check mark is seen.
+    func closeDelay(now: CFTimeInterval) -> CFTimeInterval {
+        guard let pastedAt, phase == .working else { return 0 }
+        return max(0, pastedAt + Self.checkHold - now)
+    }
+
     func setHealth(name: String, detail: String) {
-        let selfResolving = ["loading_asr", "warming_polish", "mic_starting", "mic_reopening"]
+        let selfResolving = ["loading_asr", "warming_polish", "mic_starting"]
         phase = selfResolving.contains(name) ? .busy : .attention
         caption = Self.sentenceCase(Self.tidy(detail.isEmpty ? name : detail))
         systemMode = false
@@ -291,9 +359,16 @@ private final class PillView: NSView {
         if phase == .recording, sawSample, now - lastSampleAt > Self.releaseGap {
             enterWorking(now: now)
         }
+        if phase == .recording, !caption.isEmpty, now >= hintFadeAt + Self.hintFade {
+            caption = ""
+        }
         if phase == .working, settle < 1 {
             let t = CGFloat(min(1, (now - settleStartedAt) / Self.settleDuration))
             settle = 1 - pow(1 - t, 3)
+        }
+        if phase == .working, caption.isEmpty, !pendingCaption.isEmpty, pastedAt == nil,
+           now - workingSince >= Self.slowWorkDelay {
+            caption = pendingCaption
         }
         needsDisplay = true
         return isAnimating
@@ -304,6 +379,8 @@ private final class PillView: NSView {
         closeFinished = false
         phase = .idle
         caption = ""
+        pendingCaption = ""
+        pastedAt = nil
         systemMode = false
         levels = [CGFloat](repeating: 0, count: Self.historyLength)
         elapsed = 0
@@ -332,6 +409,10 @@ private final class PillView: NSView {
         sawSample = false
         lastSampleAt = now
         settle = 0
+        pendingCaption = ""
+        pastedAt = nil
+        hintFadeAt = caption.isEmpty ? .infinity : now + Self.hintDuration
+        voicedFrames = 0
     }
 
     private func enterWorking(now: CFTimeInterval) {
@@ -340,8 +421,12 @@ private final class PillView: NSView {
             settle = 1
         } else {
             settleStartedAt = now
+            // The recording hint has done its job.
+            caption = ""
         }
         phase = .working
+        workingSince = now
+        pendingCaption = ""
     }
 
     private static func tidy(_ text: String) -> String {
@@ -359,13 +444,13 @@ private final class PillView: NSView {
 
     // MARK: Size
 
-    private var captionFont: NSFont { .systemFont(ofSize: 13, weight: .regular) }
     private var labelFont: NSFont { .systemFont(ofSize: 13, weight: .medium) }
 
-    private func captionString(_ palette: PillPalette?, transcript: Bool, emphasized: Bool = false) -> NSAttributedString {
+    private func captionString(_ palette: PillPalette?, emphasized: Bool = false, fade: CGFloat = 1, serif: Bool = false) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = transcript ? .byTruncatingHead : .byTruncatingTail
-        let color = palette.map { transcript || emphasized ? $0.primary : $0.secondary } ?? NSColor.labelColor
+        paragraph.lineBreakMode = .byTruncatingTail
+        let base = palette.map { emphasized ? $0.primary : $0.secondary } ?? NSColor.labelColor
+        let color = base.withAlphaComponent(base.alphaComponent * fade)
         let result = NSMutableAttributedString()
         if systemMode {
             result.append(NSAttributedString(string: "System  ", attributes: [
@@ -375,19 +460,15 @@ private final class PillView: NSView {
             ]))
         }
         result.append(NSAttributedString(string: caption, attributes: [
-            .font: transcript ? captionFont : labelFont,
+            .font: serif ? Self.captionFont : labelFont,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
         ]))
         return result
     }
 
-    private var captionIsTranscript: Bool {
-        !(caption == "Polishing…" || caption == "Transcribing…")
-    }
-
     /// The pill grows to fit its caption. Widths snap to 16 pt steps so a
-    /// stream of partials does not make the window twitch.
+    /// changing caption does not make the window twitch.
     var preferredSize: NSSize {
         let width: CGFloat
         let height: CGFloat
@@ -397,11 +478,11 @@ private final class PillView: NSView {
             height = Self.rowHeight
         case .recording, .working:
             let hasCaption = !caption.isEmpty || systemMode
-            let textWidth = hasCaption ? ceil(captionString(nil, transcript: captionIsTranscript).size().width) : 0
+            let textWidth = hasCaption ? ceil(captionString(nil, serif: true).size().width) : 0
             width = max(Self.captureWidth, Self.ribbonLeft + textWidth + 20)
             height = Self.rowHeight + (hasCaption ? Self.captionHeight : 0)
         case .busy, .attention, .error, .notice:
-            let textWidth = ceil(captionString(nil, transcript: false).size().width)
+            let textWidth = ceil(captionString(nil).size().width)
             width = max(150, Self.ribbonLeft + textWidth + 20)
             height = Self.rowHeight
         }
@@ -532,11 +613,32 @@ private final class PillView: NSView {
             let halo = radius + 4
             NSBezierPath(ovalIn: NSRect(x: markX - halo, y: center - halo, width: halo * 2, height: halo * 2)).fill()
         }
+        if let pastedAt {
+            drawCheck(palette, tint: settled, progress: CGFloat((clock - pastedAt) / Self.checkPop))
+            return
+        }
         let dot = NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)
         live.withAlphaComponent(1 - settle).setFill()
         NSBezierPath(ovalIn: dot).fill()
         settled.withAlphaComponent(settle).setFill()
         NSBezierPath(ovalIn: dot).fill()
+    }
+
+    /// The settled dot grows into a disc with a check cut out of it.
+    private func drawCheck(_ palette: PillPalette, tint: NSColor, progress: CGFloat) {
+        let grow = reduceMotion ? 1 : Ease.outBack(progress)
+        let radius = 4.5 + 3 * grow
+        tint.setFill()
+        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
+        let check = NSBezierPath()
+        check.move(to: NSPoint(x: markX - 3.3, y: center + 0.2))
+        check.line(to: NSPoint(x: markX - 0.9, y: center + 2.6))
+        check.line(to: NSPoint(x: markX + 3.4, y: center - 2.4))
+        check.lineWidth = 1.8
+        check.lineCapStyle = .round
+        check.lineJoinStyle = .round
+        palette.body.withAlphaComponent(Ease.clamp(progress * 1.5)).setStroke()
+        check.stroke()
     }
 
     private func drawCapture(_ palette: PillPalette) {
@@ -549,7 +651,11 @@ private final class PillView: NSView {
 
         if !caption.isEmpty || systemMode {
             let rect = NSRect(x: left, y: Self.rowHeight - 6, width: bodyWidth - left - 18, height: 18)
-            captionString(palette, transcript: captionIsTranscript)
+            // The recording hint fades out before the pill narrows; a
+            // System label stays.
+            let fade = phase == .recording && !caption.isEmpty
+                ? 1 - Ease.clamp(CGFloat((clock - hintFadeAt) / Self.hintFade)) : 1
+            captionString(palette, fade: fade, serif: true)
                 .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         }
     }
@@ -600,7 +706,7 @@ private final class PillView: NSView {
         }
 
         // While Sunoto works, a glint runs along the line.
-        if phase == .working, settle >= 1, !reduceMotion {
+        if phase == .working, settle >= 1, pastedAt == nil, !reduceMotion {
             let progress = CGFloat(clock.truncatingRemainder(dividingBy: Self.glintPeriod) / Self.glintPeriod)
             let eased = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
             let glintWidth: CGFloat = 64
@@ -632,7 +738,7 @@ private final class PillView: NSView {
 
     private func drawLabel(_ palette: PillPalette) {
         let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bodyWidth - Self.ribbonLeft - 18, height: 18)
-        captionString(palette, transcript: false, emphasized: true)
+        captionString(palette, emphasized: true)
             .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 
@@ -1458,6 +1564,8 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     private var onboarding: OnboardingController!
     private var visible = false
     private var displayClock: Timer?
+    /// A close waiting for the check mark to be seen.
+    private var deferredHide: DispatchWorkItem?
     private let stdoutLock = NSLock()
 
     override init() {
@@ -1536,13 +1644,15 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             show()
         case "hide":
             hide(animated: true)
+        case "pasted":
+            pill.markPasted(now: now)
         case "recording":
             let peak = number(message["peak"])
             let rms = number(message["rms"])
             let level = min(1.0, max(0.0, CGFloat(peak * 8.0), CGFloat(rms * 35.0)))
             pill.pushLevel(level, elapsed: number(message["elapsed_s"]), now: now)
         case "status":
-            pill.setStatus((message["text"] as? String) ?? "", error: message["error"] as? Bool ?? false)
+            pill.setStatus((message["text"] as? String) ?? "", error: message["error"] as? Bool ?? false, now: now)
         case "state":
             let name = (message["name"] as? String) ?? ""
             if name == "ready" {
@@ -1663,6 +1773,8 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     private func show() {
+        deferredHide?.cancel()
+        deferredHide = nil
         let wasVisible = visible
         visible = true
         if !wasVisible {
@@ -1678,6 +1790,18 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     private func hide(animated: Bool) {
+        deferredHide?.cancel()
+        deferredHide = nil
+        let hold = animated && visible ? pill.closeDelay(now: CACurrentMediaTime()) : 0
+        if hold > 0 {
+            let close = DispatchWorkItem { [weak self] in
+                self?.deferredHide = nil
+                self?.hide(animated: true)
+            }
+            deferredHide = close
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: close)
+            return
+        }
         visible = false
         guard animated, panel.isVisible else {
             finishHiding()

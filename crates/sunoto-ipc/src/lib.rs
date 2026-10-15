@@ -25,6 +25,9 @@ fn is_false(value: &bool) -> bool {
 pub enum OverlayRequest {
     Show,
     Hide,
+    /// The dictation was pasted at the cursor. Sent just before `Hide`; the
+    /// macOS pill shows a check mark as it closes.
+    Pasted,
     Recording {
         elapsed_s: f64,
         peak: f64,
@@ -338,6 +341,10 @@ mod tests {
             })
             .unwrap(),
             r#"{"type":"status","text":"transcribing"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::Pasted).unwrap(),
+            r#"{"type":"pasted"}"#
         );
         let failure = OverlayRequest::Status {
             text: "ASR timed out".into(),
