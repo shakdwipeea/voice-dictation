@@ -1,175 +1,80 @@
-# Sunoto Voice Dictation
+# Sunoto
 
-Sunoto is a local, system-wide voice dictation app. Tap **Right Option**,
-speak, and tap it again; the transcript is pasted into the focused
-application. **Esc** throws the recording away. (On Linux the shortcut is
-**Ctrl+F1**.)
+Local voice dictation for macOS and Linux. Tap **Right Option**, speak, and
+tap it again: your words are pasted wherever the cursor is. Speech
+recognition runs on your machine, with no cloud service or account.
 
-- Local ASR: no cloud service or API key
-- Push-to-talk: no silence timeout
-- Streaming partial transcripts and a small status overlay
-- Deterministic cleanup, with optional local LLM polishing
-- macOS and Linux support
-
-## macOS
-
-### Install (Apple silicon, no developer tools needed)
-
-Paste this in Terminal:
+## Install (macOS, Apple silicon)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shakdwipeea/voice-dictation/master/install-macos.sh | bash
 ```
 
-It downloads the latest prebuilt `Sunoto.app` (the daemon, the overlay, and
-the Python runtime are inside), verifies the checksum, installs it in
-`~/Applications`, registers it as a Login Item, starts it, fetches the
-speech model (1.25 GB, once), and then watches the app's own health until it
-is ready.
-Nothing needs `sudo`. LLM polish (a local AI pass that merges mid-sentence
-self-corrections) is off by default: it adds about a second per dictation and
-a 2.7 GB download. To install it as well, append `-s -- --with-llm`.
+This installs **Sunoto.app** in `~/Applications`, starts it at login, and
+downloads the speech model (1.25 GB, once). A setup panel then asks for two
+permissions: **Accessibility** (to notice the shortcut and paste) and
+**Microphone**. Click **Allow** on each, then **Done**. No `sudo` needed.
 
-Releases are built by [the release workflow](.github/workflows/release.yml)
-from [packaging/macos/build-app.sh](packaging/macos/build-app.sh); a
-Homebrew formula also exists in [packaging/homebrew](packaging/homebrew/README.md).
+Optional AI polish merges mid-sentence corrections ("Tuesday, no, Wednesday").
+It is off by default because it adds about a second per dictation and a
+2.7 GB download. To include it, append `-s -- --with-llm` to the command
+above.
 
-### Install from a checkout (developers)
+## Use
 
-From the repository root, with Rust, the Xcode command line tools, and the
-Python runtimes set up:
+1. Click where the text should go.
+2. Tap **Right Option** and speak.
+3. Tap it again to paste. On macOS, **Esc** throws the recording away.
 
-```bash
-bash install-macos.sh
-```
+The microphone is on only while you dictate, and a recording stops on its
+own after 5 minutes.
 
-This builds Sunoto, installs **Sunoto.app** in `~/Applications`, registers it
-as a macOS Login Item, starts it, and then prints the app's own health report
-until it is ready: hotkey verified, microphone capturing, speech model loaded.
-An existing configuration is preserved.
-
-The default backend is Parakeet-MLX on Apple Silicon. If the installer reports
-that the ASR environment is missing, set it up once and rerun the installer:
+## Manage
 
 ```bash
-brew install python@3.12 && bash services/asr/setup_macos_runtime.sh && .venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx && bash install-macos.sh
+alias sunoto="$HOME/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon"
+sunoto --version
+sunoto status              # shortcut, microphone, speech model
+sunoto restart
+sunoto log                 # follow the log
+sunoto setup --with-llm    # add AI polish later
+sunoto uninstall           # --purge also removes settings and models
 ```
 
-### Grant permissions once
-
-Sunoto opens an onboarding panel that asks for two permissions, one at a
-time: **Accessibility** (to notice the shortcut and paste your words) and
-**Microphone**. Click the enabled **Allow** button, grant that permission,
-then continue to the next row. When both say **Allowed**, click **Done**; Sunoto relaunches once and the
-installer prints `Sunoto is ready`. Setup signs the app with a stable
-per-machine identity, so later rebuilds and upgrades do not require another
-grant.
-
-Later, check on it any time with:
-
-```bash
-target/release/sunoto-daemon status
-```
-
-### Logs and restart
-
-```bash
-tail -f "$HOME/Library/Logs/sunoto/daemon.log"
-open "$HOME/Applications/Sunoto.app"
-```
-
-`open` on the already-running app is a no-op; to restart, quit it first:
-
-```bash
-pkill -f "Sunoto.app/Contents/MacOS/sunoto-daemon"; open "$HOME/Applications/Sunoto.app"
-```
-
-The configuration file is:
-
-```text
-~/Library/Application Support/sunoto/config.json
-```
-
-See [macOS recurring issues](docs/macos-recurring-issues.md) if the hotkey,
-permissions, microphone, or text insertion stops working.
+Settings live in `~/Library/Application Support/sunoto/config.json`; for
+example `"shortcut"` picks another key. Every option is described in
+[desktop configuration](docs/desktop-configuration.md). If the shortcut,
+permissions, microphone, or pasting stop working, see
+[macOS recurring issues](docs/macos-recurring-issues.md).
 
 ## Linux
-
-### Install and run
-
-From the repository root:
 
 ```bash
 bash install.sh
 ```
 
-This builds Sunoto, creates the configuration, and installs and starts the
-systemd user service. The initial `mock` backend verifies the complete flow
-without loading a real ASR model.
+This builds Sunoto and starts it as a systemd user service with a test
+backend. For real speech recognition (Nemotron on CUDA), set
+`"backend": "nemotron"` in `~/.config/sunoto/config.json` and run
+`systemctl --user restart voice-dictation.service`. The shortcut is
+**Ctrl+F1**. Wayland needs compositor key bindings; see
+[desktop configuration](docs/desktop-configuration.md).
 
-To use Nemotron/CUDA ASR, set the backend in
-`~/.config/sunoto/config.json`:
+## Development
 
-```json
-{
-  "backend": "nemotron"
-}
-```
-
-Then restart the service:
+From a checkout, `bash install-macos.sh` builds Sunoto and installs it the
+same way, keeping your settings. It needs Rust, the Xcode command line tools,
+and the speech runtime, set up once with:
 
 ```bash
-systemctl --user restart voice-dictation.service
+brew install python@3.12 && bash services/asr/setup_macos_runtime.sh
 ```
 
-### Status and logs
+Run `make test` for the Rust and Python suites. To release, set `version` in
+`Cargo.toml` and push a matching `vX.Y.Z` tag; [the release
+workflow](.github/workflows/release.yml) builds and publishes the app.
 
-```bash
-systemctl --user status voice-dictation.service
-journalctl --user -u voice-dictation.service -f
-```
-
-Wayland/Hyprland requires compositor keybindings and clipboard tools. X11 uses
-the daemon's native global shortcut and XTEST insertion. See
-[desktop configuration](docs/desktop-configuration.md) for the exact setup.
-
-## Everyday use
-
-1. Focus the application where text should appear.
-2. Tap **Right Option** (Ctrl+F1 on Linux) and speak.
-3. Tap it again. Sunoto transcribes, polishes, and pastes the text.
-4. Changed your mind? Press **Esc** while recording to throw it away (macOS).
-
-A recording finishes on its own after 5 minutes. Pick another key with
-`"shortcut"` (see [desktop configuration](docs/desktop-configuration.md)).
-
-Sunoto waits for its ASR sidecar to warm up after startup. Do not judge the
-hotkey until the log says `ASR sidecar ready` or `Sunoto ready for dictation`.
-
-## Useful commands
-
-| Command | Purpose |
-| --- | --- |
-| `target/release/sunoto-daemon config show` | Show the active configuration. |
-| `target/release/sunoto-daemon check` | Check platform integration, hotkey delivery, and sidecar startup. |
-| `sunoto status` / `sunoto-daemon status` | Ask the running daemon for its health (hotkey, mic, model, polish). |
-| `sunoto restart`, `sunoto log`, `sunoto uninstall` | macOS lifecycle: reopen the app, follow the log, remove it. |
-| `sunoto setup --with-llm` | Download the 2.7 GB polish model and turn LLM polish on. |
-| `make test` | Run Rust and Python tests. |
-| `bash scripts/macos-port/verify-all.sh` | Run the complete macOS verification gate. |
-| `bash bin/gpu-status.sh` | Read Linux NVIDIA GPU and Xid health safely. |
-
-## How it works
-
-```text
-hotkey → microphone capture → local ASR → text polish → focused application
-```
-
-The Rust daemon owns capture, hotkeys, sidecar IPC, and insertion. Python
-sidecars provide ASR and optional local LLM polishing. Overlay writes use a
-bounded background channel and never block the transcription latency path.
-
-For backend selection, microphone settings, profiles, Wayland bindings, and
-troubleshooting, use [desktop configuration](docs/desktop-configuration.md).
-The macOS Login Item design is documented in
-[macOS GUI Login Item plan](docs/macos-gui-login-item-plan.md).
+- [AGENTS.md](AGENTS.md): conventions, verification, and macOS operations
+- [Architecture](docs/architecture.md), and a plain-language version in
+  [how Sunoto works](docs/how-sunoto-works.html)
+- [Homebrew formula](packaging/homebrew/README.md)
