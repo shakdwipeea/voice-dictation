@@ -228,7 +228,7 @@ Typical macOS real-ASR config:
 ```json
 {
   "shortcut": "RightOption",
-  "backend": "parakeet_mlx_streaming",
+  "backend": "parakeet_mlx_offline",
   "profile_ms": 560,
   "overlay_backend": "macos"
 }
@@ -250,16 +250,25 @@ Other single keys: `"RightCommand"`, `"RightControl"`, `"RightShift"`. Chords
 such as `"Ctrl+F1"` or `"Cmd+Shift+Space"` still work. Left-hand modifiers and
 the Globe/Fn key are not offered: macOS and other apps already use them.
 
-`backend = "parakeet_mlx_streaming"` is the default macOS backend. It uses
-parakeet-mlx `transcribe_stream()` for partials while recording (never shown;
-they back up the final when it comes out garbled), then runs
-the final transcript from the full buffered utterance through the same direct
-PCM `get_logmel()` + `model.generate()` path as the offline backend. There is
-no WAV/ffmpeg/file-based fallback. The default chunk is 560ms
-(`profile_ms = 560`): a larger chunk gives more accurate streaming partials at
-the cost of slightly slower partial cadence. Leave `asr_device` unset; MLX
-selects Apple GPU/Metal compute units itself. One-time setup in the existing
-macOS ASR venv:
+`backend = "parakeet_mlx_offline"` is the default macOS backend. It runs
+parakeet-mlx's direct PCM `get_logmel()` + `model.generate()` path, with no
+WAV/ffmpeg step. A dictation under 10 seconds gets one whole-utterance pass
+when you tap to finish. A longer one is transcribed in pieces while you talk:
+once 10 seconds are untranscribed, the sidecar cuts at the next pause (or at
+the quietest moment by 20 seconds) and a background thread transcribes that
+piece. Each piece re-hears the 3 seconds before its cut, and the pieces are
+stitched with parakeet-mlx's own overlap merge, so a long dictation reads the
+same as one pass. Only the open piece's audio is kept.
+
+The Apple GPU slows down after a couple of idle seconds, and waking it costs
+about 0.6 s. So 200 ms into each pause after you speak, the sidecar starts
+transcribing what you said so far. If you then tap without saying anything
+more, that result is the transcript and the wake-up already happened during
+your pause: in testing the wait after the tap fell from about 0.6 s to a few
+milliseconds (up to ~0.3 s with a very quick tap). If you keep talking, it is
+discarded. The click of the key itself is ignored. Leave `asr_device`
+unset; MLX selects Apple GPU/Metal compute units itself. One-time setup in the
+existing macOS ASR venv:
 
 ```bash
 .venv-nemotron-mac/bin/python -m pip install -U parakeet-mlx
@@ -276,11 +285,13 @@ identical. The app uses that folder when it is there and the Hugging Face
 original otherwise; an install that already has the original keeps it.
 `asr_model` overrides both.
 
-`backend = "parakeet_mlx_offline"` is the stable whole-utterance alternative:
-same parakeet-mlx `mlx-community/parakeet-tdt-0.6b-v3` model and direct PCM
-`get_logmel()` + `model.generate()` path, but no streaming partials, so no
-backup when the final comes out garbled. Use it if streaming partials are
-unreliable or to save the GPU work they take while you talk.
+`backend = "parakeet_mlx_streaming"` is the older alternative: the same model
+streams partials through `transcribe_stream()` while you talk (never shown;
+they back up the final when it comes out garbled), then re-decodes the whole
+buffered dictation on release. That release pass grows with the dictation
+(about 2.5 s and a 3 GB+ memory spike for a minute of speech), and the
+partials keep the GPU busy while you talk. `profile_ms = 560` sets its chunk
+size: larger chunks give more accurate partials at a slower cadence.
 
 `backend = "nemotron_offline"` remains available as the older whole-utterance
 RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU
@@ -411,9 +422,10 @@ Profiles:
 | `1120` | Largest chunks, highest latency. |
 
 Use `"backend": "nemotron"` for streaming real ASR on Linux/CUDA,
-`"backend": "parakeet_mlx_streaming"` for the default macOS streaming Parakeet
-backend (live partials + direct PCM final), `"backend": "parakeet_mlx_offline"`
-for the stable macOS whole-utterance Parakeet backend (no partials),
+`"backend": "parakeet_mlx_offline"` for the default macOS Parakeet backend
+(no partials; long dictations transcribed in pieces while you talk),
+`"backend": "parakeet_mlx_streaming"` for streaming Parakeet partials with a
+whole-buffer final,
 `"backend": "nemotron_offline"` for the older macOS NeMo CPU backend, and
 `"mock"` only for plumbing tests.
 

@@ -42,7 +42,7 @@ fn llm_polish_model_relative(name: &str) -> Option<&'static str> {
 
 fn default_backend() -> &'static str {
     if cfg!(target_os = "macos") {
-        "parakeet_mlx_streaming"
+        "parakeet_mlx_offline"
     } else {
         "mock"
     }
@@ -136,7 +136,7 @@ pub struct Settings {
     /// PulseAudio source name, or "auto" for the first physical microphone.
     pub microphone: String,
     /// ASR backend. Linux config init defaults to "mock"; macOS config init
-    /// defaults to "parakeet_mlx_streaming".
+    /// defaults to "parakeet_mlx_offline".
     pub backend: String,
     /// Streaming profile: 80, 160, 560, or 1120 ms.
     pub profile_ms: u16,
@@ -953,7 +953,7 @@ mod tests {
         let mut settings = Settings::default();
         let (python, args) = settings.sidecar_command().unwrap();
         if cfg!(target_os = "macos") {
-            assert!(args[0].ends_with("services/asr/parakeet_mlx_streaming_sidecar.py"));
+            assert!(args[0].ends_with("services/asr/parakeet_mlx_offline_sidecar.py"));
             assert_eq!(
                 args[1..],
                 [

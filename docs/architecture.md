@@ -295,7 +295,7 @@ File: `~/Library/Application Support/sunoto/config.json` on macOS,
 | Key | Default | Note |
 | --- | --- | --- |
 | `shortcut` | `Ctrl+F1` | needs at least one modifier |
-| `backend` | macOS `parakeet_mlx_streaming`, Linux `mock` | also `nemotron`, `nemotron_offline`, `parakeet_mlx_offline` |
+| `backend` | macOS `parakeet_mlx_offline`, Linux `mock` | also `nemotron`, `nemotron_offline`, `parakeet_mlx_streaming` |
 | `profile_ms` | macOS 560, Linux 160 | 80/160/560/1120; maps to encoder right-context |
 | `preroll_ms` | 300 | |
 | `final_timeout_ms` / `final_timeout_rtf` | 8000 / 3.0 | adaptive watchdog |
@@ -318,8 +318,8 @@ File: `~/Library/Application Support/sunoto/config.json` on macOS,
 | Backend | Model | Mode | Device | Partials | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `mock` | none | canned | – | optional | Linux default; used by tests |
-| `parakeet_mlx_streaming` | `mlx-community/parakeet-tdt-0.6b-v3` | streaming, final re-decoded from whole buffer | Metal via MLX | yes | macOS default; 560 ms chunks; ~250 ms final |
-| `parakeet_mlx_offline` | same | whole utterance | Metal | no | p50 240 ms, WER 1.18 % on sample set |
+| `parakeet_mlx_offline` | `mlx-community/parakeet-tdt-0.6b-v3` | whole utterance under 10 s; longer ones in pieces cut at pauses while you talk | Metal via MLX | no | macOS default; p50 240 ms, WER 1.18 % on sample set; decodes at each pause, so a tap after a pause usually needs no decode (median 3 ms tap-to-text in A/B) |
+| `parakeet_mlx_streaming` | same | streaming, final re-decoded from whole buffer | Metal | yes | 560 ms chunks; release pass grows with length (~2.5 s for 66 s) |
 | `nemotron` | `nvidia/nemotron-speech-streaming-en-0.6b` | cache-aware streaming | CUDA | yes | needs ≥4500 MiB free VRAM or refuses to load; ~3.6 GiB resident |
 | `nemotron_offline` | same | whole utterance | CPU/MPS | no | superseded on macOS |
 

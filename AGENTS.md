@@ -91,7 +91,7 @@ before editing platform-specific config or when a macOS/Linux setup question
 comes up. The quick facts:
 - Linux config: `~/.config/sunoto/config.json`; macOS config:
   `~/Library/Application Support/sunoto/config.json`.
-- macOS default backend (config init) is `parakeet_mlx_streaming` with
+- macOS default backend (config init) is `parakeet_mlx_offline` with
   `profile_ms=560` and `overlay_backend="macos"`; Linux config init defaults
   to `mock`.
 - macOS runs the bare binary from a terminal (NOT launchd) so the CGEventTap
@@ -200,12 +200,29 @@ muted; check System Settings → Sound → Input.
   `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v3-bf16`
   (identical weights, half the download) and falls back to the Hugging Face
   original when that folder is missing.
-  `parakeet_mlx_streaming` is the **default macOS backend** (config init
-  selects it with `profile_ms=560`). It streams partials via
-  `transcribe_stream()` and, by default, uses a direct full-utterance PCM
-  `get_logmel()` + `model.generate()` final to recover offline-like accuracy;
-  protocol smoke recovered `Quilter` where pure streaming had `Coulter`.
-  `parakeet_mlx_offline` is the stable whole-utterance fallback (no partials).
+  `parakeet_mlx_offline` is the **default macOS backend** (config init).
+  A dictation under 10 s gets one whole-utterance pass on release. A longer
+  one is cut at pauses (forced at the quietest moment by 20 s) and each piece
+  is transcribed on a background thread while you keep talking; pieces
+  re-hear 3 s before their cut and are stitched with parakeet-mlx's own
+  overlap merge. Memory stays bounded however long the dictation runs, and
+  release-to-text no longer grows with length (a 66 s whole pass took 2.5 s).
+  The Apple GPU clocks down after ~2 s idle and the first decode after that
+  pays a fixed ~0.6 s; neither `mx.set_wired_limit` nor a light keepalive
+  (tiny matmul or 0.5 s silence pass every 2 s) keeps it up. So the sidecar
+  also decodes the open audio 200 ms into every pause after speech ("pause
+  decode"); a tap with nothing said since reuses it, and the GPU wake-up
+  happens before the tap. The last 200 ms before the tap (the key click) is
+  ignored. A/B on 8 real-time-paced dictations (4.8–74 s, 0.4–1 s pause
+  before the tap): tap-to-text median 571 → 3 ms, worst 974 → 265 ms, same
+  text and memory, GPU decode time +36% (~16% duty while recording).
+  Benchmark with idle gaps between sessions; back-to-back runs keep the GPU
+  warm and hide all of this. Tune with the sidecar's
+  `--segment-min-s/--segment-max-s/--segment-overlap-s`
+  (`--segment-min-s 0` = one pass on release) and `--no-pause-decode`.
+  `parakeet_mlx_streaming` is still selectable: it streams partials via
+  `transcribe_stream()` (never shown) and re-decodes the whole buffer on
+  release, so its wait and memory spike grow with dictation length.
   Switch backend/model in config and restart — no rebuild needed.
 
 ## Runtime safety
