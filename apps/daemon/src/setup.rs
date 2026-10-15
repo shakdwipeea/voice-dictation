@@ -36,6 +36,22 @@ pub const ROOT_MARKER: &str = "sunoto-root";
 pub const EMBEDDED_ROOT: &str = "Contents/Resources/root";
 /// Speech model fetched on first run; matches the daemon's default.
 const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+/// Sunoto's bf16 copy of ASR_MODEL_REPO, published as release assets: the
+/// weights the sidecar ends up with after casting the original, at half the
+/// 2.5 GB download. Name, SHA-256 and size of each file.
+const ASR_MODEL_RELEASE: &str = "https://github.com/shakdwipeea/voice-dictation/releases/download/model-parakeet-tdt-0.6b-v3-bf16";
+const ASR_MODEL_FILES: [(&str, &str, u64); 2] = [
+    (
+        "config.json",
+        "f320f1292511f34ec47f513755fe20fd01dbfc09a925d42730e66059a6e1ef4c",
+        244_093,
+    ),
+    (
+        "model.safetensors",
+        "77f8ac63bc6df3cf31cff8c6a1ea045c8c964de5ccee257fd54152cd9eaa091b",
+        1_254_184_375,
+    ),
+];
 const SIGNING_IDENTITY: &str = "Sunoto Local Code Signing";
 const SIGNING_IDENTITY_MARKER: &str = "signing-identity";
 
@@ -241,7 +257,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let asr_python = preflight_asr_runtime(&root, &loaded)?;
     let loaded = ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?;
     if let Some(python) = asr_python.filter(|_| loaded.backend.starts_with("parakeet_mlx")) {
-        ensure_asr_model(&python, args.dry_run)?;
+        ensure_asr_model(&python, &loaded, args.dry_run)?;
     }
 
     section("bundle");
@@ -374,11 +390,34 @@ fn preflight_asr_runtime(
     Ok(Some(python))
 }
 
-/// Fetch the speech model into the Hugging Face cache now, with progress,
-/// instead of letting the first daemon start do it silently behind a
-/// "loading speech model..." pill. No-op when it is already cached.
-fn ensure_asr_model(python: &str, dry_run: bool) -> Result<(), Box<dyn Error>> {
+/// Fetch the speech model now, with progress, instead of letting the first
+/// daemon start do it silently behind a "loading speech model..." pill.
+/// Prefers Sunoto's 1.25 GB bf16 copy; an install that already has the
+/// float32 original in the Hugging Face cache keeps using it.
+fn ensure_asr_model(
+    python: &str,
+    settings: &Settings,
+    dry_run: bool,
+) -> Result<(), Box<dyn Error>> {
     section("speech model");
+    if let Some(model) = settings
+        .asr_model
+        .as_deref()
+        .filter(|model| !model.is_empty())
+    {
+        note(&format!(
+            "asr_model is set to {model}; the app fetches it on first start"
+        ));
+        return Ok(());
+    }
+    let local = settings::local_parakeet_model_dir();
+    if let Some(dir) = local
+        .as_deref()
+        .filter(|dir| settings::model_dir_complete(dir))
+    {
+        ok(&format!("speech model ready: {}", dir.display()));
+        return Ok(());
+    }
     let script = format!(
         "from huggingface_hub import snapshot_download\nimport sys\np = snapshot_download('{ASR_MODEL_REPO}', local_files_only=True) if '--check' in sys.argv else snapshot_download('{ASR_MODEL_REPO}')\nprint(p)"
     );
@@ -393,11 +432,33 @@ fn ensure_asr_model(python: &str, dry_run: bool) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if dry_run {
-        note(&format!("would download {ASR_MODEL_REPO} (about 600 MB)"));
+        note("would download the speech model (about 1.25 GB)");
         return Ok(());
     }
+    if let Some(dir) = &local {
+        note("downloading the speech model (about 1.25 GB, one time)...");
+        let fetched = ASR_MODEL_FILES
+            .iter()
+            .try_for_each(|(name, sha256, bytes)| {
+                download_verified(
+                    &format!("{ASR_MODEL_RELEASE}/{name}"),
+                    &dir.join(name),
+                    sha256,
+                    *bytes,
+                )
+            });
+        match fetched {
+            Ok(()) => {
+                ok(&format!("speech model ready: {}", dir.display()));
+                return Ok(());
+            }
+            Err(error) => warn(&format!(
+                "could not fetch Sunoto's copy of the speech model ({error}); using the Hugging Face original instead"
+            )),
+        }
+    }
     note(&format!(
-        "downloading {ASR_MODEL_REPO} (about 600 MB, one time)..."
+        "downloading {ASR_MODEL_REPO} (about 2.5 GB, one time)..."
     ));
     let status = Command::new(python).args(["-c", &script]).status()?;
     if !status.success() {
@@ -515,7 +576,9 @@ fn download_verified(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    let partial = destination.with_extension("gguf.part");
+    let mut partial = destination.as_os_str().to_owned();
+    partial.push(".part");
+    let partial = PathBuf::from(partial);
     note(&format!("downloading {url}"));
     let status = Command::new("curl")
         .args(["-L", "--fail", "--progress-bar", "-C", "-", "-o"])

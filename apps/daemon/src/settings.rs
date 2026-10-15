@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use sunoto_polish::PolishConfig;
 
 const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+/// Sunoto's bf16 copy of the default model, under Application Support.
+/// setup downloads it in place of the 2.5 GB float32 original; the sidecar
+/// casts the original to bf16 on load anyway, so the weights are identical.
+const LOCAL_PARAKEET_MLX_MODEL: &str = "models/parakeet-tdt-0.6b-v3-bf16";
 
 /// Default named LLM polish model profile. Resolved (see
 /// `llm_polish_model_relative`) under `models/llm-polish-hf/` relative to
@@ -373,11 +377,16 @@ impl Settings {
             "--profile-ms".to_string(),
             self.profile_ms.to_string(),
             "--model".to_string(),
-            self.asr_model
-                .clone()
-                .filter(|model| !model.is_empty())
-                .unwrap_or_else(|| DEFAULT_PARAKEET_MLX_MODEL.to_string()),
+            self.parakeet_model(),
         ]
+    }
+
+    /// The model the Parakeet sidecar loads: `asr_model` when set, else the
+    /// local bf16 copy once setup has fetched it, else the Hugging Face
+    /// original.
+    pub fn parakeet_model(&self) -> String {
+        let local = local_parakeet_model_dir().filter(|dir| model_dir_complete(dir));
+        choose_parakeet_model(self.asr_model.as_deref(), local.as_deref())
     }
 
     /// The GGUF the polish sidecar will load: the explicit path if set,
@@ -686,6 +695,33 @@ pub fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
+/// Where setup puts the bf16 speech model. macOS only: Linux uses Nemotron.
+pub fn local_parakeet_model_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join("Library/Application Support/sunoto")
+            .join(LOCAL_PARAKEET_MLX_MODEL),
+    )
+}
+
+/// Both files are in place. setup moves each one there only after checking
+/// its size and SHA-256, so present means verified.
+pub fn model_dir_complete(dir: &Path) -> bool {
+    dir.join("config.json").is_file() && dir.join("model.safetensors").is_file()
+}
+
+fn choose_parakeet_model(configured: Option<&str>, local: Option<&Path>) -> String {
+    configured
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .or_else(|| local.map(|dir| dir.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| DEFAULT_PARAKEET_MLX_MODEL.to_string())
+}
+
 pub fn config_path() -> PathBuf {
     if let Ok(path) = std::env::var("SUNOTO_CONFIG") {
         return PathBuf::from(path);
@@ -924,7 +960,7 @@ mod tests {
                     "--profile-ms".to_string(),
                     "560".to_string(),
                     "--model".to_string(),
-                    DEFAULT_PARAKEET_MLX_MODEL.to_string(),
+                    settings.parakeet_model(),
                 ]
             );
         } else {
@@ -1169,7 +1205,7 @@ mod tests {
                 "--profile-ms".to_string(),
                 "560".to_string(),
                 "--model".to_string(),
-                DEFAULT_PARAKEET_MLX_MODEL.to_string(),
+                settings.parakeet_model(),
             ]
         );
     }
@@ -1189,8 +1225,29 @@ mod tests {
                 "--profile-ms".to_string(),
                 "80".to_string(),
                 "--model".to_string(),
-                DEFAULT_PARAKEET_MLX_MODEL.to_string(),
+                settings.parakeet_model(),
             ]
+        );
+    }
+
+    #[test]
+    fn parakeet_model_prefers_config_then_local_copy_then_hub() {
+        let local = Path::new("/models/parakeet-bf16");
+        assert_eq!(
+            choose_parakeet_model(Some("mlx-community/parakeet-tdt-0.6b-v2"), Some(local)),
+            "mlx-community/parakeet-tdt-0.6b-v2"
+        );
+        assert_eq!(
+            choose_parakeet_model(Some(""), Some(local)),
+            "/models/parakeet-bf16"
+        );
+        assert_eq!(
+            choose_parakeet_model(None, Some(local)),
+            "/models/parakeet-bf16"
+        );
+        assert_eq!(
+            choose_parakeet_model(None, None),
+            DEFAULT_PARAKEET_MLX_MODEL
         );
     }
 

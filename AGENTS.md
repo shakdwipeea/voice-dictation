@@ -195,7 +195,11 @@ muted; check System Settings → Sound → Input.
   defaults to CUDA when unset and is intended for Linux/CUDA. Offline
   `nemotron_offline` accepts `"cpu"` or `"mps"`; use CPU if you fall back to
   Nemotron on macOS. Parakeet-MLX backends ignore `asr_device`; leave it unset
-  and optionally set `asr_model` to override the default checkpoint.
+  and optionally set `asr_model` to override the default checkpoint. By
+  default the app loads setup's bf16 copy from
+  `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v3-bf16`
+  (identical weights, half the download) and falls back to the Hugging Face
+  original when that folder is missing.
   `parakeet_mlx_streaming` is the **default macOS backend** (config init
   selects it with `profile_ms=560`). It streams partials via
   `transcribe_stream()` and, by default, uses a direct full-utterance PCM

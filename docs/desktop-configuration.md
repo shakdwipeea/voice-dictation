@@ -266,6 +266,15 @@ macOS ASR venv:
 brew install ffmpeg
 ```
 
+Setup downloads the speech model as Sunoto's bf16 copy of
+`mlx-community/parakeet-tdt-0.6b-v3` (1.25 GB instead of 2.5 GB, from the
+`model-parakeet-tdt-0.6b-v3-bf16` GitHub release, checksums verified) into
+`~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v3-bf16`.
+parakeet-mlx casts the float32 original to bf16 on load, so the weights are
+identical. The app uses that folder when it is there and the Hugging Face
+original otherwise; an install that already has the original keeps it.
+`asr_model` overrides both.
+
 `backend = "parakeet_mlx_offline"` is the stable whole-utterance alternative:
 same parakeet-mlx `mlx-community/parakeet-tdt-0.6b-v3` model and direct PCM
 `get_logmel()` + `model.generate()` path, but no streaming partials (the overlay

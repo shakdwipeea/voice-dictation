@@ -24,7 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/shakdwipeea/voice-dictation/master/
 It downloads the latest prebuilt `Sunoto.app` (the daemon, the overlay, and
 the Python runtime are inside), verifies the checksum, installs it in
 `~/Applications`, registers it as a Login Item, starts it, fetches the
-speech model, and then watches the app's own health until it is ready.
+speech model (1.25 GB, once), and then watches the app's own health until it
+is ready.
 Nothing needs `sudo`. LLM polish (a local AI pass that merges mid-sentence
 self-corrections) is off by default: it adds about a second per dictation and
 a 2.7 GB download. To install it as well, append `-s -- --with-llm`.
