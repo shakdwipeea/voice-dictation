@@ -345,3 +345,32 @@ the focused app, not the pill's desktop.
   `SLSCopySpacesForWindows`. A healthy pill lists every desktop.
 - A fresh overlay process never shows this, so restarting the app also
   clears it.
+
+## 8. Microphone indicator stays on after dictating
+
+### Symptom
+
+The menu-bar microphone indicator appears while recording, as it should,
+but stays on after the second tap. For someone dictating every minute or
+two, it never goes away. This does not happen on a fresh install.
+
+### Root cause
+
+From 0.1.0 to 0.1.6 the default `capture_idle_stop_secs` was 120, and the
+first setup wrote every setting into `config.json`. Upgrades leave that file
+alone, so those installs keep the microphone open for two minutes after each
+dictation. Since 0.1.7 the default is 0, which turns it off when the dictation
+ends. At startup the daemon logs
+`the microphone stays on for 120s after each dictation`, and later
+`microphone off after 120s idle`.
+
+### Fix / guard
+
+- Since 0.1.12, setup (which every install, upgrade and automatic update
+  runs) changes a stored 120 to the current default. Any other value was
+  chosen by the user and is kept.
+- New installs write only the settings that differ from the defaults
+  (`Settings::save_changes`), so later default changes reach them.
+- Fix by hand: set `"capture_idle_stop_secs": 0` in
+  `~/Library/Application Support/sunoto/config.json`, or delete the line,
+  then run `sunoto restart`.

@@ -313,6 +313,39 @@ impl Settings {
             .map_err(|error| format!("cannot write {}: {error}", path.display()))
     }
 
+    /// Write only what the user chose: keys that differ from the defaults,
+    /// plus any key the file already names. Everything else stays out, so it
+    /// keeps following the defaults of later versions. `save` writes every
+    /// key, which froze the defaults of the version that wrote the file.
+    pub fn save_changes(&self, path: &Path) -> Result<(), String> {
+        let mut file = match std::fs::read_to_string(path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(serde_json::Value::Object(map)) => map,
+                _ => return Err(format!("{} is not a JSON object", path.display())),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        };
+        let serde_json::Value::Object(current) =
+            serde_json::to_value(self).expect("settings serialize")
+        else {
+            unreachable!("settings serialize to an object");
+        };
+        let defaults = serde_json::to_value(Settings::default()).expect("settings serialize");
+        for (key, value) in current {
+            if file.contains_key(&key) || defaults.get(&key) != Some(&value) {
+                file.insert(key, value);
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        let payload = serde_json::to_string_pretty(&file).expect("settings serialize");
+        std::fs::write(path, payload + "\n")
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))
+    }
+
     pub fn sidecar_command(&self) -> Result<(String, Vec<String>), String> {
         let root = repo_root();
         let (default_python, default_script, extra_args): (&str, PathBuf, Vec<String>) =
@@ -892,6 +925,40 @@ mod tests {
         let partial = Settings::load(&path).unwrap();
         assert_eq!(partial.profile_ms, 560);
         assert_eq!(partial.backend, default_backend());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_changes_writes_only_chosen_keys() {
+        let path = std::env::temp_dir().join(format!(
+            "sunoto-settings-changes-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        // A fresh install chooses nothing, so nothing is frozen.
+        Settings::default().save_changes(&path).unwrap();
+        let written = |path: &Path| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        assert_eq!(written(&path), serde_json::json!({}));
+        // A changed key is written; a key the file names stays in step,
+        // even when it goes back to its default.
+        std::fs::write(
+            &path,
+            r#"{"llm_polish_enabled": true, "microphone": "auto"}"#,
+        )
+        .unwrap();
+        let settings = Settings {
+            llm_polish_enabled: false,
+            profile_ms: 80,
+            ..Settings::default()
+        };
+        settings.save_changes(&path).unwrap();
+        assert_eq!(
+            written(&path),
+            serde_json::json!({"llm_polish_enabled": false, "microphone": "auto", "profile_ms": 80})
+        );
+        assert_eq!(Settings::load(&path).unwrap(), settings);
         let _ = std::fs::remove_file(&path);
     }
 

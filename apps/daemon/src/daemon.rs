@@ -295,6 +295,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         None => crate::update::spawn_checker(update_mode, events_tx.clone()),
         Some(reason) => logging::info(&format!("automatic updates: {reason}")),
     }
+    if settings.capture_idle_stop_secs > 0 {
+        logging::info(&format!(
+            "the microphone stays on for {}s after each dictation (capture_idle_stop_secs in the config)",
+            settings.capture_idle_stop_secs
+        ));
+    }
     // A verified newer release, installed at the first long idle moment.
     let mut pending_update: Option<crate::update::Staged> = None;
     let mut gestures = TriggerGestures::new();

@@ -250,36 +250,35 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     ok(&format!("overlay: {}", overlay.display()));
     let config_path = settings::config_path();
     let mut loaded = Settings::load(&config_path)?;
-    // Installs from before 0.1.7 saved the old macOS default, Ctrl+F1, so
-    // an upgrade would keep it. Move them to Right Option, the default since.
-    let old_shortcut = config_path.is_file() && is_old_default_shortcut(&loaded.shortcut);
-    if old_shortcut {
-        loaded.shortcut = Settings::default().shortcut;
-        if !args.dry_run {
-            set_config_value(&config_path, "shortcut", loaded.shortcut.clone().into())?;
+    if config_path.is_file() {
+        let changes = retire_old_defaults(&mut loaded);
+        if changes.is_empty() {
+            ok(&format!(
+                "config:  {} (left untouched)",
+                config_path.display()
+            ));
         }
-        ok(&format!(
-            "config:  {} (shortcut {} from Control-F1 to {}, the default since 0.1.7; set \"shortcut\" there to change it)",
-            config_path.display(),
-            if args.dry_run {
-                "would change"
-            } else {
-                "changed"
-            },
-            settings::shortcut_label(&loaded.shortcut)
-        ));
-    } else if config_path.is_file() {
-        ok(&format!(
-            "config:  {} (left untouched)",
-            config_path.display()
-        ));
+        for (key, value, why) in changes {
+            if !args.dry_run {
+                set_config_value(&config_path, key, value)?;
+            }
+            ok(&format!(
+                "config:  {} ({} {why})",
+                config_path.display(),
+                if args.dry_run {
+                    "would change"
+                } else {
+                    "changed"
+                }
+            ));
+        }
     } else if args.dry_run {
         note(&format!(
             "config:  {} would be created",
             config_path.display()
         ));
     } else {
-        loaded.save(&config_path)?;
+        loaded.save_changes(&config_path)?;
         ok(&format!("config:  created {}", config_path.display()));
     }
     let asr_python = preflight_asr_runtime(&root, &loaded)?;
@@ -412,6 +411,42 @@ fn set_config_value(
         .insert(key.to_string(), value);
     fs::write(path, serde_json::to_string_pretty(&config)? + "\n")?;
     Ok(())
+}
+
+/// `capture_idle_stop_secs` as installs from 0.1.0 to 0.1.6 saved it.
+const OLD_CAPTURE_IDLE_STOP_SECS: u64 = 120;
+
+/// Setup used to write every setting into the config, so an install kept
+/// the defaults of the version that created it. Move the old defaults that
+/// later versions changed on purpose, and return each changed key, its new
+/// value, and why. A value the user picked differs from the old default and
+/// is kept.
+fn retire_old_defaults(settings: &mut Settings) -> Vec<(&'static str, serde_json::Value, String)> {
+    let defaults = Settings::default();
+    let mut changes = Vec::new();
+    // Ctrl+F1 before 0.1.7.
+    if is_old_default_shortcut(&settings.shortcut) {
+        settings.shortcut = defaults.shortcut;
+        changes.push((
+            "shortcut",
+            settings.shortcut.clone().into(),
+            format!(
+                "shortcut from Control-F1 to {}, the default since 0.1.7; set \"shortcut\" there to change it",
+                settings::shortcut_label(&settings.shortcut)
+            ),
+        ));
+    }
+    // 120 kept the microphone, and its menu-bar indicator, on for two
+    // minutes after every dictation; 0 turns it off right away.
+    if settings.capture_idle_stop_secs == OLD_CAPTURE_IDLE_STOP_SECS {
+        settings.capture_idle_stop_secs = defaults.capture_idle_stop_secs;
+        changes.push((
+            "capture_idle_stop_secs",
+            settings.capture_idle_stop_secs.into(),
+            "the microphone to turn off when a dictation ends instead of 2 minutes later, the default since 0.1.7; set \"capture_idle_stop_secs\" there to keep it on longer".to_string(),
+        ));
+    }
+    changes
 }
 
 /// Ctrl+F1 in any spelling: the macOS default before 0.1.7.
@@ -558,7 +593,7 @@ fn ensure_llm_model(
         if !settings.llm_polish_enabled {
             settings.llm_polish_enabled = true;
             if !dry_run {
-                settings.save(config_path)?;
+                settings.save_changes(config_path)?;
             }
             ok("LLM polish switched on in the config");
         }
@@ -586,7 +621,7 @@ fn ensure_llm_model(
         if settings.llm_polish_enabled {
             settings.llm_polish_enabled = false;
             if !dry_run {
-                settings.save(config_path)?;
+                settings.save_changes(config_path)?;
             }
             note("LLM polish switched off in the config; run `setup --with-llm` later to add it");
         }
@@ -607,7 +642,7 @@ fn ensure_llm_model(
     )?;
     settings.llm_polish_model_path = Some(destination.to_string_lossy().into_owned());
     settings.llm_polish_enabled = true;
-    settings.save(config_path)?;
+    settings.save_changes(config_path)?;
     ok(&format!("model ready: {}", destination.display()));
     Ok(settings)
 }
@@ -1424,6 +1459,36 @@ mod tests {
             written,
             serde_json::json!({"shortcut": "RightOption", "backend": "parakeet_mlx_streaming"})
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")] // setup is macOS-only; the shortcut default differs on Linux
+    fn old_defaults_are_retired_and_chosen_values_kept() {
+        let mut old_install = Settings {
+            shortcut: "Ctrl+F1".to_string(),
+            capture_idle_stop_secs: 120,
+            ..Settings::default()
+        };
+        let changes = retire_old_defaults(&mut old_install);
+        let keys: Vec<_> = changes
+            .iter()
+            .map(|(key, value, _)| (*key, value.clone()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("shortcut", serde_json::json!("RightOption")),
+                ("capture_idle_stop_secs", serde_json::json!(0)),
+            ]
+        );
+        assert_eq!(old_install.capture_idle_stop_secs, 0);
+        let mut chosen = Settings {
+            shortcut: "Ctrl+F2".to_string(),
+            capture_idle_stop_secs: 60,
+            ..Settings::default()
+        };
+        assert!(retire_old_defaults(&mut chosen).is_empty());
+        assert!(retire_old_defaults(&mut Settings::default()).is_empty());
     }
 
     #[test]
