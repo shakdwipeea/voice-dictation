@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notch island designs</title>
+<!--
+  Four directions for Sunoto's notch island (docs/notch-island-plan-2026-10-16.md),
+  animated over a drawn menu bar and a 160 x 28 pt notch at 2x. All four play
+  the same moment of the same dictation. Open this file in a browser; it needs
+  nothing else.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #15161a; color: #eceef3;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  }
+  main { max-width: 1280px; margin: 0 auto; padding: 32px 20px 48px; display: flex; flex-direction: column; gap: 22px; }
+  h1 { margin: 0; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  .lede { font-size: 14px; color: #a2a7b3; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .sep { width: 1px; height: 28px; background: #3a3d47; margin: 0 6px; }
+  button {
+    height: 44px; padding: 0 18px; border-radius: 22px; border: 1px solid #4a4f5c;
+    background: #23252c; color: #eceef3; font: 500 14px inherit; font-family: inherit; cursor: pointer;
+  }
+  button[aria-pressed="true"] { background: #8fb0ff; border-color: #8fb0ff; color: #0d1424; }
+  button:focus-visible { outline: 2px solid #8fb0ff; outline-offset: 2px; }
+  .scrub { display: flex; align-items: center; gap: 14px; }
+  .scrub label { font-size: 13px; color: #a2a7b3; width: 150px; }
+  .scrub input { flex: 1; accent-color: #8fb0ff; }
+  .scrub output { font: 500 13px ui-monospace, "SF Mono", Menlo, monospace; color: #a2a7b3; width: 90px; text-align: right; }
+  section { display: flex; flex-direction: column; gap: 8px; }
+  .name { display: flex; align-items: baseline; gap: 10px; font-size: 15px; font-weight: 600; }
+  .name b { color: #8fb0ff; font-weight: 700; }
+  svg { display: block; width: 100%; height: auto; border-radius: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div style="display: flex; flex-direction: column; gap: 14px">
+    <div style="display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap">
+      <h1>Notch island: four directions</h1>
+      <span class="lede">All four play the same moment. Drawn at 2× on this Mac's 160 × 28 pt notch.</span>
+    </div>
+    <div class="controls">
+      <button type="button" data-scenario="quick">Quick dictation</button>
+      <button type="button" data-scenario="slow">Slow wait</button>
+      <button type="button" data-scenario="loading">Loading at startup</button>
+      <button type="button" data-scenario="error">Error after release</button>
+      <span class="sep"></span>
+      <button type="button" id="play" style="min-width: 88px">Pause</button>
+      <button type="button" data-speed="1">1×</button>
+      <button type="button" data-speed="0.25">¼× slow motion</button>
+      <span class="sep"></span>
+      <button type="button" data-wall="dark">Dark wallpaper</button>
+      <button type="button" data-wall="light">Light wallpaper</button>
+    </div>
+    <div class="scrub">
+      <label for="scrub" id="phase">Idle</label>
+      <input id="scrub" type="range" min="0" max="7.6" step="0.01" value="0">
+      <output id="time" for="scrub">0.00 s</output>
+    </div>
+  </div>
+
+  <section><div class="name"><b>A</b> Hanging pill</div>
+    <svg id="svgA" viewBox="0 0 620 120" role="img" aria-label="Design A: the pill hangs under the camera, holding the dot, the voice and the timer in one row"></svg></section>
+  <section><div class="name"><b>B</b> Two slots</div>
+    <svg id="svgB" viewBox="0 0 620 120" role="img" aria-label="Design B: a small dot on the left of the camera and a small meter on the right; words open a card under the notch"></svg></section>
+  <section><div class="name"><b>C</b> Shoulders (today's layout, tidied)</div>
+    <svg id="svgC" viewBox="0 0 620 120" role="img" aria-label="Design C: dot and timer to the left of the camera, a meter to the right, words in a row under the notch"></svg></section>
+  <section><div class="name"><b>D</b> Live card</div>
+    <svg id="svgD" viewBox="0 0 620 120" role="img" aria-label="Design D: a card drops from the notch with a status line, a wide sound meter and the hint"></svg></section>
+</main>
+
+<script>
+// Points on a 620 x 120 pt strip of the screen; the notch is 160 x 28 pt.
+const CX = 310, NW = 160, NH = 28, NR = CX + NW / 2;
+
+// When each thing happens, in seconds, per scenario.
+const SCEN = {
+  quick: { end: 7.6, open: 0.6, hint: true, talk: 1.8, release: 4.4, paste: 4.85, close: 6.05 },
+  slow: { end: 9.6, open: 0.6, hint: true, talk: 1.8, release: 4.4, words: 5.9, paste: 7.0, close: 8.2 },
+  loading: { end: 5.2, open: 0.6, health: 'Loading speech model…', close: 3.8 },
+  error: { end: 8.0, open: 0.6, hint: true, talk: 1.8, release: 3.9, error: 4.35, errorText: 'Password field: nothing inserted', close: 6.75 },
+};
+
+function clamp(x, a = 0, b = 1) { return Math.max(a, Math.min(b, x)); }
+function smooth(x) { x = clamp(x); return x * x * (3 - 2 * x); }
+function easeOut(x) { x = clamp(x); return 1 - Math.pow(1 - x, 3); }
+function backOut(x) { x = clamp(x); const c1 = 1.4, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+function f2(x) { return Math.round(x * 100) / 100; }
+function firstOf(list) { const v = list.filter((x) => x !== undefined && x !== null); return v.length ? Math.min(...v) : null; }
+
+// 0 before `on`, 1 between, 0 after `off`, with `d`-second fades.
+function win(t, on, off, d) {
+  if (on === undefined || on === null || t < on) return 0;
+  const a = smooth((t - on) / d);
+  const b = off === undefined || off === null || t < off ? 1 : 1 - smooth((t - off) / d);
+  return Math.min(a, b);
+}
+
+// One spring for every size change: 0.45 s, a touch of overshoot.
+function springStep(x, z) {
+  if (x <= 0) return 0;
+  const w = 2 * Math.PI / 0.45;
+  if (z >= 1) return 1 - Math.exp(-w * x) * (1 + w * x);
+  const wd = w * Math.sqrt(1 - z * z);
+  return 1 - Math.exp(-z * w * x) * (Math.cos(wd * x) + (z * w / wd) * Math.sin(wd * x));
+}
+// entries: [time, value, damping]; each new target springs from where the last one had got to.
+function track(entries, t) {
+  let from = entries[0][1], to = from, start = -100, z = 0.82;
+  for (let i = 1; i < entries.length; i++) {
+    const e = entries[i];
+    if (t < e[0]) break;
+    from = from + (to - from) * springStep(e[0] - start, z);
+    to = e[1]; start = e[0]; z = e[2] === undefined ? 0.82 : e[2];
+  }
+  return from + (to - from) * springStep(t - start, z);
+}
+function geom(entries, t) {
+  const list = entries.filter((e) => e[0] !== undefined && e[0] !== null).sort((p, q) => p[0] - q[0]);
+  return {
+    w: track(list.map((e) => [e[0], e[1], e[3]]), t),
+    h: track(list.map((e) => [e[0], e[2], e[3]]), t),
+  };
+}
+
+// Talking: quiet, then phrases with breaths between them.
+function speech(x) {
+  const env = Math.max(0, Math.sin(x * 2.3) * 0.6 + Math.sin(x * 5.1 + 1) * 0.35 + 0.25);
+  return Math.min(1, 0.05 + env * (0.75 + 0.25 * Math.sin(x * 37)));
+}
+function voiceAt(sc, time) {
+  if (sc.talk === undefined || time < sc.open) return 0;
+  if (time >= sc.release) return 0;
+  if (time < sc.talk) return 0.04;
+  return speech(time - sc.talk);
+}
+
+function common(sc, t) {
+  const c = { sc, t };
+  c.alive = t >= sc.open && t < sc.close + 0.6;
+  c.phase = sc.health ? 'busy'
+    : sc.error !== undefined && t >= sc.error ? 'error'
+    : sc.paste !== undefined && t >= sc.paste ? 'paste'
+    : sc.release !== undefined && t >= sc.release ? 'work' : 'rec';
+  c.capture = sc.health ? 0 : win(t, sc.open + 0.1, firstOf([sc.paste, sc.error, sc.close]), 0.18);
+  c.live = sc.health ? 0 : win(t, sc.open + 0.1, firstOf([sc.release, sc.close]), 0.18);
+  c.working = sc.release !== undefined ? win(t, sc.release, firstOf([sc.paste, sc.error, sc.close]), 0.18) : 0;
+  c.hint = sc.hint ? win(t, sc.open + 0.12, sc.talk + 0.15, 0.2) : 0;
+  c.words = sc.words !== undefined ? win(t, sc.words, sc.paste, 0.2) : 0;
+  c.check = sc.paste !== undefined ? win(t, sc.paste, sc.close, 0.12) : 0;
+  c.error = sc.error !== undefined ? win(t, sc.error, sc.close, 0.15) : 0;
+  c.busy = sc.health ? win(t, sc.open + 0.12, sc.close, 0.18) : 0;
+  c.settle = sc.release !== undefined && t >= sc.release ? easeOut((t - sc.release) / 0.36) : 0;
+  c.elapsed = Math.max(0, Math.min(t, sc.release === undefined ? t : sc.release) - sc.open);
+  const sec = Math.floor(c.elapsed);
+  c.timer = Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  c.level = c.phase === 'rec' ? voiceAt(sc, t) : 0;
+  c.pasteSince = sc.paste !== undefined ? t - sc.paste : -1;
+  c.alpha = !c.alive ? 0 : t < sc.close + 0.32 ? 1 : 1 - smooth((t - sc.close - 0.32) / 0.2);
+  c.glint = sc.release !== undefined && t >= sc.release ? ((t - sc.release) % 1.2) / 1.2 : 0;
+  c.glintOn = c.settle > 0.98 ? c.working : 0;
+  return c;
+}
+
+// The island's outline: flush with the top edge, top corners flaring into
+// the screen's edge, round bottom corners.
+function islandPath(w, h, r, ear) {
+  const L = CX - w / 2, R = CX + w / 2;
+  r = Math.max(0, Math.min(r, h / 2, w / 2));
+  return `M ${f2(L - ear)} 0 Q ${f2(L)} 0 ${f2(L)} ${f2(ear)} L ${f2(L)} ${f2(h - r)} Q ${f2(L)} ${f2(h)} ${f2(L + r)} ${f2(h)}`
+    + ` L ${f2(R - r)} ${f2(h)} Q ${f2(R)} ${f2(h)} ${f2(R)} ${f2(h - r)} L ${f2(R)} ${f2(ear)} Q ${f2(R)} 0 ${f2(R + ear)} 0 Z`;
+}
+function outline(g, rMin, rMax, rise) {
+  const r = rMin + (rMax - rMin) * clamp((g.h - NH) / rise);
+  const ear = 6 * clamp((g.w - NW) / 16);
+  return { path: islandPath(g.w, g.h, r, ear), shadow: f2(0.45 * clamp((g.h - NH) / 18)) };
+}
+
+function dotVals(x, y, c, o) {
+  const r = 4.5 + (c.phase === 'rec' ? c.level * 1.8 : 0);
+  return {
+    x: f2(x), y: f2(y), r: f2(r), halo: f2(r + 4),
+    haloO: f2(c.phase === 'rec' && c.level > 0.05 ? 0.22 * Math.min(1, c.level * 1.5) * o : 0),
+    redO: f2((1 - c.settle) * o), inkO: f2(c.settle * o),
+  };
+}
+function checkVals(x, y, c, radius) {
+  const since = c.pasteSince;
+  const grow = since < 0 ? 0 : backOut((since - 0.08) / 0.34);
+  const stroke = since < 0 ? 0 : easeOut((since - 0.24) / 0.3);
+  return { x: f2(x), y: f2(y), r: f2(radius * grow), s: f2((radius / 10) * grow), dash: f2(13.4 * (1 - stroke)), o: f2(c.check) };
+}
+
+// A mirrored ribbon of the recent voice, newest at the right.
+function ribbonPath(c, x1, x2, cy, amp) {
+  const pts = [];
+  for (let i = 0; i < 400; i++) {
+    const x = x2 - i * 2.5;
+    if (x < x1) break;
+    const lv = voiceAt(c.sc, c.t - i * 0.02);
+    const taper = Math.min(1, (x - x1) / 10) * Math.min(1, (x2 - x) / 6 + 0.4);
+    pts.push([x, lv * amp * (1 - c.settle) * taper]);
+  }
+  pts.reverse();
+  if (pts.length < 2) return 'M 0 0';
+  let d = `M ${f2(pts[0][0])} ${cy}`;
+  for (const p of pts) d += ` L ${f2(p[0])} ${f2(cy - p[1])}`;
+  for (let i = pts.length - 1; i >= 0; i--) d += ` L ${f2(pts[i][0])} ${f2(cy + pts[i][1])}`;
+  return d + ' Z';
+}
+// Capsule bars of the recent voice, newest at the right; flat dots once settled.
+function barsPath(c, x1, x2, cy, count, maxH, age) {
+  let d = '';
+  const step = (x2 - x1) / (count - 1);
+  for (let i = 0; i < count; i++) {
+    const x = x2 - i * step;
+    const half = (voiceAt(c.sc, c.t - i * age) * maxH * (1 - c.settle)) / 2;
+    d += `M ${f2(x)} ${f2(cy - half)} L ${f2(x)} ${f2(cy + half)} `;
+  }
+  return d;
+}
+// The dots near the glint, drawn bright as it passes.
+function glintBars(c, x1, x2, cy, count) {
+  const gx = x1 - 16 + (x2 - x1 + 32) * smooth(c.glint);
+  let d = '';
+  const step = (x2 - x1) / (count - 1);
+  for (let i = 0; i < count; i++) {
+    const x = x1 + i * step;
+    if (Math.abs(x - gx) < 10) d += `M ${f2(x)} ${f2(cy)} L ${f2(x)} ${f2(cy)} `;
+  }
+  return d || 'M 0 0';
+}
+function glintSeg(c, x1, x2, cy) {
+  const gx = x1 - 16 + (x2 - x1 + 32) * smooth(c.glint);
+  const a = Math.max(x1, gx - 12), b = Math.min(x2, gx + 12);
+  return b > a ? `M ${f2(a)} ${cy} L ${f2(b)} ${cy}` : 'M 0 0';
+}
+
+// A: everything in one row hanging under the camera.
+function designA(c) {
+  const sc = c.sc, t = c.t;
+  const row = [206, NH + 30], tall = [240, NH + 52], words = [206, NH + 52];
+  const g = geom([
+    [-1, NW, NH],
+    [sc.open, sc.health ? words[0] : sc.hint ? tall[0] : row[0], sc.health ? words[1] : sc.hint ? tall[1] : row[1], 0.72],
+    [sc.hint ? sc.talk + 0.15 : undefined, row[0], row[1]],
+    [sc.words, words[0], words[1]],
+    [sc.paste, NW, NH + 30],
+    [sc.error, 264, NH + 30],
+    [sc.close, NW, NH, 1],
+  ], t);
+  const L = CX - g.w / 2, R = CX + g.w / 2;
+  const y1 = NH + 15, x1 = L + 31, x2 = R - 46;
+  const o = outline(g, 9, 19, 30);
+  return {
+    path: o.path, shadow: o.shadow, alpha: f2(c.alpha), y1, y2: NH + 41,
+    dot: dotVals(L + 17, y1, c, c.capture),
+    ribbon: ribbonPath(c, x1, x2, y1, 8), ribbonO: f2(0.92 * (1 - c.settle) * c.capture),
+    line: `M ${f2(x1)} ${y1} L ${f2(x2)} ${y1}`, lineO: f2((0.25 + 0.45 * c.settle) * c.capture), lineW: f2(1 + c.settle),
+    glint: glintSeg(c, x1, x2, y1), glintO: f2(0.9 * c.glintOn),
+    timerX: f2(R - 14), timer: c.timer, timerO: f2(c.capture * (c.phase === 'rec' ? 1 : 0.45)),
+    hintO: f2(c.hint), wordsO: f2(c.words),
+    check: checkVals(CX, y1, c, 10),
+    iconX: f2(L + 17), textX: f2(L + 31), errO: f2(c.error), busyO: f2(c.busy),
+    // Loading looks like a slow wait: the ink dot, a line with a glint, words below.
+    busyLine: `M ${f2(x1)} ${y1} L ${f2(R - 16)} ${y1}`,
+    busyGlint: glintSeg({ glint: ((t - sc.open) % 1.2) / 1.2 }, x1, R - 16, y1),
+  };
+}
+
+// B: a dot left of the camera, a small meter right of it; words open a card below.
+function designB(c) {
+  const sc = c.sc, t = c.t;
+  const compact = [228, NH], card = [300, NH + 34];
+  const first = sc.health || sc.hint ? card : compact;
+  const g = geom([
+    [-1, NW, NH],
+    [sc.open, first[0], first[1], 0.72],
+    [sc.hint ? sc.talk + 0.15 : undefined, compact[0], compact[1]],
+    [sc.words, card[0], card[1]],
+    [sc.paste, compact[0], compact[1]],
+    [sc.error, 318, card[1]],
+    [sc.close, NW, NH, 1],
+  ], t);
+  const L = CX - g.w / 2, R = CX + g.w / 2;
+  const lx = L + 17, rx = R - 17;
+  let eq = '', think = '';
+  const mult = [0.55, 0.85, 1, 0.8, 0.5];
+  for (let i = 0; i < 5; i++) {
+    const bx = rx - 8 + i * 4;
+    const hv = 1.5 + voiceAt(sc, t - (4 - i) * 0.05) * 11 * mult[i];
+    const hw = 1.5 + 3.5 * Math.max(0, Math.sin(t * 7 - i * 0.8));
+    eq += `M ${f2(bx)} ${f2(14 - hv / 2 + 1.3)} L ${f2(bx)} ${f2(14 + hv / 2 - 1.3)} `;
+    think += `M ${f2(bx)} ${f2(14 - hw / 2 + 1.3)} L ${f2(bx)} ${f2(14 + hw / 2 - 1.3)} `;
+  }
+  const o = outline(g, 10, 22, 34);
+  return {
+    path: o.path, shadow: o.shadow, alpha: f2(c.alpha), leftX: f2(lx), textY: NH + 17,
+    dot: dotVals(lx, 14, c, c.capture),
+    eq, eqO: f2(c.live), think, thinkO: f2(c.working),
+    check: checkVals(rx, 14, c, 8),
+    hintO: f2(c.hint), wordsO: f2(c.words), errO: f2(c.error), busyO: f2(c.busy),
+  };
+}
+
+// C: today's layout tidied: dot and timer left, meter right, words below, check under the camera.
+function designC(c) {
+  const sc = c.sc, t = c.t;
+  const compact = [304, NH], rowed = [304, NH + 26];
+  const first = sc.health || sc.hint ? rowed : compact;
+  const g = geom([
+    [-1, NW, NH],
+    [sc.open, first[0], first[1], 0.72],
+    [sc.hint ? sc.talk + 0.15 : undefined, compact[0], compact[1]],
+    [sc.words, rowed[0], rowed[1]],
+    [sc.paste, NW, NH + 30],
+    [sc.error, rowed[0], rowed[1]],
+    [sc.close, NW, NH, 1],
+  ], t);
+  const L = CX - g.w / 2, R = CX + g.w / 2;
+  const x1 = NR + 12, x2 = R - 15;
+  const o = outline(g, 10, 18, 26);
+  return {
+    path: o.path, shadow: o.shadow, alpha: f2(c.alpha), leftX: f2(L + 16), textY: NH + 13,
+    dot: dotVals(L + 16, 14, c, c.capture),
+    timerX: f2(L + 28), timer: c.timer, timerO: f2(c.capture * (c.phase === 'rec' ? 1 : 0.45)),
+    bars: barsPath(c, x1, x2, 14, 10, 15, 0.045),
+    redO: f2((1 - c.settle) * c.capture), inkO: f2(c.settle * c.capture),
+    glint: glintBars(c, x1, x2, 14, 10), glintO: f2(0.95 * c.glintOn),
+    check: checkVals(CX, NH + 15, c, 10),
+    hintO: f2(c.hint), wordsO: f2(c.words), errO: f2(c.error), busyO: f2(c.busy),
+  };
+}
+
+// D: a card under the notch: status line, a wide meter, the hint.
+function designD(c) {
+  const sc = c.sc, t = c.t;
+  const card = [340, NH + 66], tight = [340, NH + 50], done = [196, NH + 40], msg = [330, NH + 44];
+  const first = sc.health ? [300, msg[1]] : sc.hint ? card : tight;
+  const g = geom([
+    [-1, NW, NH],
+    [sc.open, first[0], first[1], 0.72],
+    [sc.hint ? sc.talk + 0.15 : undefined, tight[0], tight[1]],
+    [sc.paste, done[0], done[1]],
+    [sc.error, msg[0], msg[1]],
+    [sc.close, NW, NH, 1],
+  ], t);
+  const L = CX - g.w / 2, R = CX + g.w / 2;
+  const y1 = NH + 14, yw = NH + 35, x1 = L + 20, x2 = R - 20;
+  const o = outline(g, 10, 24, 40);
+  return {
+    path: o.path, shadow: o.shadow, alpha: f2(c.alpha), y1, y2: NH + 22, y3: NH + 57,
+    dot: dotVals(L + 22, y1, c, c.capture),
+    labelX: f2(L + 34), listenO: f2(c.live), workO: f2(c.working),
+    timerX: f2(R - 20), timer: c.timer, timerO: f2(c.capture * (c.phase === 'rec' ? 1 : 0.45)),
+    bars: barsPath(c, x1, x2, yw, 56, 24, 0.03),
+    redO: f2((1 - c.settle) * c.capture), inkO: f2(c.settle * c.capture),
+    glint: glintBars(c, x1, x2, yw, 56), glintO: f2(0.95 * c.glintOn),
+    hintO: f2(c.hint),
+    check: checkVals(CX - 26, NH + 20, c, 9), pastedX: f2(CX - 11),
+    iconX: f2(L + 22), textX: f2(L + 36), errO: f2(c.error), busyO: f2(c.busy),
+  };
+}
+
+function phaseText(sc, c) {
+  const t = c.t;
+  if (t < sc.open) return 'Idle';
+  if (t >= sc.close) return 'Closing';
+  if (sc.health) return 'Loading';
+  if (c.phase === 'error') return 'Error';
+  if (c.phase === 'paste') return 'Pasted';
+  if (c.phase === 'work') return c.words > 0.5 ? 'Slow wait' : 'Released';
+  if (t >= sc.talk) return 'Talking';
+  return 'Opened, hint';
+}
+
+// MARK: Drawing
+
+const SANS = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
+const SERIF = "'New York', ui-serif, Georgia, serif";
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+function sceneSvg(s) {
+  return `
+    <rect x="0" y="0" width="620" height="120" fill="${s.wall}"/>
+    <rect x="0" y="72" width="620" height="48" fill="${s.wall2}"/>
+    <rect x="0" y="0" width="620" height="29" fill="${s.bar}"/>
+    <g style="font: 13px ${SANS}; fill: ${s.ink}; dominant-baseline: central">
+      <text x="14" y="14.5" style="font-weight: 700">Notes</text>
+      <text x="64" y="14.5">File</text><text x="98" y="14.5">Edit</text>
+      <text x="134" y="14.5">Format</text><text x="190" y="14.5">View</text>
+      <text x="606" y="14.5" style="text-anchor: end">Fri 16 Oct 9:41 PM</text>
+    </g>
+    <g fill="none" stroke="${s.ink}" stroke-width="1.2" stroke-linecap="round">
+      <rect x="430" y="9.5" width="21" height="10" rx="3"/>
+      <path d="M 453.5 13 L 453.5 16"/>
+      <path d="M 466 13.5 Q 473 7.5 480 13.5"/><path d="M 468.6 16 Q 473 12.6 477.4 16"/>
+    </g>
+    <rect x="432.5" y="12" width="13" height="5" rx="1.5" fill="${s.ink}"/>
+    <circle cx="473" cy="18.8" r="1.3" fill="${s.ink}"/>
+    <path d="M 230 0 L 390 0 L 390 20 Q 390 28 382 28 L 238 28 Q 230 28 230 20 Z" fill="#000"/>`;
+}
+const CAMERA = `<circle cx="310" cy="12.5" r="2.6" fill="#15171d"/><circle cx="309.3" cy="11.8" r="0.8" fill="#2c3242"/>`;
+
+function islandSvg(p, depth) {
+  return `<path d="${p.path}" fill="#000" style="filter: drop-shadow(0px ${depth}px ${depth * 2}px rgba(0,0,0,${p.shadow}))"/>`;
+}
+function dotSvg(d) {
+  return `<circle cx="${d.x}" cy="${d.y}" r="${d.halo}" opacity="${d.haloO}" fill="#ff6152"/>
+    <circle cx="${d.x}" cy="${d.y}" r="${d.r}" opacity="${d.redO}" fill="#ff6152"/>
+    <circle cx="${d.x}" cy="${d.y}" r="${d.r}" opacity="${d.inkO}" fill="#8fb0ff"/>`;
+}
+function checkSvg(k, extra = '') {
+  return `<g opacity="${k.o}">
+    <circle cx="${k.x}" cy="${k.y}" r="${k.r}" fill="#8fb0ff"/>
+    <path transform="translate(${k.x} ${k.y}) scale(${k.s})" d="M -4.4 0.3 L -1.2 3.5 L 4.5 -3.2" fill="none" stroke="#000"
+      stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="13.4" stroke-dashoffset="${k.dash}"/>
+    ${extra}</g>`;
+}
+function warnSvg(x, y) {
+  return `<g transform="translate(${x} ${y})"><circle r="7.5" fill="#ffb847"/>
+    <path d="M 0 -3.8 L 0 0.6" stroke="#291a00" stroke-width="1.8" stroke-linecap="round"/>
+    <circle cx="0" cy="3.2" r="1.05" fill="#291a00"/></g>`;
+}
+function spinSvg(x, y, spin) {
+  return `<g transform="translate(${x} ${y}) rotate(${spin})">
+    <circle r="6.5" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="2"/>
+    <path d="M 6.5 0 A 6.5 6.5 0 0 1 -1.13 6.4" fill="none" stroke="rgba(255,255,255,0.72)" stroke-width="2" stroke-linecap="round"/></g>`;
+}
+function text(x, y, o, body, style) {
+  return `<text x="${x}" y="${y}" opacity="${o}" style="dominant-baseline: central; ${style}">${esc(body)}</text>`;
+}
+const HINT = 'Tap again to paste, Esc to cancel';
+const italic = (size, alpha) => `font: italic ${size}px ${SERIF}; fill: rgba(255,255,255,${alpha}); text-anchor: middle`;
+const label = (size, anchor = 'start') => `font: 500 ${size}px ${SANS}; fill: rgba(255,255,255,0.94); text-anchor: ${anchor}`;
+const timerStyle = (anchor) => `font: 500 11.5px ${SANS}; font-variant-numeric: tabular-nums; fill: rgba(255,255,255,0.62); text-anchor: ${anchor}`;
+
+function svgA(p, v) {
+  return `<g opacity="${p.alpha}">${islandSvg(p, 3)}${dotSvg(p.dot)}
+    <path d="${p.line}" opacity="${p.lineO}" fill="none" stroke="#8fb0ff" stroke-width="${p.lineW}"/>
+    <path d="${p.ribbon}" opacity="${p.ribbonO}" fill="#ff6152"/>
+    <path d="${p.glint}" opacity="${p.glintO}" fill="none" stroke="#e2e9ff" stroke-width="2" stroke-linecap="round"/>
+    ${text(p.timerX, p.y1, p.timerO, p.timer, timerStyle('end'))}
+    ${text(310, p.y2, p.hintO, HINT, italic(12, 0.62))}
+    ${text(310, p.y2, p.wordsO, 'Transcribing…', italic(12, 0.78))}
+    ${checkSvg(p.check)}
+    <g opacity="${p.errO}">${warnSvg(p.iconX, p.y1)}${text(p.textX, p.y1, 1, v.errText, label(12.5))}</g>
+    <g opacity="${p.busyO}">
+      <circle cx="${p.iconX}" cy="${p.y1}" r="4.5" fill="#8fb0ff"/>
+      <path d="${p.busyLine}" opacity="0.55" fill="none" stroke="#8fb0ff" stroke-width="2"/>
+      <path d="${p.busyGlint}" fill="none" stroke="#e2e9ff" stroke-width="2" stroke-linecap="round"/>
+      ${text(310, p.y2, 1, v.busyText, italic(12, 0.78))}
+    </g>
+  </g>`;
+}
+function svgB(p, v) {
+  return `<g opacity="${p.alpha}">${islandSvg(p, 3)}${dotSvg(p.dot)}
+    <path d="${p.eq}" opacity="${p.eqO}" fill="none" stroke="#ff6152" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="${p.think}" opacity="${p.thinkO}" fill="none" stroke="#8fb0ff" stroke-width="2.6" stroke-linecap="round"/>
+    ${checkSvg(p.check)}
+    <g opacity="${p.errO}">${warnSvg(p.leftX, 14)}</g>
+    <g opacity="${p.busyO}">${spinSvg(p.leftX, 14, v.spin)}</g>
+    ${text(310, p.textY, p.hintO, HINT, italic(13, 0.62))}
+    ${text(310, p.textY, p.wordsO, 'Transcribing…', italic(13, 0.78))}
+    ${text(310, p.textY, p.errO, v.errText, label(13, 'middle'))}
+    ${text(310, p.textY, p.busyO, v.busyText, label(13, 'middle'))}
+  </g>`;
+}
+function svgC(p, v) {
+  return `<g opacity="${p.alpha}">${islandSvg(p, 3)}${dotSvg(p.dot)}
+    ${text(p.timerX, 14, p.timerO, p.timer, timerStyle('start'))}
+    <path d="${p.bars}" opacity="${p.redO}" fill="none" stroke="#ff6152" stroke-width="3" stroke-linecap="round"/>
+    <path d="${p.bars}" opacity="${p.inkO}" fill="none" stroke="#8fb0ff" stroke-width="3" stroke-linecap="round"/>
+    <path d="${p.glint}" opacity="${p.glintO}" fill="none" stroke="#e2e9ff" stroke-width="3" stroke-linecap="round"/>
+    ${checkSvg(p.check)}
+    <g opacity="${p.errO}">${warnSvg(p.leftX, 14)}</g>
+    <g opacity="${p.busyO}">${spinSvg(p.leftX, 14, v.spin)}</g>
+    ${text(310, p.textY, p.hintO, HINT, italic(12, 0.62))}
+    ${text(310, p.textY, p.wordsO, 'Transcribing…', italic(12, 0.78))}
+    ${text(310, p.textY, p.errO, v.errText, label(12.5, 'middle'))}
+    ${text(310, p.textY, p.busyO, v.busyText, label(12.5, 'middle'))}
+  </g>`;
+}
+function svgD(p, v) {
+  const head = (o, body, fill) => `<text x="${p.labelX}" y="${p.y1}" opacity="${o}" style="dominant-baseline: central; font: 600 12px ${SANS}; fill: ${fill}">${body}</text>`;
+  return `<g opacity="${p.alpha}">${islandSvg(p, 4)}${dotSvg(p.dot)}
+    ${head(p.listenO, 'Listening', 'rgba(255,255,255,0.94)')}
+    ${head(p.workO, 'Transcribing', '#8fb0ff')}
+    ${text(p.timerX, p.y1, p.timerO, p.timer, timerStyle('end'))}
+    <path d="${p.bars}" opacity="${p.redO}" fill="none" stroke="#ff6152" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="${p.bars}" opacity="${p.inkO}" fill="none" stroke="#8fb0ff" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="${p.glint}" opacity="${p.glintO}" fill="none" stroke="#e2e9ff" stroke-width="2.2" stroke-linecap="round"/>
+    ${text(310, p.y3, p.hintO, HINT, italic(12, 0.62))}
+    ${checkSvg(p.check, text(p.pastedX, p.check.y, 1, 'Pasted', `font: 600 13px ${SANS}; fill: rgba(255,255,255,0.94)`))}
+    <g opacity="${p.errO}">${warnSvg(p.iconX, p.y2)}${text(p.textX, p.y2, 1, v.errText, label(13))}</g>
+    <g opacity="${p.busyO}">${spinSvg(p.iconX, p.y2, v.spin)}${text(p.textX, p.y2, 1, v.busyText, label(13))}</g>
+  </g>`;
+}
+
+// MARK: Playback
+
+const state = { t: 0, playing: true, speed: 1, scenario: 'quick', light: false };
+const el = (id) => document.getElementById(id);
+const scrub = el('scrub');
+
+function render() {
+  const sc = SCEN[state.scenario];
+  const c = common(sc, state.t);
+  const scene = state.light
+    ? { wall: '#c6d3e4', wall2: '#dcd2c6', bar: 'rgba(255,255,255,0.5)', ink: '#1d1d1f' }
+    : { wall: '#23273a', wall2: '#2e2742', bar: 'rgba(0,0,0,0.34)', ink: '#f5f5f7' };
+  const v = { spin: f2((state.t * 330) % 360), errText: sc.errorText || '', busyText: sc.health || '' };
+  const back = sceneSvg(scene);
+  el('svgA').innerHTML = back + svgA(designA(c), v) + CAMERA;
+  el('svgB').innerHTML = back + svgB(designB(c), v) + CAMERA;
+  el('svgC').innerHTML = back + svgC(designC(c), v) + CAMERA;
+  el('svgD').innerHTML = back + svgD(designD(c), v) + CAMERA;
+  scrub.max = sc.end;
+  scrub.value = state.t;
+  el('time').textContent = state.t.toFixed(2) + ' s';
+  el('phase').textContent = phaseText(sc, c);
+  el('play').textContent = state.playing ? 'Pause' : 'Play';
+  document.querySelectorAll('[data-scenario]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scenario === state.scenario)));
+  document.querySelectorAll('[data-speed]').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.speed) === state.speed)));
+  document.querySelectorAll('[data-wall]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.wall === 'light') === state.light)));
+}
+
+document.querySelectorAll('[data-scenario]').forEach((b) => b.addEventListener('click', () => {
+  Object.assign(state, { scenario: b.dataset.scenario, t: 0, playing: true });
+  render();
+}));
+document.querySelectorAll('[data-speed]').forEach((b) => b.addEventListener('click', () => { state.speed = Number(b.dataset.speed); render(); }));
+document.querySelectorAll('[data-wall]').forEach((b) => b.addEventListener('click', () => { state.light = b.dataset.wall === 'light'; render(); }));
+el('play').addEventListener('click', () => { state.playing = !state.playing; render(); });
+scrub.addEventListener('input', () => { state.t = parseFloat(scrub.value); state.playing = false; render(); });
+
+let last = null;
+function frame(now) {
+  if (last !== null && state.playing) {
+    state.t += Math.min(0.05, (now - last) / 1000) * state.speed;
+    if (state.t > SCEN[state.scenario].end) state.t = 0;
+  }
+  last = now;
+  render();
+  requestAnimationFrame(frame);
+}
+render();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

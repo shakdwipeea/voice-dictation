@@ -43,6 +43,16 @@ private struct PillPalette {
             onAmber: NSColor.white
         )
     }
+
+    /// The island is the notch's own black in light and dark mode, with the
+    /// dark palette's colours on it.
+    static let island: PillPalette = {
+        let dark = resolve(for: NSAppearance(named: .darkAqua)!)
+        return PillPalette(
+            body: .black, edge: .clear, primary: dark.primary, secondary: dark.secondary, faint: dark.faint,
+            voice: dark.voice, ink: dark.ink, amber: dark.amber, onAmber: dark.onAmber
+        )
+    }()
 }
 
 /// Easing curves for the pill's open and close motion.
@@ -97,94 +107,81 @@ private enum PillPhase {
     case notice
 }
 
-/// The passive pill shown at the top of the screen. It never takes clicks.
-private final class PillView: NSView {
-    static let rowHeight: CGFloat = 40
-    static let captionHeight: CGFloat = 24
-    static let captureWidth: CGFloat = 232
-    static let maxWidth: CGFloat = 440
-    private static let ribbonLeft: CGFloat = 38
-    /// Room after a message, matching the room before its icon.
-    private static let labelInset: CGFloat = 14
-    private static let timerWidth: CGFloat = 54
-    private static let sampleSpacing: CGFloat = 3
-    private static let historyLength = 160
-    private static let sampleInterval: CFTimeInterval = 0.02
+/// Where the pill is drawn this session: floating under the menu bar, or as
+/// an island grown out of the notch.
+private enum PillSurface {
+    case floating
+    case island
+}
+
+/// What the pill shows and when: the phase, the sound, the caption, and the
+/// timing of the open and close motion. The floating pill and the notch
+/// island both draw from it; how each moves and lays itself out is theirs.
+private final class PillModel {
+    static let historyLength = 160
+    static let sampleInterval: CFTimeInterval = 0.02
     /// Audio frames arrive every 20 ms while the key is held; a longer gap
     /// means the user let go.
     private static let releaseGap: CFTimeInterval = 0.14
     private static let settleDuration: CFTimeInterval = 0.36
-    private static let glintPeriod: CFTimeInterval = 1.25
-    private static let openDuration: CFTimeInterval = 0.42
+    static let openDuration: CFTimeInterval = 0.42
     private static let closeDuration: CFTimeInterval = 0.3
     /// The recording hint fades once you start talking, or after this long,
     /// and the pill narrows to the ribbon and timer.
     private static let hintDuration: CFTimeInterval = 3
-    private static let hintFade: CFTimeInterval = 0.2
+    static let hintFade: CFTimeInterval = 0.2
     /// Talking means this many 20 ms frames in a row above `voiceLevel`, so
     /// a click or a cough does not count.
     private static let voiceLevel: CGFloat = 0.35
     private static let voiceFrames = 4
-    /// Captions under the ribbon: the hint and the rare progress word, in
-    /// the serif italic of the setup panel's heading.
-    private static let captionFont: NSFont = {
-        let base = NSFont.systemFont(ofSize: 13, weight: .regular)
-        let serif = base.fontDescriptor.withDesign(.serif)?.withSymbolicTraits(.italic)
-        return serif.flatMap { NSFont(descriptor: $0, size: 13) } ?? base
-    }()
     /// After the second tap the pill shows no words unless the wait is
     /// longer than this.
     private static let slowWorkDelay: CFTimeInterval = 1.5
-    /// After a paste the pill folds in around its middle, carrying the dot
-    /// there. Near the end of the fold the dot grows into a disc and a check
-    /// is drawn on it; the pill closes once the check has been seen.
-    private static let foldDuration: CFTimeInterval = 0.42
-    private static let checkDelay: CFTimeInterval = 0.3
-    private static let checkGrow: CFTimeInterval = 0.34
-    private static let checkStroke: CFTimeInterval = 0.3
-    private static let checkStrokeDelay: CFTimeInterval = 0.42
-    private static let checkRadius: CGFloat = 10
+    /// After a paste the floating pill folds in around its middle, carrying
+    /// the dot there. Near the end of the fold the dot grows into a disc and
+    /// a check is drawn on it; the pill closes once the check has been seen.
+    static let foldDuration: CFTimeInterval = 0.42
+    static let checkDelay: CFTimeInterval = 0.3
+    static let checkGrow: CFTimeInterval = 0.34
+    static let checkStroke: CFTimeInterval = 0.3
+    static let checkStrokeDelay: CFTimeInterval = 0.42
     private static let confirmDuration: CFTimeInterval = 1.2
     /// The folded check leaves a little slower than the pill rolls up.
     private static let foldedCloseDuration: CFTimeInterval = 0.38
+    /// The island pulls back into the notch, then fades the last sliver.
+    private static let islandCloseDuration: CFTimeInterval = 0.5
     /// With Reduce Motion the check simply appears in the dot.
-    private static let stillCheckRadius: CGFloat = 7.5
     private static let stillCheckHold: CFTimeInterval = 0.45
 
     private(set) var phase: PillPhase = .idle
     private(set) var caption = ""
-    private var systemMode = false
-    private var levels = [CGFloat](repeating: 0, count: PillView.historyLength)
-    private var elapsed: Double = 0
-    private var sawSample = false
-    private var lastSampleAt: CFTimeInterval = 0
-    private var settle: CGFloat = 0
+    private(set) var systemMode = false
+    private(set) var levels = [CGFloat](repeating: 0, count: PillModel.historyLength)
+    private(set) var elapsed: Double = 0
+    private(set) var sawSample = false
+    private(set) var lastSampleAt: CFTimeInterval = 0
+    private(set) var settle: CGFloat = 0
     private var settleStartedAt: CFTimeInterval = 0
-    private var clock: CFTimeInterval = 0
+    private(set) var clock: CFTimeInterval = 0
     /// When the recording hint starts to fade.
-    private var hintFadeAt: CFTimeInterval = .infinity
+    private(set) var hintFadeAt: CFTimeInterval = .infinity
     private var voicedFrames = 0
     private var workingSince: CFTimeInterval = 0
     /// "Transcribing…" or "Polishing…", held back until the wait is long.
     private var pendingCaption = ""
-    /// When the text was pasted: the pill folds in and shows a check mark.
-    private var pastedAt: CFTimeInterval?
+    /// When the text was pasted: the pill shows a check mark.
+    private(set) var pastedAt: CFTimeInterval?
     var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    /// Transparent room around the pill for its shadow and the spring's
-    /// overshoot. The onboarding panel's still copy uses none.
-    var margin: CGFloat = 16
-    private enum Transition {
+    /// The app picks this as the pill opens from hidden, and keeps it until
+    /// the pill is gone.
+    var surface: PillSurface = .floating
+    enum Transition {
         case opening(since: CFTimeInterval)
         case closing(since: CFTimeInterval)
     }
-    private var transition: Transition?
+    private(set) var transition: Transition?
     /// Set when a close finishes; the app then hides the window.
     private(set) var closeFinished = false
-    /// Width of the pill body, without the margin.
-    private var bodyWidth: CGFloat { bounds.width - margin * 2 }
-
-    override var isFlipped: Bool { true }
-    override var isOpaque: Bool { false }
 
     /// True while the pill changes on its own and needs the display clock.
     var isAnimating: Bool {
@@ -230,7 +227,6 @@ private final class PillView: NSView {
         sawSample = true
         lastSampleAt = now
         clock = now
-        needsDisplay = true
     }
 
     func setStatus(_ raw: String, error: Bool, now: CFTimeInterval) {
@@ -269,10 +265,9 @@ private final class PillView: NSView {
             phase = .notice
             caption = Self.sentenceCase(text)
         }
-        needsDisplay = true
     }
 
-    /// The text landed at the cursor: fold the pill in to a check mark.
+    /// The text landed at the cursor: show the check mark.
     func markPasted(now: CFTimeInterval) {
         guard phase == .recording || phase == .working else { return }
         enterWorking(now: now)
@@ -283,7 +278,6 @@ private final class PillView: NSView {
         }
         pastedAt = now
         clock = now
-        needsDisplay = true
     }
 
     /// How long a close should wait so the check mark is seen.
@@ -293,17 +287,21 @@ private final class PillView: NSView {
         return max(0, pastedAt + hold - now)
     }
 
-    /// The pill is folded in (or folding) around a check mark.
-    private var folded: Bool { pastedAt != nil && phase == .working && !reduceMotion }
+    /// The floating pill is folded in (or folding) around a check mark.
+    var folded: Bool { surface == .floating && pastedAt != nil && phase == .working && !reduceMotion }
 
-    private var closeDuration: CFTimeInterval { folded ? Self.foldedCloseDuration : Self.closeDuration }
+    var closeDuration: CFTimeInterval {
+        if surface == .island {
+            return Self.islandCloseDuration
+        }
+        return folded ? Self.foldedCloseDuration : Self.closeDuration
+    }
 
     func setHealth(name: String, detail: String) {
         let selfResolving = ["loading_asr", "warming_polish", "mic_starting"]
         phase = selfResolving.contains(name) ? .busy : .attention
         caption = Self.sentenceCase(Self.tidy(detail.isEmpty ? name : detail))
         systemMode = false
-        needsDisplay = true
     }
 
     // MARK: Open and close
@@ -326,66 +324,18 @@ private final class PillView: NSView {
         transition = .opening(since: now - CFTimeInterval(shown) * Self.openDuration)
         closeFinished = false
         clock = now
-        needsDisplay = true
     }
 
     func beginClosing(now: CFTimeInterval) {
         let shown = presence(at: now)
         transition = .closing(since: now - CFTimeInterval(1 - shown) * closeDuration)
         clock = now
-        needsDisplay = true
     }
 
     /// Stop any open or close motion and show the pill as it is.
     func settleMotion() {
         transition = nil
         closeFinished = false
-    }
-
-    private var motion: PillMotion {
-        var motion = PillMotion()
-        if folded, let pastedAt {
-            let t = CGFloat((clock - pastedAt) / Self.foldDuration)
-            motion.anchor = 0.5
-            motion.unroll = 1 - Ease.inOutCubic(t)
-            motion.contentAlpha = 1 - Ease.clamp(t / 0.45)
-        }
-        switch transition {
-        case nil:
-            return motion
-        case .opening(let since):
-            let t = CGFloat((clock - since) / Self.openDuration)
-            if reduceMotion {
-                motion.seedAlpha = Ease.clamp(t)
-                return motion
-            }
-            motion.seedScale = 0.5 + 0.5 * Ease.outCubic(t / 0.35)
-            motion.seedAlpha = Ease.outCubic(t / 0.3)
-            motion.lift = -8 * (1 - Ease.outCubic(t / 0.6))
-            motion.unroll = Ease.outBack((t - 0.18) / 0.82)
-            motion.contentAlpha = Ease.outCubic((t - 0.25) / 0.5)
-        case .closing(let since):
-            let t = CGFloat((clock - since) / closeDuration)
-            if reduceMotion {
-                motion.seedAlpha = 1 - Ease.clamp(t)
-                return motion
-            }
-            if folded {
-                // Only the check is left: it shrinks away where it is.
-                let shrink = Ease.inOutCubic(t)
-                motion.seedScale = 1 - 0.6 * shrink
-                motion.seedAlpha = 1 - shrink
-                motion.lift = -4 * shrink
-                return motion
-            }
-            motion.contentAlpha = 1 - Ease.clamp(t / 0.35)
-            motion.unroll = 1 - Ease.inCubic(t / 0.6)
-            let shrink = Ease.inCubic((t - 0.5) / 0.5)
-            motion.seedScale = 1 - 0.5 * shrink
-            motion.seedAlpha = 1 - shrink
-            motion.lift = -4 * shrink
-        }
-        return motion
     }
 
     /// Advance animations to `now`. Returns whether to keep the clock running.
@@ -414,7 +364,6 @@ private final class PillView: NSView {
            now - workingSince >= Self.slowWorkDelay {
             caption = pendingCaption
         }
-        needsDisplay = true
         return isAnimating
     }
 
@@ -430,7 +379,6 @@ private final class PillView: NSView {
         elapsed = 0
         sawSample = false
         settle = 0
-        needsDisplay = true
     }
 
     /// A still frame of a recording for the onboarding panel.
@@ -491,31 +439,307 @@ private final class PillView: NSView {
         guard let first = text.first, first.isLowercase else { return text }
         return first.uppercased() + text.dropFirst()
     }
+}
 
-    // MARK: Size
+/// The pieces both surfaces draw: the record dot and check, the sound
+/// ribbon, the timer, the health marks, and the caption. Each takes its
+/// position, so the floating pill and the island can lay them out apart.
+private enum PillArt {
+    static let checkRadius: CGFloat = 10
+    /// With Reduce Motion the check simply appears in the dot.
+    private static let stillCheckRadius: CGFloat = 7.5
+    private static let sampleSpacing: CGFloat = 3
+    private static let glintPeriod: CFTimeInterval = 1.25
+    private static var labelFont: NSFont { .systemFont(ofSize: 13, weight: .medium) }
+    /// Captions under the ribbon: the hint and the rare progress word, in
+    /// the serif italic of the setup panel's heading.
+    private static let captionFont: NSFont = {
+        let base = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let serif = base.fontDescriptor.withDesign(.serif)?.withSymbolicTraits(.italic)
+        return serif.flatMap { NSFont(descriptor: $0, size: 13) } ?? base
+    }()
 
-    private var labelFont: NSFont { .systemFont(ofSize: 13, weight: .medium) }
+    /// Your voice, and the line it settles into. System mode uses the
+    /// macOS accent for both.
+    static func captureColors(_ model: PillModel, _ palette: PillPalette) -> (live: NSColor, settled: NSColor) {
+        model.systemMode
+            ? (NSColor.controlAccentColor, NSColor.controlAccentColor)
+            : (palette.voice, palette.ink)
+    }
 
-    private func captionString(_ palette: PillPalette?, emphasized: Bool = false, fade: CGFloat = 1, serif: Bool = false) -> NSAttributedString {
+    static func captionString(_ model: PillModel, _ palette: PillPalette?, emphasized: Bool = false, fade: CGFloat = 1,
+                              serif: Bool = false, alignment: NSTextAlignment = .natural,
+                              size: CGFloat = 13) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = alignment
         let base = palette.map { emphasized ? $0.primary : $0.secondary } ?? NSColor.labelColor
         let color = base.withAlphaComponent(base.alphaComponent * fade)
         let result = NSMutableAttributedString()
-        if systemMode {
+        if model.systemMode {
             result.append(NSAttributedString(string: "System  ", attributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .font: NSFont.systemFont(ofSize: size - 1, weight: .semibold),
                 .foregroundColor: NSColor.controlAccentColor,
                 .paragraphStyle: paragraph,
             ]))
         }
-        result.append(NSAttributedString(string: caption, attributes: [
-            .font: serif ? Self.captionFont : labelFont,
+        result.append(NSAttributedString(string: model.caption, attributes: [
+            .font: size == 13 ? (serif ? Self.captionFont : labelFont)
+                : serif ? NSFont(descriptor: Self.captionFont.fontDescriptor, size: size) ?? Self.captionFont
+                : NSFont.systemFont(ofSize: size, weight: .medium),
             .foregroundColor: color,
             .paragraphStyle: paragraph,
         ]))
         return result
     }
+
+    /// The record dot at (`markX`, `center`). It breathes with your voice
+    /// while recording, then crossfades from red to ink as the sound settles
+    /// (a hue blend would pass through purple, which reads as System mode).
+    /// After a paste it grows into a disc of `checkRadius` with a check drawn
+    /// on it, first riding to `foldTo` when one is given; with `growsCheck`
+    /// off it stays the dot.
+    static func captureMark(_ model: PillModel, _ palette: PillPalette, x markX: CGFloat, y center: CGFloat,
+                            foldTo: CGFloat? = nil, checkRadius: CGFloat = PillArt.checkRadius, growsCheck: Bool = true) {
+        let (live, settled) = captureColors(model, palette)
+        let latest = model.levels.last ?? 0
+        var radius = 4.5 + (model.phase == .recording ? latest * 1.8 : 0)
+        if model.phase == .recording, latest > 0.05 {
+            live.withAlphaComponent(0.2 * min(1, latest * 1.5)).setFill()
+            let halo = radius + 4
+            NSBezierPath(ovalIn: NSRect(x: markX - halo, y: center - halo, width: halo * 2, height: halo * 2)).fill()
+        }
+        var x = markX
+        var stroke: CGFloat = 0
+        if let pastedAt = model.pastedAt, growsCheck {
+            let since = model.clock - pastedAt
+            if model.reduceMotion {
+                radius = min(Self.stillCheckRadius, checkRadius)
+                stroke = 1
+            } else {
+                if let foldTo {
+                    // Riding the fold to the middle, then growing into a
+                    // disc as the check is drawn on it.
+                    x = markX + (foldTo - markX) * Ease.inOutCubic(CGFloat(since / PillModel.foldDuration))
+                }
+                let grow = Ease.outBack(CGFloat((since - PillModel.checkDelay) / PillModel.checkGrow))
+                radius += (checkRadius - radius) * grow
+                stroke = Ease.outCubic(CGFloat((since - PillModel.checkStrokeDelay) / PillModel.checkStroke))
+            }
+        }
+        let dot = NSRect(x: x - radius, y: center - radius, width: radius * 2, height: radius * 2)
+        live.withAlphaComponent(1 - model.settle).setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        settled.withAlphaComponent(model.settle).setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        if stroke > 0 {
+            drawCheck(palette, x: x, y: center, scale: radius / Self.checkRadius, progress: stroke)
+        }
+    }
+
+    /// An ink disc of `radius` with the check cut out of it, drawn on as
+    /// `stroke` goes from 0 to 1.
+    static func checkDisc(_ palette: PillPalette, x: CGFloat, y: CGFloat, radius: CGFloat, stroke: CGFloat) {
+        guard radius > 0.1 else { return }
+        palette.ink.setFill()
+        NSBezierPath(ovalIn: NSRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)).fill()
+        if stroke > 0 {
+            drawCheck(palette, x: x, y: y, scale: radius / Self.checkRadius, progress: stroke)
+        }
+    }
+
+    /// A check cut out of the disc, drawn on from its short arm to its long one.
+    private static func drawCheck(_ palette: PillPalette, x: CGFloat, y center: CGFloat, scale: CGFloat, progress: CGFloat) {
+        let points = [(-4.4, 0.3), (-1.2, 3.5), (4.5, -3.2)].map {
+            NSPoint(x: x + CGFloat($0.0) * scale, y: center + CGFloat($0.1) * scale)
+        }
+        let first = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
+        let second = hypot(points[2].x - points[1].x, points[2].y - points[1].y)
+        var remaining = (first + second) * progress
+        let check = NSBezierPath()
+        check.move(to: points[0])
+        for (from, to, length) in [(points[0], points[1], first), (points[1], points[2], second)] where remaining > 0 {
+            let part = min(1, remaining / length)
+            check.line(to: NSPoint(x: from.x + (to.x - from.x) * part, y: from.y + (to.y - from.y) * part))
+            remaining -= length
+        }
+        check.lineWidth = 2.2 * scale
+        check.lineCapStyle = .round
+        check.lineJoinStyle = .round
+        palette.body.setStroke()
+        check.stroke()
+    }
+
+    /// The live sound between `left` and `right`, newest at the right, and
+    /// the line it settles into once you let go.
+    static func ribbon(_ model: PillModel, from left: CGFloat, to right: CGFloat, y center: CGFloat,
+                       tint: NSColor, settled: NSColor, maxAmplitude: CGFloat = 10, taper: CGFloat = 30,
+                       glintWidth: CGFloat = 64) {
+        guard right > left else { return }
+        let spacing = Self.sampleSpacing
+        let settle = model.settle
+        let levels = model.levels
+        let drift = model.phase == .recording && model.sawSample
+            ? CGFloat(min(1, (model.clock - model.lastSampleAt) / PillModel.sampleInterval)) : 0
+        var points: [NSPoint] = []
+        var step = 0
+        while step < levels.count {
+            let x = right - (CGFloat(step) + drift) * spacing
+            if x < left { break }
+            let fade = min(1, (x - left) / taper) * min(1, (right - x) / 8 + 0.35)
+            let amplitude = levels[levels.count - 1 - step] * maxAmplitude * (1 - settle) * max(0, fade)
+            points.append(NSPoint(x: x, y: amplitude))
+            step += 1
+        }
+        points.reverse()
+
+        // The baseline: faint while you talk, the full ink line once settled.
+        let baseAlpha = 0.22 + 0.33 * settle
+        settled.withAlphaComponent(baseAlpha).setFill()
+        let lineHeight: CGFloat = 1 + settle
+        NSRect(x: left, y: center - lineHeight / 2, width: right - left, height: lineHeight).fill()
+
+        if settle < 1, points.count > 2 {
+            let ribbon = NSBezierPath()
+            ribbon.move(to: NSPoint(x: points[0].x, y: center))
+            for index in 1..<points.count {
+                let previous = NSPoint(x: points[index - 1].x, y: center - points[index - 1].y)
+                let current = NSPoint(x: points[index].x, y: center - points[index].y)
+                let mid = NSPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
+                ribbon.curve(to: mid, controlPoint1: previous, controlPoint2: previous)
+            }
+            ribbon.line(to: NSPoint(x: points[points.count - 1].x, y: center))
+            for index in stride(from: points.count - 1, to: 0, by: -1) {
+                let previous = NSPoint(x: points[index].x, y: center + points[index].y)
+                let current = NSPoint(x: points[index - 1].x, y: center + points[index - 1].y)
+                let mid = NSPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
+                ribbon.curve(to: mid, controlPoint1: previous, controlPoint2: previous)
+            }
+            ribbon.close()
+            tint.withAlphaComponent(0.92 * (1 - settle)).setFill()
+            ribbon.fill()
+        }
+
+        // While Sunoto works, a glint runs along the line.
+        if model.phase == .working, settle >= 1, model.pastedAt == nil, !model.reduceMotion {
+            glint(clock: model.clock, from: left, to: right, y: center, color: settled, width: glintWidth)
+        }
+    }
+
+    /// A glint running along a line from `left` to `right`: Sunoto is busy.
+    static func glint(clock: CFTimeInterval, from left: CGFloat, to right: CGFloat, y center: CGFloat,
+                      color: NSColor, width glintWidth: CGFloat) {
+        let progress = CGFloat(clock.truncatingRemainder(dividingBy: Self.glintPeriod) / Self.glintPeriod)
+        let eased = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
+        let x = left - glintWidth + (right - left + glintWidth) * eased
+        NSGraphicsContext.saveGraphicsState()
+        NSRect(x: left, y: center - 1.5, width: right - left, height: 3).clip()
+        NSGradient(colors: [color.withAlphaComponent(0), color, color.withAlphaComponent(0)])?
+            .draw(in: NSRect(x: x, y: center - 1.5, width: glintWidth, height: 3), angle: 0)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The elapsed time, its right edge at `edge` (or its left edge, when
+    /// left-aligned), dimmed once you let go.
+    static func timer(_ model: PillModel, _ palette: PillPalette, edge: CGFloat, y center: CGFloat,
+                      alignment: NSTextAlignment = .right) {
+        let seconds = Int(model.elapsed.rounded(.down))
+        let text = String(format: "%d:%02d", seconds / 60, seconds % 60)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
+            .foregroundColor: model.phase == .recording ? palette.secondary : palette.secondary.withAlphaComponent(0.4),
+            .paragraphStyle: paragraph,
+        ]
+        let height: CGFloat = 15
+        let width: CGFloat = 40
+        (text as NSString).draw(
+            in: NSRect(x: alignment == .right ? edge - width : edge, y: center - height / 2, width: width, height: height),
+            withAttributes: attributes
+        )
+    }
+
+    static func spinner(_ model: PillModel, _ palette: PillPalette, x markX: CGFloat, y center: CGFloat) {
+        let radius: CGFloat = 6.5
+        let ring = NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2))
+        ring.lineWidth = 2
+        palette.faint.setStroke()
+        ring.stroke()
+        guard !model.reduceMotion else { return }
+        let start = CGFloat(model.clock.truncatingRemainder(dividingBy: 1.1) / 1.1) * 360
+        let arc = NSBezierPath()
+        arc.appendArc(withCenter: NSPoint(x: markX, y: center), radius: radius, startAngle: start, endAngle: start + 100)
+        arc.lineWidth = 2
+        arc.lineCapStyle = .round
+        palette.secondary.setStroke()
+        arc.stroke()
+    }
+
+    static func warning(_ palette: PillPalette, x markX: CGFloat, y center: CGFloat) {
+        let radius: CGFloat = 7.5
+        palette.amber.setFill()
+        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
+        palette.onAmber.setFill()
+        NSBezierPath(roundedRect: NSRect(x: markX - 0.9, y: center - 4.2, width: 1.8, height: 5), xRadius: 0.9, yRadius: 0.9).fill()
+        NSBezierPath(ovalIn: NSRect(x: markX - 1.05, y: center + 2.1, width: 2.1, height: 2.1)).fill()
+    }
+
+    static func notice(_ model: PillModel, _ palette: PillPalette, x markX: CGFloat, y center: CGFloat) {
+        let radius: CGFloat = 4.5
+        let tint = model.systemMode ? NSColor.controlAccentColor : palette.ink
+        tint.setFill()
+        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
+    }
+
+    /// The mark at the start of the row: the record dot while capturing,
+    /// otherwise the mark for the health or message being shown.
+    static func mark(_ model: PillModel, _ palette: PillPalette, x: CGFloat, y: CGFloat,
+                     foldTo: CGFloat? = nil, checkRadius: CGFloat = PillArt.checkRadius) {
+        switch model.phase {
+        case .idle, .recording, .working:
+            captureMark(model, palette, x: x, y: y, foldTo: foldTo, checkRadius: checkRadius)
+        case .busy:
+            spinner(model, palette, x: x, y: y)
+        case .attention, .error:
+            warning(palette, x: x, y: y)
+        case .notice:
+            notice(model, palette, x: x, y: y)
+        }
+    }
+}
+
+/// The floating pill shown under the menu bar. It never takes clicks.
+private final class PillView: NSView {
+    static let rowHeight: CGFloat = 40
+    static let captionHeight: CGFloat = 24
+    static let captureWidth: CGFloat = 232
+    static let maxWidth: CGFloat = 440
+    private static let ribbonLeft: CGFloat = 38
+    /// Room after a message, matching the room before its icon.
+    private static let labelInset: CGFloat = 14
+    private static let timerWidth: CGFloat = 54
+
+    let model: PillModel
+    /// Transparent room around the pill for its shadow and the spring's
+    /// overshoot. The onboarding panel's still copy uses none.
+    var margin: CGFloat = 16
+    /// Width of the pill body, without the margin.
+    private var bodyWidth: CGFloat { bounds.width - margin * 2 }
+
+    init(frame frameRect: NSRect, model: PillModel = PillModel()) {
+        self.model = model
+        super.init(frame: frameRect)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    // MARK: Size
 
     /// The pill grows to fit its caption. While dictating, widths snap to
     /// 16 pt steps so a changing caption does not make the window twitch; a
@@ -524,17 +748,17 @@ private final class PillView: NSView {
     var preferredSize: NSSize {
         let width: CGFloat
         let height: CGFloat
-        switch phase {
+        switch model.phase {
         case .idle:
             width = ceil(Self.captureWidth / 16) * 16
             height = Self.rowHeight
         case .recording, .working:
-            let hasCaption = !caption.isEmpty || systemMode
-            let textWidth = hasCaption ? ceil(captionString(nil, serif: true).size().width) : 0
+            let hasCaption = !model.caption.isEmpty || model.systemMode
+            let textWidth = hasCaption ? ceil(PillArt.captionString(model, nil, serif: true).size().width) : 0
             width = ceil(max(Self.captureWidth, Self.ribbonLeft + textWidth + 20) / 16) * 16
             height = Self.rowHeight + (hasCaption ? Self.captionHeight : 0)
         case .busy, .attention, .error, .notice:
-            let textWidth = ceil(captionString(nil).size().width)
+            let textWidth = ceil(PillArt.captionString(model, nil).size().width)
             width = max(Self.rowHeight * 2, Self.ribbonLeft + textWidth + Self.labelInset)
             height = Self.rowHeight
         }
@@ -545,6 +769,56 @@ private final class PillView: NSView {
     var windowSize: NSSize {
         let body = preferredSize
         return NSSize(width: body.width + margin * 2, height: body.height + margin * 2)
+    }
+
+    // MARK: Motion
+
+    /// How the pill enters and leaves this frame (see `PillMotion`).
+    private var motion: PillMotion {
+        var motion = PillMotion()
+        let clock = model.clock
+        if model.folded, let pastedAt = model.pastedAt {
+            let t = CGFloat((clock - pastedAt) / PillModel.foldDuration)
+            motion.anchor = 0.5
+            motion.unroll = 1 - Ease.inOutCubic(t)
+            motion.contentAlpha = 1 - Ease.clamp(t / 0.45)
+        }
+        switch model.transition {
+        case nil:
+            return motion
+        case .opening(let since):
+            let t = CGFloat((clock - since) / PillModel.openDuration)
+            if model.reduceMotion {
+                motion.seedAlpha = Ease.clamp(t)
+                return motion
+            }
+            motion.seedScale = 0.5 + 0.5 * Ease.outCubic(t / 0.35)
+            motion.seedAlpha = Ease.outCubic(t / 0.3)
+            motion.lift = -8 * (1 - Ease.outCubic(t / 0.6))
+            motion.unroll = Ease.outBack((t - 0.18) / 0.82)
+            motion.contentAlpha = Ease.outCubic((t - 0.25) / 0.5)
+        case .closing(let since):
+            let t = CGFloat((clock - since) / model.closeDuration)
+            if model.reduceMotion {
+                motion.seedAlpha = 1 - Ease.clamp(t)
+                return motion
+            }
+            if model.folded {
+                // Only the check is left: it shrinks away where it is.
+                let shrink = Ease.inOutCubic(t)
+                motion.seedScale = 1 - 0.6 * shrink
+                motion.seedAlpha = 1 - shrink
+                motion.lift = -4 * shrink
+                return motion
+            }
+            motion.contentAlpha = 1 - Ease.clamp(t / 0.35)
+            motion.unroll = 1 - Ease.inCubic(t / 0.6)
+            let shrink = Ease.inCubic((t - 0.5) / 0.5)
+            motion.seedScale = 1 - 0.5 * shrink
+            motion.seedAlpha = 1 - shrink
+            motion.lift = -4 * shrink
+        }
+        return motion
     }
 
     // MARK: Drawing
@@ -589,7 +863,7 @@ private final class PillView: NSView {
         context.translateBy(x: margin + capShift(motion) + cap, y: margin + motion.lift + cap)
         context.scaleBy(x: scale, y: scale)
         context.translateBy(x: -cap, y: -cap)
-        drawMark(palette)
+        PillArt.mark(model, palette, x: markX, y: center, foldTo: center)
         context.endTransparencyLayer()
         context.restoreGState()
 
@@ -602,19 +876,6 @@ private final class PillView: NSView {
         drawContents(palette)
         context.endTransparencyLayer()
         context.restoreGState()
-    }
-
-    private func drawMark(_ palette: PillPalette) {
-        switch phase {
-        case .idle, .recording, .working:
-            drawCaptureMark(palette)
-        case .busy:
-            drawSpinner(palette)
-        case .attention, .error:
-            drawWarning(palette)
-        case .notice:
-            drawNotice(palette)
-        }
     }
 
     /// The pill body's width for this frame of the open or close motion.
@@ -649,7 +910,7 @@ private final class PillView: NSView {
     }
 
     private func drawContents(_ palette: PillPalette) {
-        switch phase {
+        switch model.phase {
         case .idle:
             break
         case .recording, .working:
@@ -662,198 +923,494 @@ private final class PillView: NSView {
     private var center: CGFloat { Self.rowHeight / 2 }
     private let markX: CGFloat = 21
 
-    /// The record dot. It breathes with your voice while recording, then
-    /// crossfades from red to ink as the sound settles (a hue blend would
-    /// pass through purple, which reads as System mode).
-    private func drawCaptureMark(_ palette: PillPalette) {
-        let live = systemMode ? NSColor.controlAccentColor : palette.voice
-        let settled = systemMode ? NSColor.controlAccentColor : palette.ink
-        let latest = levels.last ?? 0
-        var radius = 4.5 + (phase == .recording ? latest * 1.8 : 0)
-        if phase == .recording, latest > 0.05 {
-            live.withAlphaComponent(0.2 * min(1, latest * 1.5)).setFill()
-            let halo = radius + 4
-            NSBezierPath(ovalIn: NSRect(x: markX - halo, y: center - halo, width: halo * 2, height: halo * 2)).fill()
-        }
-        var x = markX
-        var stroke: CGFloat = 0
-        if let pastedAt {
-            let since = clock - pastedAt
-            if reduceMotion {
-                radius = Self.stillCheckRadius
-                stroke = 1
-            } else {
-                // Riding the fold to the middle of the round cap, then
-                // growing into a disc as the check is drawn on it.
-                x = markX + (center - markX) * Ease.inOutCubic(CGFloat(since / Self.foldDuration))
-                let grow = Ease.outBack(CGFloat((since - Self.checkDelay) / Self.checkGrow))
-                radius += (Self.checkRadius - radius) * grow
-                stroke = Ease.outCubic(CGFloat((since - Self.checkStrokeDelay) / Self.checkStroke))
-            }
-        }
-        let dot = NSRect(x: x - radius, y: center - radius, width: radius * 2, height: radius * 2)
-        live.withAlphaComponent(1 - settle).setFill()
-        NSBezierPath(ovalIn: dot).fill()
-        settled.withAlphaComponent(settle).setFill()
-        NSBezierPath(ovalIn: dot).fill()
-        if stroke > 0 {
-            drawCheck(palette, x: x, scale: radius / Self.checkRadius, progress: stroke)
-        }
-    }
-
-    /// A check cut out of the disc, drawn on from its short arm to its long one.
-    private func drawCheck(_ palette: PillPalette, x: CGFloat, scale: CGFloat, progress: CGFloat) {
-        let points = [(-4.4, 0.3), (-1.2, 3.5), (4.5, -3.2)].map {
-            NSPoint(x: x + CGFloat($0.0) * scale, y: center + CGFloat($0.1) * scale)
-        }
-        let first = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
-        let second = hypot(points[2].x - points[1].x, points[2].y - points[1].y)
-        var remaining = (first + second) * progress
-        let check = NSBezierPath()
-        check.move(to: points[0])
-        for (from, to, length) in [(points[0], points[1], first), (points[1], points[2], second)] where remaining > 0 {
-            let part = min(1, remaining / length)
-            check.line(to: NSPoint(x: from.x + (to.x - from.x) * part, y: from.y + (to.y - from.y) * part))
-            remaining -= length
-        }
-        check.lineWidth = 2.2 * scale
-        check.lineCapStyle = .round
-        check.lineJoinStyle = .round
-        palette.body.setStroke()
-        check.stroke()
-    }
-
     private func drawCapture(_ palette: PillPalette) {
-        let live = systemMode ? NSColor.controlAccentColor : palette.voice
-        let settled = systemMode ? NSColor.controlAccentColor : palette.ink
+        let (live, settled) = PillArt.captureColors(model, palette)
         let left = Self.ribbonLeft
         let right = bodyWidth - Self.timerWidth
-        drawRibbon(from: left, to: right, tint: live, settled: settled, palette: palette)
-        drawTimer(palette, right: bodyWidth - 16)
+        PillArt.ribbon(model, from: left, to: right, y: center, tint: live, settled: settled)
+        PillArt.timer(model, palette, edge: bodyWidth - 16, y: center)
 
-        if !caption.isEmpty || systemMode {
+        if !model.caption.isEmpty || model.systemMode {
             let rect = NSRect(x: left, y: Self.rowHeight - 6, width: bodyWidth - left - 18, height: 18)
             // The recording hint fades out before the pill narrows; a
             // System label stays.
-            let fade = phase == .recording && !caption.isEmpty
-                ? 1 - Ease.clamp(CGFloat((clock - hintFadeAt) / Self.hintFade)) : 1
-            captionString(palette, fade: fade, serif: true)
+            let fade = model.phase == .recording && !model.caption.isEmpty
+                ? 1 - Ease.clamp(CGFloat((model.clock - model.hintFadeAt) / PillModel.hintFade)) : 1
+            PillArt.captionString(model, palette, fade: fade, serif: true)
                 .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         }
     }
 
-    private func drawRibbon(from left: CGFloat, to right: CGFloat, tint: NSColor, settled: NSColor, palette: PillPalette) {
-        guard right > left else { return }
-        let spacing = Self.sampleSpacing
-        let maxAmplitude: CGFloat = 10
-        let drift = phase == .recording && sawSample
-            ? CGFloat(min(1, (clock - lastSampleAt) / Self.sampleInterval)) : 0
-        var points: [NSPoint] = []
-        var step = 0
-        while step < levels.count {
-            let x = right - (CGFloat(step) + drift) * spacing
-            if x < left { break }
-            let taper = min(1, (x - left) / 30) * min(1, (right - x) / 8 + 0.35)
-            let amplitude = levels[levels.count - 1 - step] * maxAmplitude * (1 - settle) * max(0, taper)
-            points.append(NSPoint(x: x, y: amplitude))
-            step += 1
-        }
-        points.reverse()
+    private func drawLabel(_ palette: PillPalette) {
+        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bodyWidth - Self.ribbonLeft - Self.labelInset, height: 18)
+        PillArt.captionString(model, palette, emphasized: true)
+            .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
+}
 
-        // The baseline: faint while you talk, the full ink line once settled.
-        let baseAlpha = 0.22 + 0.33 * settle
-        settled.withAlphaComponent(baseAlpha).setFill()
-        let lineHeight: CGFloat = 1 + settle
-        NSRect(x: left, y: center - lineHeight / 2, width: right - left, height: lineHeight).fill()
+/// The camera notch at the top of a MacBook's built-in screen, in global
+/// screen coordinates. Read from the screen every time: notches differ
+/// between models, and scaled display modes change their size in points.
+private struct NotchGeometry: Equatable {
+    let rect: NSRect
 
-        if settle < 1, points.count > 2 {
-            let ribbon = NSBezierPath()
-            ribbon.move(to: NSPoint(x: points[0].x, y: center))
-            for index in 1..<points.count {
-                let previous = NSPoint(x: points[index - 1].x, y: center - points[index - 1].y)
-                let current = NSPoint(x: points[index].x, y: center - points[index].y)
-                let mid = NSPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
-                ribbon.curve(to: mid, controlPoint1: previous, controlPoint2: previous)
-            }
-            ribbon.line(to: NSPoint(x: points[points.count - 1].x, y: center))
-            for index in stride(from: points.count - 1, to: 0, by: -1) {
-                let previous = NSPoint(x: points[index].x, y: center + points[index].y)
-                let current = NSPoint(x: points[index - 1].x, y: center + points[index - 1].y)
-                let mid = NSPoint(x: (previous.x + current.x) / 2, y: (previous.y + current.y) / 2)
-                ribbon.curve(to: mid, controlPoint1: previous, controlPoint2: previous)
-            }
-            ribbon.close()
-            tint.withAlphaComponent(0.92 * (1 - settle)).setFill()
-            ribbon.fill()
-        }
-
-        // While Sunoto works, a glint runs along the line.
-        if phase == .working, settle >= 1, pastedAt == nil, !reduceMotion {
-            let progress = CGFloat(clock.truncatingRemainder(dividingBy: Self.glintPeriod) / Self.glintPeriod)
-            let eased = progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2
-            let glintWidth: CGFloat = 64
-            let x = left - glintWidth + (right - left + glintWidth) * eased
-            NSGraphicsContext.saveGraphicsState()
-            NSRect(x: left, y: center - 1.5, width: right - left, height: 3).clip()
-            NSGradient(colors: [settled.withAlphaComponent(0), settled, settled.withAlphaComponent(0)])?
-                .draw(in: NSRect(x: x, y: center - 1.5, width: glintWidth, height: 3), angle: 0)
-            NSGraphicsContext.restoreGraphicsState()
-        }
+    /// Nil for a screen without a notch (an external display, or a Mac
+    /// without one).
+    init?(screen: NSScreen) {
+        self.init(frame: screen.frame, safeTop: screen.safeAreaInsets.top,
+                  left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
     }
 
-    private func drawTimer(_ palette: PillPalette, right: CGFloat) {
-        let seconds = Int(elapsed.rounded(.down))
-        let text = String(format: "%d:%02d", seconds / 60, seconds % 60)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .right
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium),
-            .foregroundColor: phase == .recording ? palette.secondary : palette.secondary.withAlphaComponent(0.4),
-            .paragraphStyle: paragraph,
-        ]
-        let height: CGFloat = 15
-        (text as NSString).draw(
-            in: NSRect(x: right - 40, y: center - height / 2, width: 40, height: height),
-            withAttributes: attributes
+    /// `left` and `right` are the menu bar on either side of the notch. They
+    /// are measured inwards from the screen's edges, so it does not matter
+    /// which coordinates they are given in.
+    init?(frame: NSRect, safeTop height: CGFloat, left: NSRect?, right: NSRect?) {
+        guard height > 0, let left, let right else { return nil }
+        let minX = frame.minX + left.width
+        let maxX = frame.maxX - right.width
+        guard maxX > minX else { return nil }
+        rect = NSRect(x: minX, y: frame.maxY - height, width: maxX - minX, height: height)
+    }
+}
+
+/// A value easing toward a target over a fixed time: how much of each part
+/// of the island shows. Aiming somewhere new starts from where it is.
+private struct Tween {
+    private(set) var target: CGFloat
+    private var from: CGFloat
+    private var start: CFTimeInterval = 0
+    private let duration: CFTimeInterval
+
+    init(_ value: CGFloat, duration: CFTimeInterval) {
+        target = value
+        from = value
+        self.duration = duration
+    }
+
+    func value(at now: CFTimeInterval) -> CGFloat {
+        let t = CGFloat((now - start) / duration)
+        return t >= 1 ? target : from + (target - from) * Ease.inOutCubic(t)
+    }
+
+    func isMoving(at now: CFTimeInterval) -> Bool {
+        from != target && now - start < duration
+    }
+
+    mutating func aim(_ newTarget: CGFloat, now: CFTimeInterval) {
+        guard newTarget != target else { return }
+        from = value(at: now)
+        target = newTarget
+        start = now
+    }
+
+    mutating func snap(_ value: CGFloat) {
+        target = value
+        from = value
+        start = 0
+    }
+}
+
+/// A value that springs toward a target: the island's size. Every size
+/// change uses this one spring, so the island always moves the same way.
+/// Aiming somewhere new starts from where it is.
+private struct Spring {
+    /// Seconds for one swing.
+    private static let response: CGFloat = 0.45
+    private(set) var target: CGFloat
+    private var from: CGFloat
+    private var start: CFTimeInterval = 0
+    private var damping: CGFloat = 0.82
+
+    init(_ value: CGFloat) {
+        target = value
+        from = value
+    }
+
+    func value(at now: CFTimeInterval) -> CGFloat {
+        from + (target - from) * Self.step(CGFloat(now - start), damping: damping)
+    }
+
+    func isMoving(at now: CFTimeInterval) -> Bool {
+        from != target && now - start < 0.8
+    }
+
+    /// Below 1, `damping` overshoots a little; at 1 it does not.
+    mutating func aim(_ newTarget: CGFloat, now: CFTimeInterval, damping: CGFloat, animated: Bool) {
+        guard newTarget != target else { return }
+        from = animated ? value(at: now) : newTarget
+        target = newTarget
+        start = now
+        self.damping = damping
+    }
+
+    mutating func snap(_ value: CGFloat) {
+        target = value
+        from = value
+        start = 0
+    }
+
+    /// How far a spring let go at rest has got after `x` seconds.
+    private static func step(_ x: CGFloat, damping z: CGFloat) -> CGFloat {
+        guard x > 0 else { return 0 }
+        let w = 2 * CGFloat.pi / response
+        if z >= 1 {
+            return 1 - exp(-w * x) * (1 + w * x)
+        }
+        let wd = w * sqrt(1 - z * z)
+        return 1 - exp(-z * w * x) * (cos(wd * x) + (z * w / wd) * sin(wd * x))
+    }
+}
+
+/// The pill grown out of the notch, the Mac's own "Dynamic Island". The
+/// notch grows a short pill under the camera that holds what the floating
+/// pill shows, in one row: the dot, your voice, the timer. Words get a
+/// second row under it. After a paste the row gives way to a check mark in
+/// the middle, right under the camera, and the island pulls back into the
+/// notch. Every size change is the same spring and every part only fades in
+/// place, so nothing travels. The window never moves or resizes; only the
+/// shape inside it does.
+private final class IslandView: NSView {
+    /// How far the island reaches past the notch on each side.
+    private static let side: CGFloat = 23
+    /// The row under the camera, and the row for words under that.
+    private static let rowHeight: CGFloat = 30
+    private static let wordsHeight: CGFloat = 22
+    /// Room beside and below the island for its shadow and the spring's
+    /// overshoot.
+    private static let margin: CGFloat = 24
+    /// The top corners curve outward into the screen's edge, as the notch's do.
+    private static let ear: CGFloat = 6
+    private static let compactRadius: CGFloat = 9
+    private static let expandedRadius: CGFloat = 19
+    /// In the row: the mark this far in from the left edge, the voice and
+    /// any message from `textInset`, the timer ending `timerInset` from the
+    /// right edge, after the voice's `timerRoom`.
+    private static let markInset: CGFloat = 17
+    private static let textInset: CGFloat = 31
+    private static let timerInset: CGFloat = 14
+    private static let timerRoom: CGFloat = 46
+    /// Room either side of the words in the second row.
+    private static let wordsPadding: CGFloat = 17
+    private static let fontSize: CGFloat = 12
+    private static let checkRadius: CGFloat = 10
+    private static let fadeDuration: CFTimeInterval = 0.18
+    /// Closing, the island is back in the notch by now; the last sliver then fades.
+    private static let closeFadeAt: CFTimeInterval = 0.32
+
+    /// The window for a notch: as wide as the widest island, as tall as the
+    /// notch and both rows, with the margin beside and below.
+    static func windowSize(notch: NSSize) -> NSSize {
+        NSSize(width: PillView.maxWidth + margin * 2, height: notch.height + rowHeight + wordsHeight + margin)
+    }
+
+    /// The window over a notch: flush with the top of the screen and centred
+    /// on the notch.
+    static func windowFrame(over notch: NotchGeometry) -> NSRect {
+        let size = windowSize(notch: notch.rect.size)
+        return NSRect(
+            x: notch.rect.midX - size.width / 2,
+            y: notch.rect.maxY - size.height,
+            width: size.width,
+            height: size.height
         )
     }
 
-    private func drawLabel(_ palette: PillPalette) {
-        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bodyWidth - Self.ribbonLeft - Self.labelInset, height: 18)
-        captionString(palette, emphasized: true)
-            .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    let model: PillModel
+    /// The notch this island grows out of, in points.
+    var notch = NSSize(width: 160, height: 28) {
+        didSet {
+            if notch != oldValue {
+                reset()
+            }
+        }
+    }
+    private var now: CFTimeInterval = 0
+    private var width = Spring(160)
+    private var height = Spring(28)
+    /// How much of each part shows.
+    private var capture = Tween(0, duration: IslandView.fadeDuration)
+    private var wordsShown = Tween(0, duration: IslandView.fadeDuration)
+    private var check = Tween(0, duration: IslandView.fadeDuration)
+    private var messageShown = Tween(0, duration: IslandView.fadeDuration)
+    private var busy = Tween(0, duration: IslandView.fadeDuration)
+    /// The second row's words and the row's message, kept while they fade.
+    private var words: NSAttributedString?
+    private var message: NSAttributedString?
+    private let palette = PillPalette.island
+
+    init(model: PillModel) {
+        self.model = model
+        super.init(frame: .zero)
+        // Dynamic colours (System mode's accent) resolve as on a dark menu bar.
+        appearance = NSAppearance(named: .darkAqua)
     }
 
-    private func drawSpinner(_ palette: PillPalette) {
-        let radius: CGFloat = 6.5
-        let ring = NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2))
-        ring.lineWidth = 2
-        palette.faint.setStroke()
-        ring.stroke()
-        guard !reduceMotion else { return }
-        let start = CGFloat(clock.truncatingRemainder(dividingBy: 1.1) / 1.1) * 360
-        let arc = NSBezierPath()
-        arc.appendArc(withCenter: NSPoint(x: markX, y: center), radius: radius, startAngle: start, endAngle: start + 100)
-        arc.lineWidth = 2
-        arc.lineCapStyle = .round
-        palette.secondary.setStroke()
-        arc.stroke()
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
     }
 
-    private func drawWarning(_ palette: PillPalette) {
-        let radius: CGFloat = 7.5
-        palette.amber.setFill()
-        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
-        palette.onAmber.setFill()
-        NSBezierPath(roundedRect: NSRect(x: markX - 0.9, y: center - 4.2, width: 1.8, height: 5), xRadius: 0.9, yRadius: 0.9).fill()
-        NSBezierPath(ovalIn: NSRect(x: markX - 1.05, y: center + 2.1, width: 2.1, height: 2.1)).fill()
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    /// Follow the model to `now`: aim the size and each part at what it
+    /// shows. Returns whether the island is still moving on its own.
+    @discardableResult
+    func update(now: CFTimeInterval) -> Bool {
+        self.now = now
+        var opening = false, closing = false
+        switch model.transition {
+        case .opening: opening = true
+        case .closing: closing = true
+        case nil: break
+        }
+        let phase = model.phase
+        let pasted = phase == .working && model.pastedAt != nil
+        let capturing = (phase == .recording || phase == .working) && !pasted
+        let messaging = phase == .error || phase == .attention || phase == .notice
+        let text = wordsText()
+        if let text {
+            words = text
+        }
+        if messaging {
+            message = PillArt.captionString(model, palette, emphasized: true, size: Self.fontSize + 0.5)
+        }
+        let shown = !closing
+        capture.aim(shown && capturing ? 1 : 0, now: now)
+        wordsShown.aim(shown && text != nil ? 1 : 0, now: now)
+        check.aim(shown && pasted ? 1 : 0, now: now)
+        messageShown.aim(shown && messaging ? 1 : 0, now: now)
+        busy.aim(shown && phase == .busy ? 1 : 0, now: now)
+
+        let size = closing ? notch : targetSize(words: text, pasted: pasted, messaging: messaging)
+        let damping: CGFloat = closing ? 1 : opening ? 0.72 : 0.82
+        width.aim(size.width, now: now, damping: damping, animated: !model.reduceMotion)
+        height.aim(size.height, now: now, damping: damping, animated: !model.reduceMotion)
+        needsDisplay = true
+        return isMoving
     }
 
-    private func drawNotice(_ palette: PillPalette) {
-        let radius: CGFloat = 4.5
-        let tint = systemMode ? NSColor.controlAccentColor : palette.ink
-        tint.setFill()
-        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
+    var isMoving: Bool {
+        width.isMoving(at: now) || height.isMoving(at: now)
+            || [capture, wordsShown, check, messageShown, busy].contains { $0.isMoving(at: now) }
+    }
+
+    func reset() {
+        width.snap(notch.width)
+        height.snap(notch.height)
+        capture.snap(0)
+        wordsShown.snap(0)
+        check.snap(0)
+        messageShown.snap(0)
+        busy.snap(0)
+        words = nil
+        message = nil
+        needsDisplay = true
+    }
+
+    /// The second row: the start hint, a slow "Transcribing…", the System
+    /// label, or what is loading. Nil for no second row.
+    private func wordsText() -> NSAttributedString? {
+        switch model.phase {
+        case .recording, .working:
+            guard model.pastedAt == nil, !model.caption.isEmpty || model.systemMode else { return nil }
+            // The recording hint fades out before its row folds away; a
+            // System label stays.
+            let fade = model.phase == .recording && !model.caption.isEmpty
+                ? 1 - Ease.clamp(CGFloat((model.clock - model.hintFadeAt) / PillModel.hintFade)) : 1
+            return PillArt.captionString(model, palette, fade: fade, serif: true, alignment: .center, size: Self.fontSize)
+        case .busy:
+            guard !model.caption.isEmpty else { return nil }
+            return PillArt.captionString(model, palette, serif: true, alignment: .center, size: Self.fontSize)
+        case .idle, .attention, .error, .notice:
+            return nil
+        }
+    }
+
+    /// The size the island heads for: the row under the camera, a second
+    /// row for words, the notch's own width for the check.
+    private func targetSize(words: NSAttributedString?, pasted: Bool, messaging: Bool) -> NSSize {
+        let row = notch.height + Self.rowHeight
+        if model.phase == .idle {
+            return notch
+        }
+        if pasted {
+            return NSSize(width: notch.width, height: row)
+        }
+        if messaging {
+            let wanted = message.map { Self.textInset + ceil($0.size().width) + Self.timerInset + 2 } ?? 0
+            return NSSize(width: fit(wanted), height: row)
+        }
+        guard let words else {
+            return NSSize(width: fit(0), height: row)
+        }
+        return NSSize(width: fit(ceil(words.size().width) + Self.wordsPadding * 2), height: row + Self.wordsHeight)
+    }
+
+    private func fit(_ wanted: CGFloat) -> CGFloat {
+        min(PillView.maxWidth, max(notch.width + Self.side * 2, wanted))
+    }
+
+    // MARK: Drawing
+
+    /// The whole island: it appears at the notch's size, so opening needs no
+    /// fade; closing, it fades the last sliver once back in the notch. Reduce
+    /// Motion fades it in and out at full size instead.
+    private var alpha: CGFloat {
+        switch model.transition {
+        case .opening(let since):
+            return model.reduceMotion ? Ease.clamp(CGFloat((now - since) / 0.25)) : 1
+        case .closing(let since):
+            if model.reduceMotion {
+                return 1 - Ease.clamp(CGFloat((now - since) / 0.25))
+            }
+            return 1 - Ease.inOutCubic(CGFloat((now - since - Self.closeFadeAt) / Self.fadeDuration))
+        case nil:
+            return 1
+        }
+    }
+
+    /// Opening, the parts wait a moment for the island to start growing.
+    private var contentDelay: CGFloat {
+        guard case .opening(let since) = model.transition, !model.reduceMotion else { return 1 }
+        return Ease.clamp(CGFloat((now - since - 0.08) / Self.fadeDuration))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let alpha = self.alpha
+        guard alpha > 0.001 else { return }
+        let islandWidth = width.value(at: now)
+        let islandHeight = max(notch.height - 1, height.value(at: now))
+        let rise = Ease.clamp((islandHeight - notch.height) / Self.rowHeight)
+        let radius = Self.compactRadius + (Self.expandedRadius - Self.compactRadius) * rise
+        let ear = Self.ear * Ease.clamp((islandWidth - notch.width) / 16)
+        let shape = islandPath(width: islandWidth, height: islandHeight, ear: ear, radius: radius)
+
+        context.saveGState()
+        context.setAlpha(alpha)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        // A soft shadow under the pill; none at the notch's own size.
+        if islandHeight > notch.height + 0.5 {
+            let shadow = NSShadow()
+            shadow.shadowBlurRadius = 12
+            shadow.shadowOffset = NSSize(width: 0, height: -4)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.45 * Ease.clamp((islandHeight - notch.height) / 18))
+            shadow.set()
+        }
+        palette.body.setFill()
+        shape.fill()
+        NSShadow().set()
+
+        context.saveGState()
+        shape.addClip()
+        let left = bounds.midX - islandWidth / 2, right = bounds.midX + islandWidth / 2
+        let row = notch.height + Self.rowHeight / 2
+        let delay = contentDelay
+        layer(capture.value(at: now) * delay) { drawCapture(left: left, right: right, row: row) }
+        layer(busy.value(at: now) * delay) { drawBusy(left: left, right: right, row: row) }
+        layer(messageShown.value(at: now) * delay) { drawMessage(left: left, right: right, row: row) }
+        layer(wordsShown.value(at: now) * delay) { drawWords(left: left, right: right) }
+        layer(check.value(at: now)) { drawCheck(row: row) }
+        context.restoreGState()
+
+        context.endTransparencyLayer()
+        context.restoreGState()
+    }
+
+    /// Draw one part at `alpha`, as a whole, so overlaps inside it do not show.
+    private func layer(_ alpha: CGFloat, _ draw: () -> Void) {
+        guard alpha > 0.01, let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.setAlpha(alpha)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        draw()
+        context.endTransparencyLayer()
+        context.restoreGState()
+    }
+
+    /// The island's outline: flush with the top of the screen, its top
+    /// corners curving out into the screen's edge, its bottom corners round.
+    private func islandPath(width: CGFloat, height: CGFloat, ear: CGFloat, radius: CGFloat) -> NSBezierPath {
+        let left = bounds.midX - width / 2, right = bounds.midX + width / 2
+        let r = min(radius, height / 2, width / 2)
+        // Control points for a quarter circle drawn with a cubic curve.
+        let k: CGFloat = 1 - 0.5523
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: left - ear, y: 0))
+        path.curve(to: NSPoint(x: left, y: ear),
+                   controlPoint1: NSPoint(x: left - ear / 3, y: 0), controlPoint2: NSPoint(x: left, y: ear / 3))
+        path.line(to: NSPoint(x: left, y: height - r))
+        path.curve(to: NSPoint(x: left + r, y: height),
+                   controlPoint1: NSPoint(x: left, y: height - r * k), controlPoint2: NSPoint(x: left + r * k, y: height))
+        path.line(to: NSPoint(x: right - r, y: height))
+        path.curve(to: NSPoint(x: right, y: height - r),
+                   controlPoint1: NSPoint(x: right - r * k, y: height), controlPoint2: NSPoint(x: right, y: height - r * k))
+        path.line(to: NSPoint(x: right, y: ear))
+        path.curve(to: NSPoint(x: right + ear, y: 0),
+                   controlPoint1: NSPoint(x: right, y: ear / 3), controlPoint2: NSPoint(x: right + ear / 3, y: 0))
+        path.close()
+        return path
+    }
+
+    /// The row while you dictate: the dot, your voice, the timer.
+    private func drawCapture(left: CGFloat, right: CGFloat, row: CGFloat) {
+        let (live, settled) = PillArt.captureColors(model, palette)
+        PillArt.captureMark(model, palette, x: left + Self.markInset, y: row, growsCheck: false)
+        PillArt.ribbon(model, from: left + Self.textInset, to: right - Self.timerRoom, y: row,
+                       tint: live, settled: settled, maxAmplitude: 8, taper: 10, glintWidth: 30)
+        PillArt.timer(model, palette, edge: right - Self.timerInset, y: row)
+    }
+
+    /// Loading looks like a slow wait: the ink dot and a line with a glint,
+    /// with what is loading in the row below.
+    private func drawBusy(left: CGFloat, right: CGFloat, row: CGFloat) {
+        let x = left + Self.markInset, radius: CGFloat = 4.5
+        palette.ink.setFill()
+        NSBezierPath(ovalIn: NSRect(x: x - radius, y: row - radius, width: radius * 2, height: radius * 2)).fill()
+        let lineLeft = left + Self.textInset, lineRight = right - Self.timerInset - 2
+        palette.ink.withAlphaComponent(0.55).setFill()
+        NSRect(x: lineLeft, y: row - 1, width: lineRight - lineLeft, height: 2).fill()
+        if !model.reduceMotion {
+            PillArt.glint(clock: now, from: lineLeft, to: lineRight, y: row, color: palette.ink, width: 30)
+        }
+    }
+
+    /// A message in the row: amber for something to fix, ink for a notice.
+    private func drawMessage(left: CGFloat, right: CGFloat, row: CGFloat) {
+        let x = left + Self.markInset
+        switch model.phase {
+        case .notice:
+            PillArt.notice(model, palette, x: x, y: row)
+        case .error, .attention:
+            PillArt.warning(palette, x: x, y: row)
+        default:
+            break
+        }
+        let rect = NSRect(x: left + Self.textInset, y: row - 9, width: right - Self.timerInset - left - Self.textInset, height: 18)
+        message?.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
+
+    private func drawWords(left: CGFloat, right: CGFloat) {
+        let center = notch.height + Self.rowHeight + Self.wordsHeight / 2 - 2
+        let rect = NSRect(x: left + Self.wordsPadding, y: center - 8, width: right - left - Self.wordsPadding * 2, height: 18)
+        words?.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+    }
+
+    /// After a paste: a check mark in the middle, right under the camera.
+    private func drawCheck(row: CGFloat) {
+        guard let pastedAt = model.pastedAt else { return }
+        let since = CGFloat(now - pastedAt)
+        let grow = model.reduceMotion ? 1 : Ease.outBack((since - 0.08) / 0.34)
+        let stroke = model.reduceMotion ? 1 : Ease.outCubic((since - 0.24) / 0.3)
+        PillArt.checkDisc(palette, x: bounds.midX, y: row, radius: Self.checkRadius * grow, stroke: stroke)
+    }
+}
+
+/// The island's window. AppKit may move a window that overlaps the menu
+/// bar; this one stays exactly where it is put, flush with the top edge.
+private final class IslandPanel: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
     }
 }
 
@@ -1396,7 +1953,7 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         // The pill as it will look while you talk, so setup also shows how to use it.
         let hero = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
         hero.margin = 0
-        hero.showDemo()
+        hero.model.showDemo()
         hero.translatesAutoresizingMaskIntoConstraints = false
         hero.setAccessibilityElement(true)
         hero.setAccessibilityRole(.image)
@@ -1640,8 +2197,19 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
 }
 
 private final class OverlayApp: NSObject, NSApplicationDelegate {
+    private let model = PillModel()
     private var panel = OverlayApp.makePillPanel()
-    private let pill = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
+    private lazy var pill = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight), model: model)
+    /// The island's window, made the first time the pill opens on a notch.
+    private var islandPanel: NSPanel?
+    private lazy var island = IslandView(model: model)
+    /// The notch the island is over.
+    private var islandNotch: NotchGeometry?
+    /// SUNOTO_OVERLAY_STYLE: "auto" (the default) grows the pill out of the
+    /// notch on a screen that has one; "pill" always floats it.
+    private let islandAllowed = ProcessInfo.processInfo.environment["SUNOTO_OVERLAY_STYLE"] != "pill"
+    /// The island window's frame as last logged.
+    private var loggedIslandFrame: NSRect?
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
     private var visible = false
@@ -1676,13 +2244,16 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         panel.contentView = pill
     }
 
-    private static func makePillPanel() -> NSPanel {
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
+    /// A window for the pill that never takes clicks. The island's sits
+    /// above the menu bar (level 24) and its status items (25) but below open
+    /// menus (101), so a menu still covers it; the floating pill keeps the
+    /// status items' level.
+    private static func makePillPanel(island: Bool = false) -> NSPanel {
+        let rect = NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight)
+        let style: NSWindow.StyleMask = [.borderless, .nonactivatingPanel]
+        let panel = island
+            ? IslandPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false) as NSPanel
+            : NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         // The pill draws its own shadow so it follows the open and close
@@ -1690,7 +2261,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
         panel.isReleasedWhenClosed = false
-        panel.level = .statusBar
+        panel.level = island ? NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3) : .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false
         return panel
@@ -1701,21 +2272,37 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     /// out of sight of the window being dictated into. A new window joins
     /// every desktop again.
     private func moveToFreshPanel() {
-        let stuck = panel
-        panel = OverlayApp.makePillPanel()
-        stuck.contentView = nil
-        stuck.orderOut(nil)
-        panel.contentView = pill
-        panel.setFrame(stuck.frame, display: false)
-        // The old window may have been mid-resize: head for the target again.
-        frameTarget = nil
-        panel.alphaValue = 1
-        panel.orderFrontRegardless()
+        if model.surface == .island, let stuck = islandPanel {
+            let fresh = OverlayApp.makePillPanel(island: true)
+            stuck.contentView = nil
+            stuck.orderOut(nil)
+            fresh.contentView = island
+            fresh.setFrame(stuck.frame, display: false)
+            islandPanel = fresh
+            fresh.alphaValue = 1
+            fresh.orderFrontRegardless()
+        } else {
+            let stuck = panel
+            panel = OverlayApp.makePillPanel()
+            stuck.contentView = nil
+            stuck.orderOut(nil)
+            panel.contentView = pill
+            panel.setFrame(stuck.frame, display: false)
+            // The old window may have been mid-resize: head for the target again.
+            frameTarget = nil
+            panel.alphaValue = 1
+            panel.orderFrontRegardless()
+        }
         FileHandle.standardError.write(Data("[overlay] pill was on another desktop; moved it to a new window\n".utf8))
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hide(animated: false)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.screensChanged()
+        }
         emit(["type": "ready", "backend": "overlay"])
         DispatchQueue.global(qos: .utility).async { self.pumpStdin() }
     }
@@ -1744,27 +2331,27 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         let now = CACurrentMediaTime()
         switch message["type"] as? String {
         case "show":
-            pill.beginIfIdle(now: now)
+            model.beginIfIdle(now: now)
             show()
         case "hide":
             hide(animated: true)
         case "pasted":
-            pill.markPasted(now: now)
+            model.markPasted(now: now)
         case "recording":
             let peak = number(message["peak"])
             let rms = number(message["rms"])
             let level = min(1.0, max(0.0, CGFloat(peak * 8.0), CGFloat(rms * 35.0)))
-            pill.pushLevel(level, elapsed: number(message["elapsed_s"]), now: now)
+            model.pushLevel(level, elapsed: number(message["elapsed_s"]), now: now)
         case "status":
-            pill.setStatus((message["text"] as? String) ?? "", error: message["error"] as? Bool ?? false, now: now)
+            model.setStatus((message["text"] as? String) ?? "", error: message["error"] as? Bool ?? false, now: now)
         case "state":
             let name = (message["name"] as? String) ?? ""
             if name == "ready" {
-                if pill.phase == .busy || pill.phase == .attention {
+                if model.phase == .busy || model.phase == .attention {
                     hide(animated: true)
                 }
             } else {
-                pill.setHealth(name: name, detail: (message["detail"] as? String) ?? "")
+                model.setHealth(name: name, detail: (message["detail"] as? String) ?? "")
                 show()
             }
         case "onboarding":
@@ -1801,8 +2388,15 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         default:
             break
         }
+        if model.surface == .island {
+            island.update(now: now)
+        } else {
+            pill.needsDisplay = true
+        }
         if visible {
-            fitToContent(animated: true)
+            if model.surface == .floating {
+                fitToContent(animated: true)
+            }
             runClockIfNeeded()
         }
     }
@@ -1822,7 +2416,8 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     // MARK: Display clock
 
     private func runClockIfNeeded() {
-        guard panel.isVisible, pill.isAnimating, displayClock == nil else { return }
+        let moving = model.isAnimating || (model.surface == .island && island.isMoving)
+        guard activePanel.isVisible, moving, displayClock == nil else { return }
         let clock = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.advance()
         }
@@ -1831,13 +2426,19 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     private func advance() {
-        let keepRunning = pill.tick(now: CACurrentMediaTime())
-        if pill.closeFinished {
+        let now = CACurrentMediaTime()
+        var keepRunning = model.tick(now: now)
+        if model.closeFinished {
             finishHiding()
             return
         }
-        if visible {
-            fitToContent(animated: true)
+        if model.surface == .island {
+            keepRunning = island.update(now: now) || keepRunning
+        } else {
+            pill.needsDisplay = true
+            if visible {
+                fitToContent(animated: true)
+            }
         }
         if !keepRunning {
             displayClock?.invalidate()
@@ -1846,6 +2447,68 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 
     // MARK: Window
+
+    /// The window showing the pill this session.
+    private var activePanel: NSPanel {
+        model.surface == .island ? islandPanel ?? panel : panel
+    }
+
+    /// Where the pill opens this time: out of the notch when the screen it
+    /// opens on has one, otherwise floating. Chosen only as it opens from
+    /// hidden, so a dictation never jumps between the two.
+    private func chooseSurface() {
+        if islandAllowed, let screen = NSScreen.main, let notch = NotchGeometry(screen: screen) {
+            model.surface = .island
+            placeIsland(notch)
+        } else {
+            model.surface = .floating
+        }
+    }
+
+    /// Put the island's window over the notch: flush with the top of the
+    /// screen and centred on the notch. It does not resize after this; the
+    /// island moves inside it, and the clear rest of it takes no clicks.
+    private func placeIsland(_ notch: NotchGeometry) {
+        islandNotch = notch
+        let frame = IslandView.windowFrame(over: notch)
+        island.notch = notch.rect.size
+        let window: NSPanel
+        if let existing = islandPanel {
+            window = existing
+        } else {
+            window = OverlayApp.makePillPanel(island: true)
+            island.autoresizingMask = [.width, .height]
+            window.contentView = island
+            islandPanel = window
+        }
+        if window.frame != frame {
+            window.setFrame(frame, display: false)
+        }
+    }
+
+    /// Log where the island's window really is when that changes, so a live
+    /// run shows it flush with the top and centred on the notch, and so a
+    /// macOS that starts moving windows over the menu bar is caught.
+    private func logIslandFrame() {
+        guard let window = islandPanel, let notch = islandNotch, window.frame != loggedIslandFrame else { return }
+        loggedIslandFrame = window.frame
+        let frame = window.frame
+        let line = String(
+            format: "[overlay] island window x %.1f–%.1f, top %.1f; notch x %.1f–%.1f, top %.1f, %.1f pt tall\n",
+            frame.minX, frame.maxX, frame.maxY, notch.rect.minX, notch.rect.maxX, notch.rect.maxY, notch.rect.height
+        )
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
+    /// A display came or went, or changed resolution. An island on screen
+    /// follows its notch if the screen still has one; anything else waits
+    /// for the next open to choose again.
+    private func screensChanged() {
+        guard model.surface == .island, islandPanel?.isVisible == true,
+              let screen = NSScreen.main, let notch = NotchGeometry(screen: screen) else { return }
+        placeIsland(notch)
+        logIslandFrame()
+    }
 
     /// The window includes the pill's transparent margin; the pill body
     /// itself sits 14 pt below the menu bar.
@@ -1889,15 +2552,23 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         let wasVisible = visible
         visible = true
         if !wasVisible {
+            if !activePanel.isVisible {
+                chooseSurface()
+            }
             // Fresh, or caught mid-close: open from wherever the pill is.
-            fitToContent(animated: panel.isVisible)
-            panel.alphaValue = 1
-            panel.orderFrontRegardless()
-            if !panel.isOnActiveSpace {
+            if model.surface == .floating {
+                fitToContent(animated: panel.isVisible)
+            }
+            activePanel.alphaValue = 1
+            activePanel.orderFrontRegardless()
+            if !activePanel.isOnActiveSpace {
                 moveToFreshPanel()
             }
-            pill.beginOpening(now: CACurrentMediaTime())
-        } else {
+            if model.surface == .island {
+                logIslandFrame()
+            }
+            model.beginOpening(now: CACurrentMediaTime())
+        } else if model.surface == .floating {
             fitToContent(animated: true)
         }
         runClockIfNeeded()
@@ -1906,7 +2577,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     private func hide(animated: Bool) {
         deferredHide?.cancel()
         deferredHide = nil
-        let hold = animated && visible ? pill.closeDelay(now: CACurrentMediaTime()) : 0
+        let hold = animated && visible ? model.closeDelay(now: CACurrentMediaTime()) : 0
         if hold > 0 {
             let close = DispatchWorkItem { [weak self] in
                 self?.deferredHide = nil
@@ -1917,11 +2588,11 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             return
         }
         visible = false
-        guard animated, panel.isVisible else {
+        guard animated, activePanel.isVisible else {
             finishHiding()
             return
         }
-        pill.beginClosing(now: CACurrentMediaTime())
+        model.beginClosing(now: CACurrentMediaTime())
         runClockIfNeeded()
     }
 
@@ -1929,9 +2600,15 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         displayClock?.invalidate()
         displayClock = nil
         panel.orderOut(nil)
-        pill.reset()
+        islandPanel?.orderOut(nil)
+        model.reset()
+        island.reset()
     }
 }
+
+// MARK: App launch
+// tools/ui/render-overlay-frames.sh cuts the file here and appends its own
+// main, so keep everything above this line free of top-level side effects.
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

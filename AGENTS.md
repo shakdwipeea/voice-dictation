@@ -75,6 +75,14 @@ Key invariants:
   - `target/debug/sunoto-daemon check` — X11/XTEST/shortcut/sidecar protocol
   - `scripts/macos-port/verify-phase.sh <N>` — objective macOS phase checks
   - `make ui-demo` — drive the overlay pill by hand
+  - `tools/ui/render-overlay-frames.sh OUT [GROUP...]` — render the macOS
+    floating pill and notch island to PNG frames and contact sheets, with a
+    synthetic clock and no permissions (groups `pill-*`, `island-*`,
+    `geometry`)
+  - `python3 tools/ui/macos_overlay_demo.py [--style pill] [--screenshots DIR]`
+    — play a dictation on the real macOS overlay (nothing is typed) and
+    screenshot the top of the screen; needs Screen Recording for the terminal
+    and an awake display
   - `journalctl --user -u voice-dictation.service -n 80 --no-pager`
 - After daemon, sidecar, overlay, or unit changes, restart the user service
   before judging behavior: `systemctl --user restart voice-dictation.service`
@@ -269,6 +277,17 @@ muted; check System Settings → Sound → Input.
   a start hint that fades once you start talking (3 s at most). After the
   second tap it shows words only if the wait passes 1.5 s, and a check mark
   confirms the paste.
+- On a Mac with a notch the pill is an island grown out of the notch
+  (`IslandView`, `overlay_style: "auto"`, the default; design A of
+  `docs/notch-island-designs.html`): the notch grows a short pill under the
+  camera with the dot, the sound and the timer in one row, words in a second
+  row, and after a paste a check in the middle under the camera before it
+  pulls back in. Loading shows the ink dot and a glinting line with the words
+  below. Every size change is one spring; parts only fade in place.
+  Elsewhere, or with `overlay_style: "pill"`, it floats under the menu bar
+  (`PillView`). Both draw from one `PillModel`; the surface is chosen only
+  when the pill opens from hidden, never mid-dictation. The island's window
+  is fixed-size at level `.mainMenu + 3` and never resizes.
 
 ## Audio debugging
 

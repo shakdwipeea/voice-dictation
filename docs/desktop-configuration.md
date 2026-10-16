@@ -286,6 +286,28 @@ Typical macOS real-ASR config:
 }
 ```
 
+### The pill and the notch
+
+On a MacBook with a camera notch the pill grows out of the notch, the way
+the iPhone's Dynamic Island grows out of its camera. While you dictate, the
+black notch grows a short pill under the camera with the record dot, your
+voice and the timer in one row. Words (the start hint, a slow
+"Transcribing…", what is loading) get a second row under it; a message or an
+error sits in the row itself. After a paste a check mark appears in the
+middle, right under the camera, and the island pulls back into the notch.
+Nothing is drawn beside or under the camera, and the island is black in
+light and dark mode alike.
+
+On a screen without a notch (an external display as the main screen, a
+closed lid, a Mac without a notch) the pill floats under the menu bar as
+before. Sunoto picks one as the pill opens and keeps it for that dictation,
+so it never jumps between the two mid-way.
+
+`"overlay_style": "pill"` always floats the pill, for example if you run
+another notch app (NotchNook, Boring Notch, Alcove) or prefer the floating
+pill. The default is `"auto"`. Restart Sunoto after changing it. Linux
+ignores the setting.
+
 ### Shortcut on macOS
 
 The default is **Right Option** on its own: one key under the right thumb that

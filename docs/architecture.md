@@ -246,7 +246,7 @@ Step 6 is the one that actually kills the recurring macOS bugs.
 | `crates/sunoto-system` | ~4,400 | Typed intents, deterministic router, policy, capability contracts, dispatcher, bounded runner, URL and filesystem target rules. 59 tests + routing corpus | serde, serde_json, url |
 | `services/asr/*.py` | ~2,100 | Five ASR backends behind one `SidecarServer` | NeMo/torch or parakeet-mlx |
 | `services/polish/*.py` | ~1,700 | LLM polish sidecar and prompt/parsing module | llama-cpp-python |
-| `services/macos/sunoto-overlay.swift` | 572 | AppKit pill + System palette, built with `swiftc` | none |
+| `services/macos/sunoto-overlay.swift` | ~2,500 | AppKit pill (floating, or an island out of the notch) + System palette + onboarding, built with `swiftc` | none |
 | `src/voice_dictation/*.py` | ~700 | GTK4 overlay, layer-shell on Wayland, override-redirect on X11 | PyGObject, python-xlib |
 
 ### Threads in the daemon
@@ -302,6 +302,7 @@ File: `~/Library/Application Support/sunoto/config.json` on macOS,
 | `microphone` | `auto` | re-checks default source every 1 s and follows it |
 | `allow_enter_and_tab` | false | otherwise both become space |
 | `overlay_enabled` / `overlay_backend` | true / macOS `macos`, else `auto` | `auto`, `x11`, `wayland`, `macos`, `mock` |
+| `overlay_style` | `auto` | macOS: `auto` grows the pill out of the notch where there is one; `pill` always floats it |
 | `polish_enabled` | true | deterministic pipeline |
 | `llm_polish_enabled` | false | off since 2026-10-15; `setup --with-llm` turns it on |
 | `llm_polish_model` | `phi4_mini` | Q5_K_M GGUF under `models/llm-polish-hf/` |

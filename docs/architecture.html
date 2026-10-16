@@ -471,7 +471,7 @@
       <tr><td><code>sunoto-system</code></td><td class="num">~4,400</td><td>Typed intents, router, policy, capability contracts, dispatcher, bounded runner, URL and filesystem rules. 59 tests + routing corpus</td><td>serde, serde_json, url</td></tr>
       <tr><td><code>services/asr/*.py</code></td><td class="num">~2,100</td><td>Five ASR backends behind one <code>SidecarServer</code></td><td>NeMo/torch or parakeet-mlx</td></tr>
       <tr><td><code>services/polish/*.py</code></td><td class="num">~1,700</td><td>LLM polish sidecar and prompt/parsing module</td><td>llama-cpp-python</td></tr>
-      <tr><td><code>sunoto-overlay.swift</code></td><td class="num">572</td><td>AppKit pill + System palette, built with <code>swiftc</code></td><td>none</td></tr>
+      <tr><td><code>sunoto-overlay.swift</code></td><td class="num">~2,500</td><td>AppKit pill (floating, or an island out of the notch) + System palette + onboarding, built with <code>swiftc</code></td><td>none</td></tr>
       <tr><td><code>src/voice_dictation/*.py</code></td><td class="num">~700</td><td>GTK4 overlay, layer-shell on Wayland, override-redirect on X11</td><td>PyGObject, python-xlib</td></tr>
     </tbody>
   </table>
@@ -522,6 +522,7 @@
       <tr><td><code>microphone</code></td><td><code>auto</code></td><td>re-checks default source every 1 s and follows it</td></tr>
       <tr><td><code>allow_enter_and_tab</code></td><td>false</td><td>otherwise both become space</td></tr>
       <tr><td><code>overlay_backend</code></td><td>macOS <code>macos</code>, else <code>auto</code></td><td><code>auto</code>, <code>x11</code>, <code>wayland</code>, <code>macos</code>, <code>mock</code></td></tr>
+      <tr><td><code>overlay_style</code></td><td><code>auto</code></td><td>macOS: <code>auto</code> grows the pill out of the notch where there is one; <code>pill</code> always floats it</td></tr>
       <tr><td><code>polish_enabled</code></td><td>true</td><td>deterministic pipeline</td></tr>
       <tr><td><code>llm_polish_enabled</code></td><td>false</td><td>off since 2026-10-15; <code>setup --with-llm</code> turns it on</td></tr>
       <tr><td><code>llm_polish_model</code></td><td><code>phi4_mini</code></td><td>Q5_K_M GGUF under <code>models/llm-polish-hf/</code></td></tr>

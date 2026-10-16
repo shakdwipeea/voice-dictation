@@ -178,6 +178,10 @@ pub struct Settings {
     pub overlay_enabled: bool,
     /// "auto", "x11", "wayland", or "macos" for the overlay sidecar backend.
     pub overlay_backend: String,
+    /// macOS: "auto" grows the pill out of the camera notch on a screen that
+    /// has one and floats it under the menu bar elsewhere; "pill" always
+    /// floats it (for people who run another notch app). Linux ignores it.
+    pub overlay_style: String,
     /// false = raw transcription, true = deterministic cleanup pipeline.
     pub polish_enabled: bool,
     /// Optional local LLM cleanup after deterministic polish. Off by default:
@@ -286,6 +290,7 @@ impl Default for Settings {
             clipboard_restore: true,
             overlay_enabled: true,
             overlay_backend: default_overlay_backend().to_string(),
+            overlay_style: "auto".to_string(),
             polish_enabled: true,
             llm_polish_enabled: false,
             llm_polish_python: None,
@@ -594,6 +599,12 @@ impl Settings {
                 "unsupported overlay_backend {other:?}; use auto, x11, wayland, macos, or mock"
             )),
         }?;
+        match self.overlay_style.as_str() {
+            "auto" | "pill" => Ok(()),
+            other => Err(format!(
+                "unsupported overlay_style {other:?}; use auto or pill"
+            )),
+        }?;
         if self.llm_polish_enabled && self.llm_polish_timeout_ms == 0 {
             return Err("llm_polish_timeout_ms must be greater than zero".to_string());
         }
@@ -658,6 +669,13 @@ impl Settings {
         let src = repo_root().join("src");
         if cfg!(target_os = "macos") && self.overlay_backend == "macos" {
             let root = repo_root();
+            let envs = vec![
+                ("SUNOTO_OVERLAY_BACKEND".to_string(), "macos".to_string()),
+                (
+                    "SUNOTO_OVERLAY_STYLE".to_string(),
+                    self.overlay_style.clone(),
+                ),
+            ];
             // Inside Sunoto.app the overlay sits next to the daemon; a
             // development run finds it in target/release.
             let sibling = std::env::current_exe()
@@ -666,11 +684,7 @@ impl Settings {
                 .filter(|path| path.is_file());
             let binary = sibling.unwrap_or_else(|| root.join("target/release/sunoto-overlay"));
             if binary.is_file() {
-                return (
-                    binary.to_string_lossy().into_owned(),
-                    vec![],
-                    vec![("SUNOTO_OVERLAY_BACKEND".to_string(), "macos".to_string())],
-                );
+                return (binary.to_string_lossy().into_owned(), vec![], envs);
             }
             return (
                 "swift".to_string(),
@@ -679,7 +693,7 @@ impl Settings {
                         .to_string_lossy()
                         .into_owned(),
                 ],
-                vec![("SUNOTO_OVERLAY_BACKEND".to_string(), "macos".to_string())],
+                envs,
             );
         }
         let mut envs = vec![
@@ -1520,6 +1534,46 @@ mod tests {
             ..Settings::default()
         };
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn overlay_style_defaults_to_the_notch_and_accepts_only_auto_or_pill() {
+        // Config files written before the setting existed get the island.
+        let old: Settings = serde_json::from_str(r#"{"overlay_backend": "macos"}"#).unwrap();
+        assert_eq!(old.overlay_style, "auto");
+        assert!(old.validate().is_ok());
+
+        let pill = Settings {
+            overlay_style: "pill".to_string(),
+            ..Settings::default()
+        };
+        assert!(pill.validate().is_ok());
+
+        let island = Settings {
+            overlay_style: "island".to_string(),
+            ..Settings::default()
+        };
+        let error = island.validate().unwrap_err();
+        assert!(error.contains("overlay_style"), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_overlay_gets_the_style_in_its_environment() {
+        let settings = Settings {
+            overlay_backend: "macos".to_string(),
+            overlay_style: "pill".to_string(),
+            ..Settings::default()
+        };
+        let (_program, _args, envs) = settings.overlay_command();
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "SUNOTO_OVERLAY_STYLE" && value == "pill")
+        );
+        assert!(
+            envs.iter()
+                .any(|(key, value)| key == "SUNOTO_OVERLAY_BACKEND" && value == "macos")
+        );
     }
 
     #[test]
