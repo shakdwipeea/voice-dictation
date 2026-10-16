@@ -29,13 +29,11 @@ above.
 The microphone is on only while you dictate, and a recording stops on its
 own after 5 minutes.
 
-After a paste, a small chip under the pill offers two buttons for a few
-seconds:
-
-- **Improve** fixes spelling and grammar with a small model on your Mac,
-  shows you the result, and **Replace** swaps it in.
-- **Fix** lets you type what you actually said. It is saved in your
-  dictation history as a lesson, and it is shown only when history is on.
+Two optional buttons after a paste, **Improve** (fix spelling and grammar
+with a small model on your Mac) and **Fix** (type what you actually said,
+saved in your history), are off by default. `"improve_enabled": true` or
+`"fix_enabled": true` turns them on; see
+[desktop configuration](docs/desktop-configuration.md).
 
 ## Manage
 

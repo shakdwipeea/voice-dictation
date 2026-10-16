@@ -247,8 +247,14 @@ pub struct Settings {
     /// After a paste, offer an Improve button that fixes spelling and
     /// grammar with a small model and replaces the text in place after a
     /// preview. macOS only (the model runs on MLX). The model, about 240 MB,
-    /// downloads from Hugging Face the first time it is used.
+    /// downloads from Hugging Face the first time it is used. Off by
+    /// default: transcripts are already good, so the button is kept but
+    /// not shown.
     pub improve_enabled: bool,
+    /// After a paste, offer a Fix button to type what the dictation should
+    /// have said, kept as a lesson in the history (needs history_enabled).
+    /// Off by default, like Improve.
+    pub fix_enabled: bool,
     /// Python for the grammar helper. Default: the speech engine's Python,
     /// which already has MLX.
     pub improve_python: Option<String>,
@@ -312,7 +318,8 @@ impl Default for Settings {
             history_enabled: false,
             history_retention_days: 90,
             history_exclude_apps: crate::history::default_exclude_apps(),
-            improve_enabled: cfg!(target_os = "macos"),
+            improve_enabled: false,
+            fix_enabled: false,
             improve_python: None,
             improve_model_dir: None,
             llm_polish_stream_insert: false,
@@ -949,7 +956,9 @@ mod tests {
     #[test]
     fn improve_runs_the_grammar_helper_on_the_speech_python() {
         let settings = Settings::default();
-        assert_eq!(settings.improve_enabled, cfg!(target_os = "macos"));
+        // Both pill buttons are kept in the code but off unless asked for.
+        assert!(!settings.improve_enabled);
+        assert!(!settings.fix_enabled);
         let (_, args) = settings.improve_command();
         assert_eq!(args[0], "-B");
         assert!(args[1].ends_with("services/improve/grammar_sidecar.py"));

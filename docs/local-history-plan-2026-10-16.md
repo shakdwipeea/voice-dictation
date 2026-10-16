@@ -12,6 +12,13 @@ works on every device; Apple's model is optional.
   `services/improve/grammar_sidecar.py` and the overlay's
   `ActionsController`. Improve and Replace are tested live; the Fix click is
   not yet. "As built" notes are in §6.
+  - **Off by default since 2026-10-16** (owner: transcripts are already good
+    enough). The code stays; `improve_enabled` and `fix_enabled` turn the
+    buttons back on.
+  - A started redesign is paused in `git stash` as "WIP (paused): review
+    card, Option-I, terminal erase-and-retype for Improve". It replaces the
+    two buttons with one editable review card, opened by Option-I, and makes
+    Replace work in terminals by erase-and-retype.
 - **Steps 4–5:** not started.
 - **D4** (`log_transcripts` off) is still pending.
 **Scope:** the daemon (`apps/daemon`), macOS first. Linux gets the same text

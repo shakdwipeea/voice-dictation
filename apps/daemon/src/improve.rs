@@ -155,7 +155,7 @@ impl PillActions {
             session_id,
             text,
             Self::improve_available(settings),
-            history.can_note(session_id),
+            settings.fix_enabled && history.can_note(session_id),
         );
     }
 
@@ -175,10 +175,18 @@ impl PillActions {
     pub(crate) fn requested(&mut self, session_id: u64, settings: &Settings, ui: &UiFront) {
         if !Self::improve_available(settings) {
             ui.improve_message(session_id, "Improve is turned off");
+            self.answer_control(
+                session_id,
+                json!({"ok": false, "error": "Improve is turned off (improve_enabled in the config)"}),
+            );
             return;
         }
         let Some(text) = self.last(session_id).map(|last| last.text.clone()) else {
             ui.improve_message(session_id, "Nothing to improve");
+            self.answer_control(
+                session_id,
+                json!({"ok": false, "error": "nothing to improve"}),
+            );
             return;
         };
         logging::info(&format!("session {session_id}: improve requested"));

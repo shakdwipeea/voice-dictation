@@ -76,18 +76,21 @@ Dictation history (all optional, off by default):
   and deletes entries. `sunoto-daemon history status` shows the folder and
   the counts.
 
-Improve and Fix (macOS):
+Improve and Fix (macOS, both off by default):
 
 ```json
 {
-  "improve_enabled": true,
+  "improve_enabled": false,
+  "fix_enabled": false,
   "improve_python": null,
   "improve_model_dir": null
 }
 ```
 
-After a paste, a small chip under the pill offers two buttons for about
-6 seconds, or longer while the pointer is on it:
+Transcripts are already good, so these buttons are kept in the code but
+not shown. Turn either on to get it back. With one of them on, after a
+paste a small chip under the pill offers the buttons for about 6 seconds,
+or longer while the pointer is on it:
 
 - **Improve** fixes spelling and grammar with a small model,
   `Unbabel/gec-t5_small`, run on MLX. It shows the result with the changed
@@ -99,12 +102,13 @@ After a paste, a small chip under the pill offers two buttons for about
     names, or that rewrite more than 40% of the words, are refused.
   - Word-list terms (`polish.dictionary`) keep their spelling.
 - **Fix** opens a box to type what the dictation should have said. It is
-  saved as a note in the history and does not change the app's text. It is
-  shown only when `history_enabled` is on.
+  saved as a note in the history and does not change the app's text. It
+  needs both `fix_enabled` and `history_enabled`.
 
 Settings:
 
-- `improve_enabled`: on by default on macOS.
+- `improve_enabled`: off by default.
+- `fix_enabled`: off by default.
 - `improve_python`: the Python for the grammar helper. It defaults to the
   speech engine's, which has MLX. It also needs the `tokenizers` package.
 - `improve_model_dir`: a local folder with `config.json`, `tokenizer.json`

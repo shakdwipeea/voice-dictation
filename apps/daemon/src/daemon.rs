@@ -1727,6 +1727,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     "polish": polish,
                     "history": if history.is_enabled() { "on" } else { "off" },
                     "improve": if settings.improve_enabled && cfg!(target_os = "macos") { "on" } else { "off" },
+                    "fix": if settings.fix_enabled && history.is_enabled() { "on" } else { "off" },
                     "overlay": if ui.overlay_active() { "ready" } else if ui.overlay.is_some() { "starting" } else { "native" },
                     "session": match machine.state() {
                         SessionState::Idle => "idle",

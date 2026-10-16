@@ -1428,6 +1428,9 @@ pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
     if status.get("improve").is_some() {
         println!("improve:       {}", field("improve"));
     }
+    if status.get("fix").is_some() {
+        println!("fix:           {}", field("fix"));
+    }
     println!("overlay:       {}", field("overlay"));
     println!("session:       {}", field("session"));
     if status.get("updates").is_some() {
