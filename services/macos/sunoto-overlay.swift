@@ -50,6 +50,10 @@ private enum Ease {
     static func clamp(_ t: CGFloat) -> CGFloat { max(0, min(1, t)) }
     static func outCubic(_ t: CGFloat) -> CGFloat { 1 - pow(1 - clamp(t), 3) }
     static func inCubic(_ t: CGFloat) -> CGFloat { pow(clamp(t), 3) }
+    static func inOutCubic(_ t: CGFloat) -> CGFloat {
+        let t = clamp(t)
+        return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
+    }
     /// Overshoots by a few percent, then settles: a gentle spring.
     static func outBack(_ t: CGFloat) -> CGFloat {
         let t = clamp(t), c1: CGFloat = 1.2, c3 = c1 + 1
@@ -59,7 +63,9 @@ private enum Ease {
 
 /// How the pill enters and leaves. The record dot appears first and the
 /// pill unrolls out of it to the right; closing rolls it back into the dot,
-/// which then shrinks away. With Reduce Motion both are a plain fade.
+/// which then shrinks away. After a paste the pill instead folds in around
+/// its middle, so the check mark lands in the centre. With Reduce Motion
+/// all of it is a plain fade.
 private struct PillMotion {
     /// Scale and opacity of the round cap that holds the dot.
     var seedScale: CGFloat = 1
@@ -69,6 +75,9 @@ private struct PillMotion {
     var contentAlpha: CGFloat = 1
     /// Vertical offset; negative is up.
     var lift: CGFloat = 0
+    /// Where the round cap sits as the pill rolls up: 0 at the left end,
+    /// 0.5 in the middle.
+    var anchor: CGFloat = 0
 }
 
 private enum PillPhase {
@@ -95,6 +104,8 @@ private final class PillView: NSView {
     static let captureWidth: CGFloat = 232
     static let maxWidth: CGFloat = 440
     private static let ribbonLeft: CGFloat = 38
+    /// Room after a message, matching the room before its icon.
+    private static let labelInset: CGFloat = 14
     private static let timerWidth: CGFloat = 54
     private static let sampleSpacing: CGFloat = 3
     private static let historyLength = 160
@@ -124,9 +135,21 @@ private final class PillView: NSView {
     /// After the second tap the pill shows no words unless the wait is
     /// longer than this.
     private static let slowWorkDelay: CFTimeInterval = 1.5
-    /// The check mark grows in, then holds this long before the pill closes.
-    private static let checkPop: CFTimeInterval = 0.18
-    private static let checkHold: CFTimeInterval = 0.45
+    /// After a paste the pill folds in around its middle, carrying the dot
+    /// there. Near the end of the fold the dot grows into a disc and a check
+    /// is drawn on it; the pill closes once the check has been seen.
+    private static let foldDuration: CFTimeInterval = 0.42
+    private static let checkDelay: CFTimeInterval = 0.3
+    private static let checkGrow: CFTimeInterval = 0.34
+    private static let checkStroke: CFTimeInterval = 0.3
+    private static let checkStrokeDelay: CFTimeInterval = 0.42
+    private static let checkRadius: CGFloat = 10
+    private static let confirmDuration: CFTimeInterval = 1.2
+    /// The folded check leaves a little slower than the pill rolls up.
+    private static let foldedCloseDuration: CFTimeInterval = 0.38
+    /// With Reduce Motion the check simply appears in the dot.
+    private static let stillCheckRadius: CGFloat = 7.5
+    private static let stillCheckHold: CFTimeInterval = 0.45
 
     private(set) var phase: PillPhase = .idle
     private(set) var caption = ""
@@ -144,7 +167,7 @@ private final class PillView: NSView {
     private var workingSince: CFTimeInterval = 0
     /// "Transcribing…" or "Polishing…", held back until the wait is long.
     private var pendingCaption = ""
-    /// When the text was pasted: the dot turns into a check mark.
+    /// When the text was pasted: the pill folds in and shows a check mark.
     private var pastedAt: CFTimeInterval?
     var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     /// Transparent room around the pill for its shadow and the spring's
@@ -180,9 +203,10 @@ private final class PillView: NSView {
 
     // MARK: Input from the daemon
 
-    /// A new capture is about to start (or the pill was just shown).
+    /// A new capture is about to start (or the pill was just shown). A pill
+    /// still confirming the last paste starts over too.
     func beginIfIdle(now: CFTimeInterval) {
-        guard phase == .idle else { return }
+        guard phase == .idle || pastedAt != nil else { return }
         startCapture(now: now)
     }
 
@@ -248,7 +272,7 @@ private final class PillView: NSView {
         needsDisplay = true
     }
 
-    /// The text landed at the cursor. Shown as a check mark in the dot.
+    /// The text landed at the cursor: fold the pill in to a check mark.
     func markPasted(now: CFTimeInterval) {
         guard phase == .recording || phase == .working else { return }
         enterWorking(now: now)
@@ -265,8 +289,14 @@ private final class PillView: NSView {
     /// How long a close should wait so the check mark is seen.
     func closeDelay(now: CFTimeInterval) -> CFTimeInterval {
         guard let pastedAt, phase == .working else { return 0 }
-        return max(0, pastedAt + Self.checkHold - now)
+        let hold = reduceMotion ? Self.stillCheckHold : Self.confirmDuration
+        return max(0, pastedAt + hold - now)
     }
+
+    /// The pill is folded in (or folding) around a check mark.
+    private var folded: Bool { pastedAt != nil && phase == .working && !reduceMotion }
+
+    private var closeDuration: CFTimeInterval { folded ? Self.foldedCloseDuration : Self.closeDuration }
 
     func setHealth(name: String, detail: String) {
         let selfResolving = ["loading_asr", "warming_polish", "mic_starting"]
@@ -285,7 +315,7 @@ private final class PillView: NSView {
         case .opening(let since):
             return Ease.clamp(CGFloat((now - since) / Self.openDuration))
         case .closing(let since):
-            return 1 - Ease.clamp(CGFloat((now - since) / Self.closeDuration))
+            return 1 - Ease.clamp(CGFloat((now - since) / closeDuration))
         case nil:
             return closeFinished ? 0 : 1
         }
@@ -301,7 +331,7 @@ private final class PillView: NSView {
 
     func beginClosing(now: CFTimeInterval) {
         let shown = presence(at: now)
-        transition = .closing(since: now - CFTimeInterval(1 - shown) * Self.closeDuration)
+        transition = .closing(since: now - CFTimeInterval(1 - shown) * closeDuration)
         clock = now
         needsDisplay = true
     }
@@ -314,6 +344,12 @@ private final class PillView: NSView {
 
     private var motion: PillMotion {
         var motion = PillMotion()
+        if folded, let pastedAt {
+            let t = CGFloat((clock - pastedAt) / Self.foldDuration)
+            motion.anchor = 0.5
+            motion.unroll = 1 - Ease.inOutCubic(t)
+            motion.contentAlpha = 1 - Ease.clamp(t / 0.45)
+        }
         switch transition {
         case nil:
             return motion
@@ -329,9 +365,17 @@ private final class PillView: NSView {
             motion.unroll = Ease.outBack((t - 0.18) / 0.82)
             motion.contentAlpha = Ease.outCubic((t - 0.25) / 0.5)
         case .closing(let since):
-            let t = CGFloat((clock - since) / Self.closeDuration)
+            let t = CGFloat((clock - since) / closeDuration)
             if reduceMotion {
                 motion.seedAlpha = 1 - Ease.clamp(t)
+                return motion
+            }
+            if folded {
+                // Only the check is left: it shrinks away where it is.
+                let shrink = Ease.inOutCubic(t)
+                motion.seedScale = 1 - 0.6 * shrink
+                motion.seedAlpha = 1 - shrink
+                motion.lift = -4 * shrink
                 return motion
             }
             motion.contentAlpha = 1 - Ease.clamp(t / 0.35)
@@ -350,7 +394,7 @@ private final class PillView: NSView {
         switch transition {
         case .opening(let since) where now - since >= Self.openDuration:
             transition = nil
-        case .closing(let since) where now - since >= Self.closeDuration:
+        case .closing(let since) where now - since >= closeDuration:
             transition = nil
             closeFinished = true
         default:
@@ -403,6 +447,12 @@ private final class PillView: NSView {
     }
 
     private func startCapture(now: CFTimeInterval) {
+        if folded {
+            // Still confirming the last paste: open afresh rather than jump
+            // from the folded check back to a full pill.
+            transition = .opening(since: now)
+            closeFinished = false
+        }
         phase = .recording
         levels = [CGFloat](repeating: 0, count: Self.historyLength)
         elapsed = 0
@@ -467,27 +517,28 @@ private final class PillView: NSView {
         return result
     }
 
-    /// The pill grows to fit its caption. Widths snap to 16 pt steps so a
-    /// changing caption does not make the window twitch.
+    /// The pill grows to fit its caption. While dictating, widths snap to
+    /// 16 pt steps so a changing caption does not make the window twitch; a
+    /// message fits its text so the space after it matches the space before
+    /// its icon.
     var preferredSize: NSSize {
         let width: CGFloat
         let height: CGFloat
         switch phase {
         case .idle:
-            width = Self.captureWidth
+            width = ceil(Self.captureWidth / 16) * 16
             height = Self.rowHeight
         case .recording, .working:
             let hasCaption = !caption.isEmpty || systemMode
             let textWidth = hasCaption ? ceil(captionString(nil, serif: true).size().width) : 0
-            width = max(Self.captureWidth, Self.ribbonLeft + textWidth + 20)
+            width = ceil(max(Self.captureWidth, Self.ribbonLeft + textWidth + 20) / 16) * 16
             height = Self.rowHeight + (hasCaption ? Self.captionHeight : 0)
         case .busy, .attention, .error, .notice:
             let textWidth = ceil(captionString(nil).size().width)
-            width = max(150, Self.ribbonLeft + textWidth + 20)
+            width = max(Self.rowHeight * 2, Self.ribbonLeft + textWidth + Self.labelInset)
             height = Self.rowHeight
         }
-        let snapped = min(Self.maxWidth, ceil(width / 16) * 16)
-        return NSSize(width: snapped, height: height)
+        return NSSize(width: min(Self.maxWidth, width), height: height)
     }
 
     /// The window around the pill: its body plus the margin on every side.
@@ -535,7 +586,7 @@ private final class PillView: NSView {
         context.beginTransparencyLayer(auxiliaryInfo: nil)
         let cap = Self.rowHeight / 2
         let scale = motion.seedScale
-        context.translateBy(x: margin + cap, y: margin + motion.lift + cap)
+        context.translateBy(x: margin + capShift(motion) + cap, y: margin + motion.lift + cap)
         context.scaleBy(x: scale, y: scale)
         context.translateBy(x: -cap, y: -cap)
         drawMark(palette)
@@ -566,18 +617,29 @@ private final class PillView: NSView {
         }
     }
 
+    /// The pill body's width for this frame of the open or close motion.
+    private func unrolledWidth(_ motion: PillMotion) -> CGFloat {
+        let cap = min(Self.rowHeight, bounds.height - margin * 2)
+        return min(bodyWidth + margin - 2, cap + (bodyWidth - cap) * motion.unroll)
+    }
+
+    /// How far the round cap has moved in from the left end.
+    private func capShift(_ motion: PillMotion) -> CGFloat {
+        max(0, bodyWidth - unrolledWidth(motion)) * motion.anchor
+    }
+
     /// The pill's outline for this frame of the open or close motion.
     private func bodyPath(_ motion: PillMotion) -> NSBezierPath {
-        let fullWidth = bodyWidth
         let fullHeight = bounds.height - margin * 2
         let cap = min(Self.rowHeight, fullHeight)
-        let width = min(fullWidth + margin - 2, cap + (fullWidth - cap) * motion.unroll)
+        let width = unrolledWidth(motion)
         let height = cap + (fullHeight - cap) * Ease.clamp(motion.unroll)
         // Scale about the centre of the round cap that holds the dot.
         let scale = motion.seedScale
-        let center = NSPoint(x: margin + cap / 2, y: margin + cap / 2 + motion.lift)
+        let left = margin + capShift(motion)
+        let center = NSPoint(x: left + cap / 2, y: margin + cap / 2 + motion.lift)
         let rect = NSRect(
-            x: center.x + (margin - center.x) * scale,
+            x: center.x + (left - center.x) * scale,
             y: center.y + (margin + motion.lift - center.y) * scale,
             width: width * scale,
             height: height * scale
@@ -607,37 +669,57 @@ private final class PillView: NSView {
         let live = systemMode ? NSColor.controlAccentColor : palette.voice
         let settled = systemMode ? NSColor.controlAccentColor : palette.ink
         let latest = levels.last ?? 0
-        let radius = 4.5 + (phase == .recording ? latest * 1.8 : 0)
+        var radius = 4.5 + (phase == .recording ? latest * 1.8 : 0)
         if phase == .recording, latest > 0.05 {
             live.withAlphaComponent(0.2 * min(1, latest * 1.5)).setFill()
             let halo = radius + 4
             NSBezierPath(ovalIn: NSRect(x: markX - halo, y: center - halo, width: halo * 2, height: halo * 2)).fill()
         }
+        var x = markX
+        var stroke: CGFloat = 0
         if let pastedAt {
-            drawCheck(palette, tint: settled, progress: CGFloat((clock - pastedAt) / Self.checkPop))
-            return
+            let since = clock - pastedAt
+            if reduceMotion {
+                radius = Self.stillCheckRadius
+                stroke = 1
+            } else {
+                // Riding the fold to the middle of the round cap, then
+                // growing into a disc as the check is drawn on it.
+                x = markX + (center - markX) * Ease.inOutCubic(CGFloat(since / Self.foldDuration))
+                let grow = Ease.outBack(CGFloat((since - Self.checkDelay) / Self.checkGrow))
+                radius += (Self.checkRadius - radius) * grow
+                stroke = Ease.outCubic(CGFloat((since - Self.checkStrokeDelay) / Self.checkStroke))
+            }
         }
-        let dot = NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)
+        let dot = NSRect(x: x - radius, y: center - radius, width: radius * 2, height: radius * 2)
         live.withAlphaComponent(1 - settle).setFill()
         NSBezierPath(ovalIn: dot).fill()
         settled.withAlphaComponent(settle).setFill()
         NSBezierPath(ovalIn: dot).fill()
+        if stroke > 0 {
+            drawCheck(palette, x: x, scale: radius / Self.checkRadius, progress: stroke)
+        }
     }
 
-    /// The settled dot grows into a disc with a check cut out of it.
-    private func drawCheck(_ palette: PillPalette, tint: NSColor, progress: CGFloat) {
-        let grow = reduceMotion ? 1 : Ease.outBack(progress)
-        let radius = 4.5 + 3 * grow
-        tint.setFill()
-        NSBezierPath(ovalIn: NSRect(x: markX - radius, y: center - radius, width: radius * 2, height: radius * 2)).fill()
+    /// A check cut out of the disc, drawn on from its short arm to its long one.
+    private func drawCheck(_ palette: PillPalette, x: CGFloat, scale: CGFloat, progress: CGFloat) {
+        let points = [(-4.4, 0.3), (-1.2, 3.5), (4.5, -3.2)].map {
+            NSPoint(x: x + CGFloat($0.0) * scale, y: center + CGFloat($0.1) * scale)
+        }
+        let first = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
+        let second = hypot(points[2].x - points[1].x, points[2].y - points[1].y)
+        var remaining = (first + second) * progress
         let check = NSBezierPath()
-        check.move(to: NSPoint(x: markX - 3.3, y: center + 0.2))
-        check.line(to: NSPoint(x: markX - 0.9, y: center + 2.6))
-        check.line(to: NSPoint(x: markX + 3.4, y: center - 2.4))
-        check.lineWidth = 1.8
+        check.move(to: points[0])
+        for (from, to, length) in [(points[0], points[1], first), (points[1], points[2], second)] where remaining > 0 {
+            let part = min(1, remaining / length)
+            check.line(to: NSPoint(x: from.x + (to.x - from.x) * part, y: from.y + (to.y - from.y) * part))
+            remaining -= length
+        }
+        check.lineWidth = 2.2 * scale
         check.lineCapStyle = .round
         check.lineJoinStyle = .round
-        palette.body.withAlphaComponent(Ease.clamp(progress * 1.5)).setStroke()
+        palette.body.setStroke()
         check.stroke()
     }
 
@@ -737,7 +819,7 @@ private final class PillView: NSView {
     }
 
     private func drawLabel(_ palette: PillPalette) {
-        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bodyWidth - Self.ribbonLeft - 18, height: 18)
+        let rect = NSRect(x: Self.ribbonLeft, y: center - 8.5, width: bodyWidth - Self.ribbonLeft - Self.labelInset, height: 18)
         captionString(palette, emphasized: true)
             .draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
@@ -1625,6 +1707,8 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         stuck.orderOut(nil)
         panel.contentView = pill
         panel.setFrame(stuck.frame, display: false)
+        // The old window may have been mid-resize: head for the target again.
+        frameTarget = nil
         panel.alphaValue = 1
         panel.orderFrontRegardless()
         FileHandle.standardError.write(Data("[overlay] pill was on another desktop; moved it to a new window\n".utf8))
@@ -1776,10 +1860,17 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
         )
     }
 
+    /// Where the window is heading. This runs on every display tick and
+    /// every audio frame; restarting the animation toward the same frame each
+    /// time moved the window a fraction of a point per restart, so after the
+    /// hint faded the pill stayed a few points too tall all dictation.
+    private var frameTarget: NSRect?
+
     /// Resize around the top edge so the pill grows downward and sideways.
     private func fitToContent(animated: Bool) {
         let size = pill.windowSize
-        guard let target = targetFrame(for: size) else { return }
+        guard let target = targetFrame(for: size), target != frameTarget else { return }
+        frameTarget = target
         if panel.frame == target { return }
         if animated && panel.isVisible && panel.frame.size != size {
             NSAnimationContext.runAnimationGroup { context in
