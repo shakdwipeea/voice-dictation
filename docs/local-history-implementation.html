@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dictation History Build</title>
+<meta name="description" content="What was built for Sunoto's local dictation history, how the daemon's architecture changed, and how it and the grammar model were tested.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Same system as how-sunoto-works.html. Blue marks what is new; grey is unchanged. */
+:root {
+  --paper: #f4f6f9;
+  --surface: #ffffff;
+  --ink: #18202e;
+  --muted: #5b6678;
+  --line: #d5dbe4;
+  --zone: #eaf0f8;
+  --rec: #cf3b2b;
+  --rec-soft: #fbe3df;
+  --new: #2a5bd0;
+  --new-soft: #e1e9fb;
+  --ok: #1f7a4d;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f131a; --surface: #161c26; --ink: #e7ebf2; --muted: #9aa5b8;
+    --line: #2c3544; --zone: #1a2230; --rec: #ff7262; --rec-soft: #3b201d;
+    --new: #8aabff; --new-soft: #1d2a44; --ok: #6fd3a0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f131a; --surface: #161c26; --ink: #e7ebf2; --muted: #9aa5b8;
+  --line: #2c3544; --zone: #1a2230; --rec: #ff7262; --rec-soft: #3b201d;
+  --new: #8aabff; --new-soft: #1d2a44; --ok: #6fd3a0;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 1.0625rem/1.6 var(--font-body); }
+.page {
+  max-width: 62rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 3.5rem 5rem;
+  display: grid; gap: 3.5rem;
+}
+.page > * { min-width: 0; }
+.prose { max-width: 44rem; }
+.prose > * + * { margin-top: 0.9rem; }
+a { color: var(--new); text-underline-offset: 0.18em; }
+a:focus-visible { outline: 2px solid var(--new); outline-offset: 3px; border-radius: 3px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.12; }
+h1 { font-size: clamp(2.2rem, 5.5vw, 3.2rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.5rem, 3.2vw, 1.9rem); font-weight: 700; letter-spacing: -0.01em; }
+h3 { font-size: 1.15rem; font-weight: 700; }
+p { margin: 0; }
+ul { margin: 0; padding-left: 1.2rem; }
+li + li { margin-top: 0.4rem; }
+.lede { font-size: 1.2rem; line-height: 1.5; max-width: 42rem; }
+.meta, .note { color: var(--muted); font-size: 0.95rem; }
+code { font-family: var(--font-mono); font-size: 0.88em; }
+header { display: grid; gap: 1.1rem; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+nav ul { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; }
+nav li + li { margin: 0; }
+nav a { font-size: 0.95rem; }
+
+.facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.25rem; }
+.fact { border-top: 2px solid var(--ink); padding-top: 0.7rem; display: grid; gap: 0.25rem; align-content: start; }
+.fact b { font-family: var(--font-display); font-size: 1.6rem; line-height: 1.1; }
+.fact span { color: var(--muted); font-size: 0.93rem; }
+
+section { display: grid; gap: 1.25rem; }
+section > * { min-width: 0; }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.fig-scroll { overflow-x: auto; padding: 1.25rem 1.25rem 0.5rem; }
+.fig-scroll svg { display: block; width: 100%; height: auto; min-width: 760px; }
+figcaption { padding: 0.85rem 1.25rem 1.1rem; color: var(--muted); font-size: 0.95rem; border-top: 1px solid var(--line); text-wrap: pretty; }
+
+.dg text { fill: var(--ink); font-family: var(--font-body); font-size: 12.5px; }
+.dg .t-title { font-family: var(--font-display); font-weight: 700; font-size: 15px; }
+.dg .t-big { font-size: 17px; }
+.dg .t-sub { fill: var(--muted); font-size: 12px; }
+.dg .t-tag { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.dg .t-lab { font-size: 12px; fill: var(--muted); }
+.dg .t-new { fill: var(--new); font-weight: 700; }
+.dg .t-eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; fill: var(--muted); }
+.dg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.3; }
+.dg .box-main { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
+.dg .box-new { fill: var(--new-soft); stroke: var(--new); stroke-width: 1.8; }
+.dg .zone { fill: var(--zone); stroke: var(--muted); stroke-dasharray: 7 6; stroke-width: 1.2; }
+.dg .chip { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+.dg .chip-fail { fill: var(--rec-soft); stroke: var(--rec); stroke-width: 1.1; }
+.dg .k-old { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+.dg .k-new { stroke: var(--new); stroke-width: 2.2; fill: none; }
+.dg .k-copy { stroke: var(--new); stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+.dg .k-fail { stroke: var(--rec); stroke-width: 1.6; fill: none; }
+.dg .f-old { fill: var(--muted); }
+.dg .f-new { fill: var(--new); }
+.dg .f-fail { fill: var(--rec); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 0.96rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.65rem 1rem; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); background: var(--zone); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td .muted { color: var(--muted); }
+.pass { color: var(--ok); font-weight: 700; }
+.fail { color: var(--rec); font-weight: 700; }
+.new-tag { font-family: var(--font-mono); font-size: 0.72rem; color: var(--new); border: 1px solid var(--new); border-radius: 999px; padding: 0.05em 0.5em; margin-left: 0.35em; white-space: nowrap; }
+
+pre.record {
+  margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 1rem 1.2rem; overflow-x: auto; font: 0.82rem/1.55 var(--font-mono);
+}
+
+footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--line); padding-top: 1.25rem; }
+
+@media (max-width: 760px) {
+  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .page { gap: 3rem; padding-block: 2.25rem 4rem; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+<header>
+  <div class="eyebrow">Sunoto · implementation report</div>
+  <h1>Dictation history: what we built and how we tested it</h1>
+  <p class="lede">Sunoto can now keep a private, text-only diary of every dictation on the Mac. This page shows what changed in the daemon's design, what each new piece does, and the results of testing it in the real app, plus the first test of the small grammar model planned for the Improve button.</p>
+  <p class="meta">16 October 2026 · step 1 of <a href="local-history-plan-2026-10-16.md">the history plan</a> (<a href="local-history-plan.html">plain-language version</a>) · built on <code>515caa4a</code>, not yet committed.</p>
+  <nav aria-label="Sections">
+    <ul>
+      <li><a href="#architecture">Architecture change</a></li>
+      <li><a href="#lifecycle">Life of a record</a></li>
+      <li><a href="#code">What changed in the code</a></li>
+      <li><a href="#tests">How it was tested</a></li>
+      <li><a href="#model">Grammar model test</a></li>
+      <li><a href="#next">Next</a></li>
+    </ul>
+  </nav>
+</header>
+
+<div class="facts">
+  <div class="fact"><b>0.5 µs</b><span>history work per dictation on the event loop (a paste takes 5–50 ms)</span></div>
+  <div class="fact"><b>7 / 7</b><span>real dictations in the live test produced exactly one correct record each</span></div>
+  <div class="fact"><b>231</b><span>Rust tests pass, 15 of them new, plus the Python suites and clippy</span></div>
+  <div class="fact"><b>24 / 30</b><span>grammar mistakes fixed by the small model, with no broken code or links</span></div>
+</div>
+
+<section id="architecture">
+  <div class="prose">
+    <h2>The architecture change</h2>
+    <p>The daemon still does everything on one event loop, in the same order: shortcut, recording, speech engine, tidy-up rules, optional AI editor, paste. What is new sits beside that loop, not in its way:</p>
+    <ul>
+      <li>A <b>history draft</b> that each stage fills in as the dictation moves along. This is plain memory work on the loop.</li>
+      <li>A <b>hand-off queue</b> with room for 16 records. The loop hands the finished record over with <code>try_send</code>, which never waits; if the queue is ever full, that record is dropped and counted.</li>
+      <li>A <b>history-writer thread</b>, the only code that touches the disk. It appends one line to the day's file and deletes day files past the retention limit, at start and once a day.</li>
+      <li>A <b><code>sunoto-daemon history</code> command</b> that reads and deletes the files directly, so it works whether or not the daemon is running.</li>
+    </ul>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 470" role="img" aria-label="Inside the Sunoto daemon, each stage of the event loop copies its part of the dictation into a history draft. The finished record goes through a 16-slot hand-off queue to a separate history-writer thread, which appends one line to the day file on disk. A separate history command reads and deletes those files.">
+        <defs>
+          <marker id="a-old" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-old"/></marker>
+          <marker id="a-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-new"/></marker>
+        </defs>
+
+        <!-- Legend -->
+        <rect x="20" y="12" width="30" height="18" rx="4" class="box-new"/>
+        <text x="58" y="26" class="t-lab">new</text>
+        <rect x="100" y="12" width="30" height="18" rx="4" class="box"/>
+        <text x="138" y="26" class="t-lab">unchanged</text>
+
+        <!-- Daemon process -->
+        <rect x="20" y="48" width="680" height="404" rx="18" class="zone"/>
+        <text x="40" y="74" class="t-eyebrow">SUNOTO DAEMON · ONE PROCESS</text>
+
+        <!-- Event loop -->
+        <rect x="40" y="90" width="400" height="290" rx="12" class="box-main"/>
+        <text x="60" y="118" class="t-title t-big">Event loop</text>
+        <text x="60" y="138" class="t-sub">same stages, same order as before</text>
+
+        <rect x="60" y="156" width="200" height="34" rx="17" class="chip"/>
+        <text x="160" y="178" text-anchor="middle">Shortcut and recording</text>
+        <rect x="60" y="198" width="200" height="34" rx="17" class="chip"/>
+        <text x="160" y="220" text-anchor="middle">Speech engine (sidecar)</text>
+        <rect x="60" y="240" width="200" height="34" rx="17" class="chip"/>
+        <text x="160" y="262" text-anchor="middle">Tidy-up rules</text>
+        <rect x="60" y="282" width="200" height="34" rx="17" class="chip"/>
+        <text x="160" y="304" text-anchor="middle">AI editor (optional)</text>
+        <rect x="60" y="324" width="200" height="34" rx="17" class="chip"/>
+        <text x="160" y="346" text-anchor="middle">Paste report (UI thread)</text>
+
+        <!-- Draft -->
+        <rect x="300" y="160" width="124" height="196" rx="10" class="box-new"/>
+        <text x="362" y="232" text-anchor="middle" class="t-title">History</text>
+        <text x="362" y="250" text-anchor="middle" class="t-title">draft</text>
+        <text x="362" y="272" text-anchor="middle" class="t-sub">filled in</text>
+        <text x="362" y="288" text-anchor="middle" class="t-sub">as it goes</text>
+        <line x1="260" y1="173" x2="294" y2="173" class="k-copy" marker-end="url(#a-new)"/>
+        <line x1="260" y1="215" x2="294" y2="215" class="k-copy" marker-end="url(#a-new)"/>
+        <line x1="260" y1="257" x2="294" y2="257" class="k-copy" marker-end="url(#a-new)"/>
+        <line x1="260" y1="299" x2="294" y2="299" class="k-copy" marker-end="url(#a-new)"/>
+        <line x1="260" y1="341" x2="294" y2="341" class="k-copy" marker-end="url(#a-new)"/>
+
+        <!-- Queue -->
+        <line x1="424" y1="258" x2="474" y2="258" class="k-new" marker-end="url(#a-new)"/>
+        <text x="449" y="248" text-anchor="middle" class="t-lab">try_send</text>
+        <rect x="480" y="232" width="200" height="52" rx="10" class="box-new"/>
+        <text x="580" y="254" text-anchor="middle" class="t-title">Hand-off queue</text>
+        <text x="580" y="272" text-anchor="middle" class="t-sub">16 slots · full = drop, never wait</text>
+
+        <!-- Writer -->
+        <line x1="580" y1="284" x2="580" y2="322" class="k-new" marker-end="url(#a-new)"/>
+        <rect x="470" y="328" width="220" height="84" rx="10" class="box-new"/>
+        <text x="580" y="356" text-anchor="middle" class="t-title">history-writer thread</text>
+        <text x="580" y="376" text-anchor="middle" class="t-sub">the only code touching disk</text>
+        <text x="580" y="396" text-anchor="middle" class="t-tag">appends · deletes old days</text>
+
+        <!-- Disk -->
+        <line x1="690" y1="370" x2="744" y2="370" class="k-new" marker-end="url(#a-new)"/>
+        <text x="717" y="360" text-anchor="middle" class="t-lab">append</text>
+        <rect x="750" y="320" width="230" height="100" rx="10" class="box-new"/>
+        <text x="865" y="346" text-anchor="middle" class="t-title">Day files on disk</text>
+        <text x="865" y="366" text-anchor="middle" class="t-tag">history/dictations/</text>
+        <text x="865" y="382" text-anchor="middle" class="t-tag">2026-10-16.jsonl</text>
+        <text x="865" y="404" text-anchor="middle" class="t-sub">0600 · one line per dictation</text>
+
+        <!-- CLI -->
+        <rect x="750" y="120" width="230" height="84" rx="10" class="box-new"/>
+        <text x="865" y="148" text-anchor="middle" class="t-title">sunoto-daemon history</text>
+        <text x="865" y="168" text-anchor="middle" class="t-sub">separate command</text>
+        <text x="865" y="188" text-anchor="middle" class="t-tag">list · show · forget · clear</text>
+        <line x1="865" y1="204" x2="865" y2="314" class="k-new" marker-end="url(#a-new)"/>
+        <text x="877" y="262" class="t-lab">reads, deletes</text>
+
+        <!-- Status -->
+        <text x="40" y="404" class="t-tag">status over the control socket now also reports</text>
+        <text x="40" y="422" class="t-tag">"history: on | off"</text>
+      </svg>
+    </div>
+    <figcaption>Blue is new. The loop's only new work is filling the draft and one non-blocking hand-off. Disk writes, file permissions and clean-up live on the writer thread. When <code>history_enabled</code> is off, the writer never starts and every hook returns at once.</figcaption>
+  </figure>
+</section>
+
+<section id="lifecycle">
+  <div class="prose">
+    <h2>The life of a record</h2>
+    <p>Every dictation that starts also ends in exactly one line, whether it was pasted or failed along the way. A test covers each ending.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 330" role="img" aria-label="A record opens at the press, gains the transcript and polish results, then the paste report, and is written as one line. Failures at any stage end it early with their own status, also as one line. A new press while a draft is still open writes the old one as abandoned.">
+        <defs>
+          <marker id="b-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-new"/></marker>
+          <marker id="b-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-fail"/></marker>
+        </defs>
+
+        <rect x="20" y="40" width="200" height="80" rx="10" class="box"/>
+        <text x="120" y="70" text-anchor="middle" class="t-title">Recording</text>
+        <text x="120" y="90" text-anchor="middle" class="t-sub">draft opens at the press</text>
+        <text x="120" y="108" text-anchor="middle" class="t-tag">begin()</text>
+
+        <rect x="270" y="40" width="200" height="80" rx="10" class="box"/>
+        <text x="370" y="70" text-anchor="middle" class="t-title">Transcribed</text>
+        <text x="370" y="90" text-anchor="middle" class="t-sub">raw, tidy-up, AI editor,</text>
+        <text x="370" y="106" text-anchor="middle" class="t-sub">text sent to paste</text>
+
+        <rect x="520" y="40" width="200" height="80" rx="10" class="box"/>
+        <text x="620" y="70" text-anchor="middle" class="t-title">Paste reported</text>
+        <text x="620" y="90" text-anchor="middle" class="t-sub">how it was inserted,</text>
+        <text x="620" y="106" text-anchor="middle" class="t-sub">full timing breakdown</text>
+
+        <rect x="770" y="40" width="210" height="80" rx="10" class="box-new"/>
+        <text x="875" y="70" text-anchor="middle" class="t-title">One line written</text>
+        <text x="875" y="90" text-anchor="middle" class="t-sub">to the day file</text>
+        <text x="875" y="108" text-anchor="middle" class="t-tag">finish(status)</text>
+
+        <line x1="220" y1="80" x2="264" y2="80" class="k-new" marker-end="url(#b-new)"/>
+        <line x1="470" y1="80" x2="514" y2="80" class="k-new" marker-end="url(#b-new)"/>
+        <line x1="720" y1="80" x2="764" y2="80" class="k-new" marker-end="url(#b-new)"/>
+        <text x="745" y="70" text-anchor="middle" class="t-lab">inserted</text>
+
+        <!-- Early endings -->
+        <rect x="20" y="180" width="720" height="104" rx="12" class="zone"/>
+        <line x1="120" y1="120" x2="120" y2="190" class="k-fail" marker-end="url(#b-fail)"/>
+        <line x1="370" y1="120" x2="370" y2="190" class="k-fail" marker-end="url(#b-fail)"/>
+        <line x1="620" y1="120" x2="620" y2="190" class="k-fail" marker-end="url(#b-fail)"/>
+        <rect x="14" y="196" width="212" height="44" rx="8" class="chip-fail"/>
+        <text x="120" y="214" text-anchor="middle" class="t-tag">cancelled · asr_timeout</text>
+        <text x="120" y="230" text-anchor="middle" class="t-tag">asr_error (incl. engine lost)</text>
+        <rect x="264" y="196" width="212" height="44" rx="8" class="chip-fail"/>
+        <text x="370" y="214" text-anchor="middle" class="t-tag">empty_transcript</text>
+        <text x="370" y="230" text-anchor="middle" class="t-tag">empty_result</text>
+        <rect x="514" y="196" width="212" height="44" rx="8" class="chip-fail"/>
+        <text x="620" y="214" text-anchor="middle" class="t-tag">clipboard_only · insert_error</text>
+        <text x="620" y="230" text-anchor="middle" class="t-tag">secure_field (no text kept)</text>
+        <text x="40" y="270" class="t-eyebrow">ENDS EARLY · STILL ONE LINE, WITH ITS STATUS</text>
+        <path d="M740,232 H790 V126" class="k-new" marker-end="url(#b-new)"/>
+
+        <text x="808" y="156" class="t-lab">Safety net: a new press</text>
+        <text x="808" y="172" class="t-lab">while a draft is open</text>
+        <text x="808" y="188" class="t-lab">writes it as <tspan class="t-new">abandoned</tspan>,</text>
+        <text x="808" y="204" class="t-lab">so nothing vanishes.</text>
+        <text x="20" y="314" class="t-lab">"Engine lost" is caught by a check at the top of every loop turn (reap), so no failure path needed its own hook.</text>
+      </svg>
+    </div>
+    <figcaption>Statuses are the <code>status</code> field of the record. Password fields and excluded apps (password managers by default) keep the status and timings but never any text.</figcaption>
+  </figure>
+
+  <div class="prose"><h3>A real record from the live test</h3></div>
+<pre class="record">{
+  "v": 1, "type": "dictation", "id": "1a1447942c6-2", "status": "inserted",
+  "target": { "id": "com.apple.TextEdit", "name": "TextEdit" }, "style": "prose",
+  "asr": { "backend": "parakeet_mlx_offline", "model": "parakeet-tdt-0.6b-v3-bf16", "profile_ms": 560 },
+  "sound": { "ms": 5740, "rms": 177, "peak": 1484 },
+  "text": { "raw": "Or Friday, I mean Saturday.", "polished": "Or Saturday.", "llm": null,
+            "inserted": "Or Saturday." },
+  "polish_trace": [ { "stage": "corrections", "before": "Or Friday, I mean Saturday.", "after": "Or Saturday." } ],
+  "llm": { "status": "off" }, "insertion": { "method": "pasted", "streamed": false },
+  "timing_ms": { "recorded": 5894, "asr_turnaround": 1008, "polish": 0, "insert": 53,
+                 "release_to_insertion": 1065, ... }
+}</pre>
+  <p class="note prose">The speech came from macOS's <code>say</code> voice through the laptop speaker, so the speech engine missed "Book the meeting for". The record shows exactly that, along with the self-correction rule doing its job.</p>
+</section>
+
+<section id="code">
+  <div class="prose">
+    <h2>What changed in the code</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th>Change</th><th>Size</th></tr></thead>
+      <tbody>
+        <tr><td><code>apps/daemon/src/history.rs</code><span class="new-tag">new</span></td><td>The record format (schema v1), the draft and its hooks, privacy rules, the writer thread, day files with private permissions, UTC dates without a date library, retention clean-up. 13 tests.</td><td class="num">956 lines</td></tr>
+        <tr><td><code>apps/daemon/src/history_cli.rs</code><span class="new-tag">new</span></td><td><code>history status | list | show | forget | clear --yes</code>, working on the files directly. 3 tests.</td><td class="num">382 lines</td></tr>
+        <tr><td><code>apps/daemon/src/daemon.rs</code></td><td>One-line hooks at each stage, the reap check, and the status field. The timing log line now uses the shared breakdown, with identical output.</td><td class="num">+101 / −67</td></tr>
+        <tr><td><code>apps/daemon/src/session.rs</code></td><td><code>TimingBreakdown</code>: one calculation feeds both the log line and the record.</td><td class="num">+60</td></tr>
+        <tr><td><code>apps/daemon/src/settings.rs</code></td><td><code>history_enabled</code> (off), <code>history_retention_days</code> (90), <code>history_exclude_apps</code> (password managers).</td><td class="num">+14</td></tr>
+        <tr><td><code>main.rs</code>, <code>setup.rs</code></td><td>The <code>history</code> command and the <code>history:</code> line in <code>status</code>.</td><td class="num">+9</td></tr>
+        <tr><td><code>README.md</code>, <code>docs/desktop-configuration.md</code></td><td>Settings and a privacy note.</td><td class="num">+38</td></tr>
+        <tr><td><code>tools/improve/</code><span class="new-tag">new</span></td><td><code>grammar_probe.py</code> and <code>grammar_cases.jsonl</code> (91 labeled sentences) for the grammar model, and <code>improve_probe.swift</code> for Apple's model.</td><td class="num">374 lines</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="tests">
+  <div class="prose">
+    <h2>How it was tested</h2>
+    <p>Three layers: automated tests, a live run in the reinstalled app, and a measurement of what history costs the event loop.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>New unit tests: dates across month ends and leap days, every ending writes exactly one record, abandoned and reap, password and excluded-app redaction, a full queue never blocks, private file modes, retention, the real writer thread, <code>forget</code>, unreadable lines skipped</td><td><span class="pass">15 pass</span></td></tr>
+        <tr><td><code>cargo test --workspace</code></td><td><span class="pass">231 pass</span>, 0 fail</td></tr>
+        <tr><td><code>cargo clippy … -D warnings</code> and <code>make test</code> (Rust plus the Python suites)</td><td><span class="pass">clean</span></td></tr>
+        <tr><td>Cost on the event loop: 20,000 simulated dictations, release build</td><td><span class="pass">0.54 µs</span> each</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="prose">
+    <h3>Live test in the real app</h3>
+    <p>Sunoto.app was rebuilt from this code with <code>bash install-macos.sh --without-llm</code>, with history turned on. Real dictations were run into a throwaway TextEdit file. Each was started and finished through the control socket, and the speech was spoken by macOS's <code>say</code> voice through the speaker into the microphone. The test only finished a dictation while TextEdit was in front.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Dictation</th><th>What happened</th><th>Record</th></tr></thead>
+      <tbody>
+        <tr><td>"Send the email to Priya on Wednesday."</td><td>Speaker too quiet; the engine heard nothing</td><td><code>empty_transcript</code> <span class="pass">✓</span></td></tr>
+        <tr><td>"Book the meeting for Friday, I mean Saturday."</td><td>Heard part of it; the self-correction rule fired; pasted</td><td><code>inserted</code>, with the trace and 1,065 ms <span class="pass">✓</span></td></tr>
+        <tr><td>"Um, I think we should ship it today."</td><td>Pasted</td><td><code>inserted</code>, 920 ms <span class="pass">✓</span></td></tr>
+        <tr><td>Silence</td><td>Nothing heard</td><td><code>empty_transcript</code> <span class="pass">✓</span></td></tr>
+        <tr><td>A sentence with numbers</td><td>Misheard; pasted</td><td><code>inserted</code>, 938 ms <span class="pass">✓</span></td></tr>
+        <tr><td>"My secret password…" into a password dialog</td><td>Nothing pasted (existing password-field check)</td><td><code>secure_field</code>, <code>redacted</code>, no text: "secret" appears 0 times in the file <span class="pass">✓</span></td></tr>
+        <tr><td>Esc to cancel</td><td>macOS refused the synthetic Esc key ("not allowed to send keystrokes")</td><td><span class="muted">Covered by unit tests only</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="prose note">
+    <li><code>status</code> showed <code>history: on</code>, and the log showed "dictation history on: …/history/dictations (kept 90 days)".</li>
+    <li>The folders are <code>drwx------</code> and the day file is <code>-rw-------</code>: readable only by you.</li>
+    <li>The timing log line is unchanged in format. Polish and dispatch stayed at 0 ms, and insert took 4–53 ms.</li>
+    <li>The live test led to one fix: "nothing heard" entries now say so in <code>history list</code> instead of showing <code>""</code>.</li>
+    <li>Not tested live: excluded apps and a speech-engine crash mid-dictation. Unit tests cover both.</li>
+  </ul>
+</section>
+
+<section id="model">
+  <div class="prose">
+    <h2>Grammar model test (plan step 2)</h2>
+    <p>This is the small model planned for the Improve button: <code>Unbabel/gec-t5_small</code>, with 60.5M parameters and an Apache-2.0 license. It was run on the M1 Pro's CPU over 91 labeled sentences: 30 with typical mistakes, 50 clean ones from the repo's test sets, and 11 technical ones with file names, links, numbers and brand names. The weights were loaded tensors-only, so the downloaded file could not run code.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Measure</th><th>Result</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td>Mistakes fixed</td><td class="num">24 / 30</td><td>Good. Misses: "Who's" → "Whose", "Then you" → "Thank you" (a mishearing), "Me and him".</td></tr>
+        <tr><td>Clean sentences left alone</td><td class="num">44 / 50</td><td><span class="fail">3 meaning changes</span>, e.g. "The build is green" → "The building is green", "It is my fault" → "It was my fault". The preview and Cancel are essential.</td></tr>
+        <tr><td>Technical sentences: none broken</td><td class="num">11 / 11</td><td>The model breaks paths and flags ("agents.md" → "agents. md"). A stricter guard rail now protects any word with digits, symbols or inner capitals, and blocked all 5 such cases.</td></tr>
+        <tr><td>Speed, greedy decoding</td><td class="num">94 ms p50 · 195 ms p95</td><td><span class="pass">Fast enough.</span> Beam search 5 gave the same quality at twice the time.</td></tr>
+        <tr><td>Memory, simple load</td><td class="num">~975 MB</td><td><span class="fail">Too much.</span> This path held two copies of the weights.</td></tr>
+        <tr><td>Memory, lean load (bf16, no extra copy)</td><td class="num">~380 MB · 0.16 s</td><td>About 350 MB of this is PyTorch itself. MLX, which Sunoto already ships, adds about 7 MB, so the estimate is roughly 150 MB on MLX. That is not measured yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note prose"><b>Verdict:</b> promising, and worth building the Improve button on, with three conditions: greedy decoding, the stricter guard rail, and an MLX runtime to meet the memory target. The meaning changes are the real risk: they are rare, but the guard rails can't see them, so Improve must always preview before it replaces anything. A larger T5-base model should be tried if real dictations show too many of them.</p>
+</section>
+
+<section id="next">
+  <div class="prose">
+    <h2>Next</h2>
+    <ul>
+      <li>Commit this work on a branch; it is uncommitted on <code>master</code> today.</li>
+      <li>Let history collect a week of real dictations, then re-run the grammar test on those.</li>
+      <li>Port the T5 grammar model to MLX and measure memory against the 300 MB target.</li>
+      <li>Build the pill's Fix and Improve buttons (plan step 3).</li>
+      <li>Turn <code>log_transcripts</code> off once the grammar test no longer needs the log.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>Implementation report, 16 October 2026. Plan: <a href="local-history-plan-2026-10-16.md">local-history-plan-2026-10-16.md</a> · <a href="local-history-plan.html">plain-language plan</a> · <a href="how-sunoto-works.html">How Sunoto works</a></footer>
+
+</main>
+</body>
+</html>

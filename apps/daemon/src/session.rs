@@ -1,7 +1,8 @@
 //! Per-session bookkeeping: latency timestamps and audio statistics.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use sunoto_core::SessionMode;
 
 pub(crate) const SAMPLES_PER_MS: usize = 16;
@@ -14,6 +15,49 @@ pub(crate) struct SessionTiming {
     pub(crate) final_at: Option<Instant>,
     pub(crate) polish_done_at: Option<Instant>,
     pub(crate) insert_dispatched_at: Option<Instant>,
+}
+
+/// Where the time went in one session, in milliseconds. The insertion
+/// fields are `None` for sessions that ended before anything was inserted.
+/// The log line and the history record both come from this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct TimingBreakdown {
+    pub(crate) recorded: u64,
+    pub(crate) release_to_finish_sent: Option<u64>,
+    pub(crate) asr_turnaround: Option<u64>,
+    pub(crate) release_to_final: Option<u64>,
+    pub(crate) polish: Option<u64>,
+    pub(crate) dispatch: Option<u64>,
+    pub(crate) insert: Option<u64>,
+    pub(crate) insert_wait: Option<u64>,
+    pub(crate) release_to_insertion: Option<u64>,
+}
+
+fn millis(duration: Duration) -> u64 {
+    duration.as_millis() as u64
+}
+
+impl SessionTiming {
+    /// The breakdown as of `now`. `insert` is how long the insertion itself
+    /// took, when the session got that far.
+    pub(crate) fn breakdown(&self, now: Instant, insert: Option<Duration>) -> TimingBreakdown {
+        let since = |later: Option<Instant>, earlier: Option<Instant>| match (later, earlier) {
+            (Some(later), Some(earlier)) => Some(millis(later.duration_since(earlier))),
+            _ => None,
+        };
+        let inserted = insert.is_some();
+        TimingBreakdown {
+            recorded: millis(self.released_at.duration_since(self.pressed_at)),
+            release_to_finish_sent: since(self.finish_sent_at, Some(self.released_at)),
+            asr_turnaround: since(self.final_at, self.finish_sent_at),
+            release_to_final: since(self.final_at, Some(self.released_at)),
+            polish: since(self.polish_done_at, self.final_at),
+            dispatch: since(self.insert_dispatched_at, self.polish_done_at),
+            insert: insert.map(millis),
+            insert_wait: since(Some(now), self.insert_dispatched_at).filter(|_| inserted),
+            release_to_insertion: inserted.then(|| millis(now.duration_since(self.released_at))),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -33,16 +77,25 @@ impl SessionAudioStats {
         }
     }
 
-    pub(crate) fn summary(&self) -> String {
-        let duration_ms = self.samples / SAMPLES_PER_MS;
-        let rms = if self.samples == 0 {
+    pub(crate) fn duration_ms(&self) -> usize {
+        self.samples / SAMPLES_PER_MS
+    }
+
+    pub(crate) fn rms(&self) -> f64 {
+        if self.samples == 0 {
             0.0
         } else {
             (self.sum_squares / self.samples as f64).sqrt()
-        };
+        }
+    }
+
+    pub(crate) fn summary(&self) -> String {
         format!(
-            "{duration_ms}ms audio, {} samples, rms={rms:.0}, peak={}",
-            self.samples, self.peak
+            "{}ms audio, {} samples, rms={:.0}, peak={}",
+            self.duration_ms(),
+            self.samples,
+            self.rms(),
+            self.peak
         )
     }
 }

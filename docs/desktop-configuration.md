@@ -47,6 +47,35 @@ Idle and privacy keys (all optional):
 - `log_transcripts`: `false` replaces transcript text in the log with its
   length and a short hash.
 
+Dictation history (all optional, off by default):
+
+```json
+{
+  "history_enabled": false,
+  "history_retention_days": 90,
+  "history_exclude_apps": ["com.1password.1password", "com.bitwarden.desktop"]
+}
+```
+
+- `history_enabled`: keep a private record of each dictation on this
+  machine, for finding mistakes and slow spots. Each dictation is one JSON
+  line in a daily file under
+  `~/Library/Application Support/sunoto/history/dictations/` (macOS) or
+  `$XDG_DATA_HOME/sunoto/history/dictations/` (Linux, default
+  `~/.local/share`). A line holds what the speech engine heard, each polish
+  step, what was inserted and where, and the timings. It holds no audio.
+  Nothing is uploaded. The folder and files are readable only by you.
+  `SUNOTO_HISTORY_DIR` moves the folder.
+- `history_retention_days`: day files older than this are deleted when the
+  daemon starts and once a day. `0` keeps everything.
+- `history_exclude_apps`: dictations into these apps are recorded without
+  any text (bundle ids or app names on macOS, WM_CLASS names on X11). The
+  default lists the common password managers. Password fields are always
+  left out.
+- `sunoto-daemon history list | show last | forget ID | clear --yes` reads
+  and deletes entries. `sunoto-daemon history status` shows the folder and
+  the counts.
+
 Updates (macOS release installs):
 
 ```json

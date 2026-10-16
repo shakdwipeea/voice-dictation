@@ -4,6 +4,8 @@ mod daemon;
 mod eval;
 mod events;
 mod health;
+mod history;
+mod history_cli;
 mod insertion;
 mod llm_polish;
 mod llm_report;
@@ -46,6 +48,8 @@ Commands:
                             send a mode-aware push-to-talk edge to the daemon
   run                       run the dictation daemon
   status [--json]           show the running daemon's health
+  history status|list|show|forget|clear
+                            the local dictation history (history_enabled in the config)
   setup [OPTIONS]           macOS: build Sunoto.app, register it at login, start it,
                             and wait until it reports ready (see setup --help)
   restart                   macOS: quit and reopen the installed Sunoto.app
@@ -198,6 +202,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
         "log" => setup::follow_log(),
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
         "eval" => eval::run(parse_eval_args(rest)),
+        "history" => history_cli::run_cli(rest),
         "config" => config(rest),
         _ => {
             eprint!("{USAGE}");

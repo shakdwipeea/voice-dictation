@@ -27,6 +27,7 @@ use sunoto_system::{
 use crate::control::{control_polish_response, spawn_control_thread};
 use crate::events::{DaemonEvent, ModeHotkeyEvent};
 use crate::health::{DaemonHealth, HealthMonitor, MicState, health_inputs, publish_health};
+use crate::history::{HistoryRecorder, Llm, LlmStatus, Status, empty_status};
 use crate::insertion::{DesktopBackend, UiCommand, UiOptions, desktop_backend, ui_thread};
 use crate::llm_polish;
 use crate::llm_report::{format_llm_diagnostics, format_llm_warmup_summary};
@@ -73,6 +74,10 @@ fn trigger_input(edge: HotkeyEvent) -> Option<TriggerInput> {
         HotkeyEvent::Interrupted => Some(TriggerInput::Interrupt),
         HotkeyEvent::Blocked | HotkeyEvent::Available => None,
     }
+}
+
+fn ms_or_unknown(ms: Option<u64>) -> String {
+    ms.map(|ms| ms.to_string()).unwrap_or_else(|| "?".into())
 }
 
 fn recording_mode(machine: &SessionMachine) -> Option<SessionMode> {
@@ -243,6 +248,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     ));
 
     let mut machine = SessionMachine::default();
+    let mut history = HistoryRecorder::start(&settings);
     let mut preroll = AudioPreRoll::new(settings.preroll_ms as usize * SAMPLES_PER_MS);
     let mut focused_class: Option<(String, String)> = None;
     let mut timing: Option<SessionTiming> = None;
@@ -310,6 +316,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut exit_error: Option<String> = None;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
+        history.reap(machine.current_session());
         let forced = forced_finish.take();
         let received = match forced {
             Some(mode) => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
@@ -350,6 +357,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 system_worker.invalidate_sessions();
                             }
                             logging::info(&format!("session {session_id}: cancelled"));
+                            history.finish(session_id, Status::Cancelled, None, None, None);
                             timing = None;
                             audio_stats = None;
                             transcribe_deadline = None;
@@ -455,6 +463,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 if let SessionAction::Started { session_id, .. } = machine.press_mode(mode) {
                     if mode == SessionMode::System {
                         system_worker.activate_session(session_id);
+                    } else {
+                        history.begin(session_id);
                     }
                     last_pressed_at = Some(Instant::now());
                     last_activity = Instant::now();
@@ -748,6 +758,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             ));
                         }
                         last_activity = Instant::now();
+                        history.transcript(session_id, &text, audio_stats.as_ref());
                         audio_stats = None;
                         if let Some(timing) = timing.as_mut() {
                             timing.final_at = Some(Instant::now());
@@ -906,6 +917,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     transcript_for_log(&stage.after, settings.log_transcripts)
                                 ));
                             }
+                            history.polished(
+                                session_id,
+                                config.style,
+                                &outcome.trace,
+                                &outcome.text,
+                            );
                             outcome.text
                         } else {
                             text
@@ -942,6 +959,16 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             ) {
                                 Ok(outcome) => {
                                     let ttft = outcome.diagnostics.ttft_ms;
+                                    history.llm(
+                                        session_id,
+                                        Llm {
+                                            status: LlmStatus::Accepted,
+                                            latency_ms: Some(outcome.latency_ms),
+                                            ttft_ms: ttft,
+                                            error: None,
+                                        },
+                                        Some(&outcome.text),
+                                    );
                                     let streamed = outcome.diagnostics.streamed == Some(true);
                                     let chunks = outcome.diagnostics.stream_chunks.unwrap_or(0);
                                     logging::info(&format!(
@@ -975,8 +1002,18 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                             logging::info(&format!(
                                                 "session {session_id}: empty result"
                                             ));
+                                            history.finish(
+                                                session_id,
+                                                empty_status(&raw_text),
+                                                None,
+                                                None,
+                                                timing
+                                                    .as_ref()
+                                                    .map(|t| t.breakdown(Instant::now(), None)),
+                                            );
                                             ui.hide();
                                         } else {
+                                            history.inserted(session_id, &sanitized_outcome, true);
                                             let _ = ui_tx.send(UiCommand::InsertStreamEnd {
                                                 session_id,
                                                 final_text: sanitized_outcome,
@@ -992,6 +1029,20 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     logging::warn(&format!(
                                         "session {session_id}: llm polish skipped: {error}"
                                     ));
+                                    let status = if stream_insert && dispatched.get() {
+                                        LlmStatus::StreamedPartial
+                                    } else {
+                                        LlmStatus::Skipped
+                                    };
+                                    history.llm(
+                                        session_id,
+                                        Llm {
+                                            status,
+                                            error: Some(error.to_string()),
+                                            ..Llm::default()
+                                        },
+                                        None,
+                                    );
                                     if stream_insert && dispatched.get() {
                                         // Chunks already typed; finalize what
                                         // we have even though the call erred
@@ -1008,6 +1059,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                             timing.polish_done_at = Some(Instant::now());
                                             timing.insert_dispatched_at = Some(Instant::now());
                                         }
+                                        history.inserted(session_id, &output, true);
                                         let _ = ui_tx.send(UiCommand::InsertStreamEnd {
                                             session_id,
                                             final_text: output.clone(),
@@ -1029,11 +1081,19 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             }
                             if sanitized.is_empty() {
                                 logging::info(&format!("session {session_id}: empty result"));
+                                history.finish(
+                                    session_id,
+                                    empty_status(&raw_text),
+                                    None,
+                                    None,
+                                    timing.as_ref().map(|t| t.breakdown(Instant::now(), None)),
+                                );
                                 ui.hide();
                             } else {
                                 if let Some(timing) = timing.as_mut() {
                                     timing.insert_dispatched_at = Some(Instant::now());
                                 }
+                                history.inserted(session_id, &sanitized, false);
                                 let _ = ui_tx.send(UiCommand::Insert {
                                     session_id,
                                     text: sanitized,
@@ -1049,9 +1109,19 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     if message == "superseded" {
                         logging::warn(&format!("sidecar superseded session {session_id:?}"));
                     } else if session_id.is_none() || session_id == machine.current_session() {
+                        let failed_session = machine.current_session();
                         if let SessionAction::Failed { message } = machine.fail(message) {
                             logging::error(&format!("sidecar error: {message}"));
                             show_error(&ui, &message, &mut bubble_hide_at);
+                            if let Some(failed) = failed_session {
+                                history.finish(
+                                    failed,
+                                    Status::AsrError,
+                                    Some(message),
+                                    None,
+                                    timing.as_ref().map(|t| t.breakdown(Instant::now(), None)),
+                                );
+                            }
                         }
                         timing = None;
                         transcribe_deadline = None;
@@ -1444,74 +1514,30 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         "insertion target at release has no WM_CLASS (text may land in a non-text window)",
                     ),
                 }
+                history.target(class.as_ref());
                 focused_class = class;
             }
             Ok(DaemonEvent::Ui(report)) => {
+                let breakdown = timing
+                    .as_ref()
+                    .filter(|timing| timing.session_id == report.session_id)
+                    .map(|timing| timing.breakdown(Instant::now(), Some(report.insert_duration)));
                 match report.result {
                     Ok(outcome) => {
                         let insert_ms = report.insert_duration.as_millis();
-                        if let Some(timing) = timing
-                            .as_ref()
-                            .filter(|timing| timing.session_id == report.session_id)
-                        {
-                            let now = Instant::now();
-                            let recording = timing
-                                .released_at
-                                .duration_since(timing.pressed_at)
-                                .as_millis();
-                            let release_to_finish_sent = timing
-                                .finish_sent_at
-                                .map(|t| t.duration_since(timing.released_at).as_millis());
-                            let asr_turnaround = match (timing.finish_sent_at, timing.final_at) {
-                                (Some(sent), Some(final_)) => {
-                                    Some(final_.duration_since(sent).as_millis())
-                                }
-                                _ => None,
-                            };
-                            let release_to_final = timing
-                                .final_at
-                                .map(|f| f.duration_since(timing.released_at).as_millis());
-                            let polish_ms = match (timing.final_at, timing.polish_done_at) {
-                                (Some(final_), Some(done)) => {
-                                    Some(done.duration_since(final_).as_millis())
-                                }
-                                _ => None,
-                            };
-                            let dispatch_ms =
-                                match (timing.polish_done_at, timing.insert_dispatched_at) {
-                                    (Some(done), Some(dispatched)) => {
-                                        Some(dispatched.duration_since(done).as_millis())
-                                    }
-                                    _ => None,
-                                };
-                            let insert_wait_ms = match (timing.insert_dispatched_at, now) {
-                                (Some(dispatched), _) => {
-                                    Some(now.duration_since(dispatched).as_millis())
-                                }
-                                _ => None,
-                            };
-                            let release_to_insertion =
-                                now.duration_since(timing.released_at).as_millis();
+                        if let Some(b) = breakdown {
                             logging::info(&format!(
-                                "session {}: inserted via {:?}; timing breakdown: recorded {recording}ms, release->finish_sent {}ms, ASR turnaround {}ms, release->final {}ms, polish {}ms, dispatch {}ms, insert {insert_ms}ms (waited {}ms for UI thread), release->insertion {release_to_insertion}ms",
+                                "session {}: inserted via {:?}; timing breakdown: recorded {}ms, release->finish_sent {}ms, ASR turnaround {}ms, release->final {}ms, polish {}ms, dispatch {}ms, insert {insert_ms}ms (waited {}ms for UI thread), release->insertion {}ms",
                                 report.session_id,
                                 outcome,
-                                release_to_finish_sent.unwrap_or(0),
-                                asr_turnaround
-                                    .map(|ms| ms.to_string())
-                                    .unwrap_or_else(|| "?".into()),
-                                release_to_final
-                                    .map(|ms| ms.to_string())
-                                    .unwrap_or_else(|| "?".into()),
-                                polish_ms
-                                    .map(|ms| ms.to_string())
-                                    .unwrap_or_else(|| "?".into()),
-                                dispatch_ms
-                                    .map(|ms| ms.to_string())
-                                    .unwrap_or_else(|| "?".into()),
-                                insert_wait_ms
-                                    .map(|ms| ms.to_string())
-                                    .unwrap_or_else(|| "?".into()),
+                                b.recorded,
+                                b.release_to_finish_sent.unwrap_or(0),
+                                ms_or_unknown(b.asr_turnaround),
+                                ms_or_unknown(b.release_to_final),
+                                ms_or_unknown(b.polish),
+                                ms_or_unknown(b.dispatch),
+                                ms_or_unknown(b.insert_wait),
+                                b.release_to_insertion.unwrap_or(0),
                             ));
                         } else {
                             logging::info(&format!(
@@ -1519,6 +1545,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 report.session_id, outcome
                             ));
                         }
+                        let (status, method) = match outcome {
+                            InsertionOutcome::Typed => (Status::Inserted, "typed"),
+                            InsertionOutcome::Pasted => (Status::Inserted, "pasted"),
+                            InsertionOutcome::ClipboardOnly => {
+                                (Status::ClipboardOnly, "clipboard_only")
+                            }
+                            InsertionOutcome::SecureField => (Status::SecureField, "secure_field"),
+                        };
+                        history.finish(report.session_id, status, None, Some(method), breakdown);
                         match outcome {
                             InsertionOutcome::ClipboardOnly => show_error(
                                 &ui,
@@ -1545,6 +1580,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             report.session_id
                         ));
                         show_error(&ui, "insertion failed", &mut bubble_hide_at);
+                        history.finish(
+                            report.session_id,
+                            Status::InsertError,
+                            Some(message),
+                            None,
+                            breakdown,
+                        );
                     }
                 }
                 timing = None;
@@ -1617,6 +1659,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     "asr": if sidecar_ready { "ready" } else { "loading" },
                     "asr_backend": settings.backend,
                     "polish": polish,
+                    "history": if history.is_enabled() { "on" } else { "off" },
                     "overlay": if ui.overlay_active() { "ready" } else if ui.overlay.is_some() { "starting" } else { "native" },
                     "session": match machine.state() {
                         SessionState::Idle => "idle",
@@ -1803,6 +1846,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 machine.fail("ASR timed out");
                 logging::error(&format!("session {session_id}: ASR timed out"));
                 show_error(&ui, "ASR timed out", &mut bubble_hide_at);
+                history.finish(
+                    session_id,
+                    Status::AsrTimeout,
+                    None,
+                    None,
+                    timing.as_ref().map(|t| t.breakdown(Instant::now(), None)),
+                );
                 timing = None;
                 audio_stats = None;
             }

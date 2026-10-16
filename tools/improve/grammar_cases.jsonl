@@ -1,0 +1,91 @@
+{"id": "err-01", "group": "error", "input": "their going to the meeting tomorrow.", "error": "their going", "fix_any": ["they're going", "they are going"]}
+{"id": "err-02", "group": "error", "input": "I has finished the report.", "error": "I has", "fix_any": ["I have"]}
+{"id": "err-03", "group": "error", "input": "Lets meet at five tomorrow.", "error": "lets meet", "fix_any": ["let's meet", "let us meet"]}
+{"id": "err-04", "group": "error", "input": "We need to discuss the the budget today.", "error": "the the", "fix_any": ["the budget"]}
+{"id": "err-05", "group": "error", "input": "Your going to love this feature.", "error": "your going", "fix_any": ["you're going", "you are going"]}
+{"id": "err-06", "group": "error", "input": "The team have finish the migration.", "error": "have finish ", "fix_any": ["has finished", "have finished"]}
+{"id": "err-07", "group": "error", "input": "She dont like the new design.", "error": "she dont", "fix_any": ["she doesn't", "she does not", "she didn't"]}
+{"id": "err-08", "group": "error", "input": "I could of sent it earlier.", "error": "could of", "fix_any": ["could have", "could've"]}
+{"id": "err-09", "group": "error", "input": "Its a good idea to test it first.", "error": "its a", "fix_any": ["it's a", "it is a"]}
+{"id": "err-10", "group": "error", "input": "The results was better than expected.", "error": "results was", "fix_any": ["results were"]}
+{"id": "err-11", "group": "error", "input": "He go to the office every Monday.", "error": "he go ", "fix_any": ["he goes", "he went"]}
+{"id": "err-12", "group": "error", "input": "There is many reasons to switch.", "error": "there is many", "fix_any": ["there are many"]}
+{"id": "err-13", "group": "error", "input": "We was planning to ship on Friday.", "error": "we was", "fix_any": ["we were"]}
+{"id": "err-14", "group": "error", "input": "I seen the bug yesterday.", "error": "i seen", "fix_any": ["i saw", "i have seen", "i've seen"]}
+{"id": "err-15", "group": "error", "input": "Can you sent me the file?", "error": "you sent me", "fix_any": ["you send me"]}
+{"id": "err-16", "group": "error", "input": "This are the final numbers.", "error": "this are", "fix_any": ["these are", "this is"]}
+{"id": "err-17", "group": "error", "input": "The server dont respond after the update.", "error": "server dont", "fix_any": ["server doesn't", "server does not", "server didn't", "server did not"]}
+{"id": "err-18", "group": "error", "input": "Who's laptop is this?", "error": "who's laptop", "fix_any": ["whose laptop"]}
+{"id": "err-19", "group": "error", "input": "He is more faster than me.", "error": "more faster", "fix_any": ["faster than"]}
+{"id": "err-20", "group": "error", "input": "I am agree with the plan.", "error": "am agree", "fix_any": ["i agree"]}
+{"id": "err-21", "group": "error", "input": "We should of tested it.", "error": "should of", "fix_any": ["should have", "should've"]}
+{"id": "err-22", "group": "error", "input": "Please send me a email.", "error": "a email", "fix_any": ["an email"]}
+{"id": "err-23", "group": "error", "input": "It was a honest mistake.", "error": "a honest", "fix_any": ["an honest"]}
+{"id": "err-24", "group": "error", "input": "The meeting have been moved to Thursday.", "error": "meeting have", "fix_any": ["meeting has"]}
+{"id": "err-25", "group": "error", "input": "She don't know about it yet.", "error": "she don't", "fix_any": ["she doesn't", "she does not"]}
+{"id": "err-26", "group": "error", "input": "We need to by more licenses.", "error": "to by more", "fix_any": ["to buy more"]}
+{"id": "err-27", "group": "error", "input": "Then you for the quick reply.", "error": "then you for", "fix_any": ["thank you for"]}
+{"id": "err-28", "group": "error", "input": "I am going to there office later.", "error": "to there office", "fix_any": ["to their office"]}
+{"id": "err-29", "group": "error", "input": "Me and him are working on the release.", "error": "me and him are", "fix_any": ["he and i are", "he and me are", "him and me are", "i and he are"]}
+{"id": "err-30", "group": "error", "input": "The new build are ready for testing.", "error": "build are", "fix_any": ["build is"]}
+{"id": "clean-01", "group": "clean", "input": "Send the email."}
+{"id": "clean-02", "group": "clean", "input": "I think so."}
+{"id": "clean-03", "group": "clean", "input": "It was fine."}
+{"id": "clean-04", "group": "clean", "input": "So I was thinking we could maybe try the new approach."}
+{"id": "clean-05", "group": "clean", "input": "Send it to Alice."}
+{"id": "clean-06", "group": "clean", "input": "Start over with the budget."}
+{"id": "clean-07", "group": "clean", "input": "Meet on Tuesday, actually Wednesday works better for me too."}
+{"id": "clean-08", "group": "clean", "input": "Actually, send it now."}
+{"id": "clean-09", "group": "clean", "input": "Email Priya and Marcus about the launch on Thursday."}
+{"id": "clean-10", "group": "clean", "input": "The total is 1,250 dollars and 3.14 percent."}
+{"id": "clean-11", "group": "clean", "input": "Call me at 555-0199 before noon."}
+{"id": "clean-12", "group": "clean", "input": "Run pip install numpy in the virtual environment."}
+{"id": "clean-13", "group": "clean", "input": "Check the readme dot md file first."}
+{"id": "clean-14", "group": "clean", "input": "I pushed the fix to GitHub last night."}
+{"id": "clean-15", "group": "clean", "input": "We train the model with PyTorch."}
+{"id": "clean-16", "group": "clean", "input": "Ship it on Monday."}
+{"id": "clean-17", "group": "clean", "input": "Hello world, again."}
+{"id": "clean-18", "group": "clean", "input": "Send the updated report."}
+{"id": "clean-19", "group": "clean", "input": "How can you help me."}
+{"id": "clean-20", "group": "clean", "input": "Is this ready?"}
+{"id": "clean-21", "group": "clean", "input": "This is ready!"}
+{"id": "clean-22", "group": "clean", "input": "First sentence. Second sentence."}
+{"id": "clean-23", "group": "clean", "input": "Version 3.14 is ready."}
+{"id": "clean-24", "group": "clean", "input": "The dashboard is ready and the response is fast."}
+{"id": "clean-25", "group": "clean", "input": "Let us check how this model is doing compared to the last one where we changed the configuration before shipping it to production today."}
+{"id": "clean-26", "group": "clean", "input": "I pushed the latest changes to git hub for the voice dictation project this morning."}
+{"id": "clean-27", "group": "clean", "input": "Actually, I think we should ship it now."}
+{"id": "clean-28", "group": "clean", "input": "Let me know if this works where we change the configuration."}
+{"id": "clean-29", "group": "clean", "input": "I went to the park."}
+{"id": "clean-30", "group": "clean", "input": "The meeting is at four."}
+{"id": "clean-31", "group": "clean", "input": "Please send the report to accounting."}
+{"id": "clean-32", "group": "clean", "input": "The answer is forty-two."}
+{"id": "clean-33", "group": "clean", "input": "Today we will ship it."}
+{"id": "clean-34", "group": "clean", "input": "The password is correcthorse."}
+{"id": "clean-35", "group": "clean", "input": "Book a flight to Paris."}
+{"id": "clean-36", "group": "clean", "input": "Set a timer for ten minutes."}
+{"id": "clean-37", "group": "clean", "input": "I think we should go."}
+{"id": "clean-38", "group": "clean", "input": "The weather is nice today."}
+{"id": "clean-39", "group": "clean", "input": "We need more time."}
+{"id": "clean-40", "group": "clean", "input": "Can you hear me?"}
+{"id": "clean-41", "group": "clean", "input": "It is my fault."}
+{"id": "clean-42", "group": "clean", "input": "I am not sure about that."}
+{"id": "clean-43", "group": "clean", "input": "I went to the store."}
+{"id": "clean-44", "group": "clean", "input": "What time is it?"}
+{"id": "clean-45", "group": "clean", "input": "The report is due Friday."}
+{"id": "clean-46", "group": "clean", "input": "I think it is fine."}
+{"id": "clean-47", "group": "clean", "input": "Let me see."}
+{"id": "clean-48", "group": "clean", "input": "The build is green."}
+{"id": "clean-49", "group": "clean", "input": "Maybe we should refactor that."}
+{"id": "clean-50", "group": "clean", "input": "Can you repeat that?"}
+{"id": "tech-01", "group": "technical", "input": "Update agents.md and push the fix to GitHub."}
+{"id": "tech-02", "group": "technical", "input": "The API returns a 404 when the user ID is missing."}
+{"id": "tech-03", "group": "technical", "input": "Email antash@example.com before 5 pm."}
+{"id": "tech-04", "group": "technical", "input": "Set the timeout to 8000 ms and the real-time factor to 3.0."}
+{"id": "tech-05", "group": "technical", "input": "Run cargo test --workspace before you push."}
+{"id": "tech-06", "group": "technical", "input": "Open https://example.com/docs/setup in the browser."}
+{"id": "tech-07", "group": "technical", "input": "Version 0.1.12 fixes the overlay on macOS 26."}
+{"id": "tech-08", "group": "technical", "input": "The invoice total is $4,250, due on March 3."}
+{"id": "tech-09", "group": "technical", "input": "Call me at 555-0142 after 6 pm."}
+{"id": "tech-10", "group": "technical", "input": "Move src/history.rs into apps/daemon/src."}
+{"id": "tech-11", "group": "technical", "input": "Priya and Antash will review the PyTorch and MLX results."}

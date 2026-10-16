@@ -233,6 +233,17 @@ pub struct Settings {
     /// Write transcripts and polish stages to the log. Off replaces the text
     /// with its length and a short hash.
     pub log_transcripts: bool,
+    /// Keep a private history of dictations on this machine: one JSON line
+    /// per dictation under `history/dictations/` next to the config (macOS)
+    /// or in `$XDG_DATA_HOME/sunoto/history` (Linux). Off by default; see
+    /// docs/local-history-plan-2026-10-16.md.
+    pub history_enabled: bool,
+    /// Days of history to keep; older day files are deleted. 0 keeps all.
+    pub history_retention_days: u32,
+    /// Apps whose dictations are recorded without any text (bundle ids or
+    /// app names on macOS, WM_CLASS names on X11). Password managers by
+    /// default; password fields are always left out.
+    pub history_exclude_apps: Vec<String>,
     /// Progressive LLM-polish insertion (default off). When on, the sidecar
     /// streams decoded tokens as `polish_chunk` deltas and the daemon types
     /// them into the focused window as they arrive (CGEvent keypresses, the
@@ -287,6 +298,9 @@ impl Default for Settings {
             capture_idle_stop_secs: 0,
             auto_update: "install".to_string(),
             log_transcripts: true,
+            history_enabled: false,
+            history_retention_days: 90,
+            history_exclude_apps: crate::history::default_exclude_apps(),
             llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
         }

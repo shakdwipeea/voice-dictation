@@ -1421,6 +1421,10 @@ pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
     println!("microphone:    {}", field("microphone"));
     println!("speech model:  {} ({})", field("asr"), field("asr_backend"));
     println!("polish:        {}", field("polish"));
+    // Daemons before 0.1.12 do not report history.
+    if status.get("history").is_some() {
+        println!("history:       {}", field("history"));
+    }
     println!("overlay:       {}", field("overlay"));
     println!("session:       {}", field("session"));
     if status.get("updates").is_some() {

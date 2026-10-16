@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sunoto Dictation Diary</title>
+<meta name="description" content="A short, plain-language summary of the plan for Sunoto to keep a private, on-device text history of dictations.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Same system as how-sunoto-works.html: 44rem reading column, figures widen to 62rem; sound is red, text is blue. */
+:root {
+  --paper: #f4f6f9;
+  --surface: #ffffff;
+  --ink: #18202e;
+  --muted: #5b6678;
+  --line: #d5dbe4;
+  --zone: #eaf0f8;
+  --rec: #cf3b2b;
+  --word: #2a5bd0;
+  --word-soft: #e1e9fb;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --pill: #1d2430;
+  --pill-ink: #f2f4f8;
+  --term-bg: #151b26;
+  --term-ink: #e6eaf2;
+  --term-dim: #8b96a8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f131a; --surface: #161c26; --ink: #e7ebf2; --muted: #9aa5b8;
+    --line: #2c3544; --zone: #1a2230; --rec: #ff7262; --word: #8aabff; --word-soft: #1d2a44;
+    --pill: #07090d; --pill-ink: #eef1f6;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f131a; --surface: #161c26; --ink: #e7ebf2; --muted: #9aa5b8;
+  --line: #2c3544; --zone: #1a2230; --rec: #ff7262; --word: #8aabff; --word-soft: #1d2a44;
+  --pill: #07090d; --pill-ink: #eef1f6;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 1.0625rem/1.6 var(--font-body); }
+.page {
+  max-width: 62rem; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 3.5rem 5rem;
+  display: grid; gap: 3.5rem;
+}
+.page > * { min-width: 0; }
+.prose { max-width: 44rem; }
+.prose > * + * { margin-top: 0.9rem; }
+a { color: var(--word); text-underline-offset: 0.18em; }
+a:focus-visible { outline: 2px solid var(--word); outline-offset: 3px; border-radius: 3px; }
+h1, h2 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.12; }
+h1 { font-size: clamp(2.2rem, 5.5vw, 3.2rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.5rem, 3.2vw, 1.9rem); font-weight: 700; letter-spacing: -0.01em; }
+p { margin: 0; }
+ul { margin: 0; padding-left: 1.2rem; }
+li + li { margin-top: 0.45rem; }
+.lede { font-size: 1.2rem; line-height: 1.5; max-width: 40rem; }
+.meta, .note { color: var(--muted); font-size: 0.95rem; }
+code { font-family: var(--font-mono); font-size: 0.88em; }
+kbd {
+  font-family: var(--font-mono); font-size: 0.82em; font-weight: 500;
+  border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+  padding: 0.05em 0.4em; background: var(--surface); white-space: nowrap;
+}
+
+header { display: grid; gap: 1.1rem; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.status {
+  justify-self: start; font-family: var(--font-mono); font-size: 0.76rem; letter-spacing: 0.06em;
+  text-transform: uppercase; border: 1px solid var(--line); border-radius: 999px; padding: 0.3em 0.8em;
+  background: var(--surface); color: var(--muted);
+}
+
+.summary { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.1rem 2rem; }
+.summary li { margin: 0; padding-left: 0.9rem; border-left: 2px solid var(--word-soft); display: grid; gap: 0.15rem; }
+.summary strong { font-family: var(--font-display); font-size: 1.05rem; }
+.summary span { color: var(--muted); font-size: 0.97rem; }
+
+section { display: grid; gap: 1.25rem; }
+section > * { min-width: 0; }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.fig-scroll { overflow-x: auto; padding: 1.25rem 1.25rem 0.5rem; }
+.fig-scroll svg { display: block; width: 100%; height: auto; min-width: 760px; }
+figcaption { padding: 0.85rem 1.25rem 1.1rem; color: var(--muted); font-size: 0.95rem; border-top: 1px solid var(--line); text-wrap: pretty; }
+
+.dg text { fill: var(--ink); font-family: var(--font-body); font-size: 12.5px; }
+.dg .t-title { font-family: var(--font-display); font-weight: 700; font-size: 16px; }
+.dg .t-sub { fill: var(--muted); font-size: 12px; }
+.dg .t-tag { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.dg .t-lab { font-size: 12px; fill: var(--muted); }
+.dg .t-ink { font-size: 12px; fill: var(--ink); }
+.dg .t-eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; fill: var(--muted); }
+.dg .t-key { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.dg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.3; }
+.dg .box-main { stroke: var(--ink); stroke-width: 1.7; }
+.dg .box-opt { stroke: var(--muted); stroke-dasharray: 5 4; }
+.dg .zone { fill: var(--zone); stroke: var(--muted); stroke-dasharray: 7 6; stroke-width: 1.2; }
+.dg .chip { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+.dg .k-sound { stroke: var(--rec); stroke-width: 2.4; fill: none; }
+.dg .k-word { stroke: var(--word); stroke-width: 2.4; fill: none; }
+.dg .k-signal { stroke: var(--muted); stroke-width: 1.8; fill: none; }
+.dg .k-copy { stroke: var(--muted); stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+.dg .pillshape { fill: var(--pill); stroke: var(--line); }
+.dg .t-pill { fill: var(--pill-ink); font-weight: 700; font-size: 13px; }
+.dg .pillbtn { fill: none; stroke: var(--pill-ink); stroke-width: 1.2; }
+.dg .t-pillbtn { fill: var(--pill-ink); font-size: 12px; }
+.dg .field { fill: var(--paper); stroke: var(--line); stroke-width: 1.2; }
+.dg .t-word { fill: var(--word); font-weight: 700; }
+.dg .btn { fill: var(--word); }
+.dg .t-btn { fill: var(--surface); font-weight: 700; font-size: 12px; }
+.dg .f-sound { fill: var(--rec); }
+.dg .f-word { fill: var(--word); }
+.dg .f-signal { fill: var(--muted); }
+
+.entry { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.entry > div { display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: 1rem; padding: 0.6rem 1.1rem; border-bottom: 1px solid var(--line); }
+.entry > div:last-child { border-bottom: 0; }
+.entry dt { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding-top: 0.2rem; }
+.entry dd { margin: 0; }
+.entry .final { color: var(--word); font-weight: 700; }
+.entry .fix { background: var(--word-soft); }
+.miss { text-decoration: underline wavy var(--rec); text-decoration-thickness: 1.5px; text-underline-offset: 0.22em; }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 0.97rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); background: var(--zone); }
+td strong { font-family: var(--font-display); }
+
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; counter-reset: s; }
+.steps li { margin: 0; counter-increment: s; display: grid; gap: 0.3rem; align-content: start; padding-top: 0.7rem; border-top: 2px solid var(--line); }
+.steps li::before { content: counter(s); font: 500 0.85rem var(--font-mono); color: var(--muted); }
+.steps li.later::before { content: "later"; }
+.steps li.later { border-top-style: dashed; }
+.steps strong { font-family: var(--font-display); font-size: 1.05rem; line-height: 1.25; }
+.steps span { color: var(--muted); font-size: 0.93rem; }
+.steps em { font-style: normal; font-family: var(--font-mono); font-size: 0.78rem; }
+
+h3 { font-family: var(--font-display); font-size: 1.15rem; font-weight: 700; margin: 0; }
+.term {
+  margin: 0; background: var(--term-bg); color: var(--term-ink); border: 1px solid var(--line); border-radius: 12px;
+  padding: 1rem 1.2rem; overflow-x: auto; font: 0.84rem/1.65 var(--font-mono); white-space: pre;
+}
+.term .dim { color: var(--term-dim); }
+.mock { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.mock-head {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem 1rem; padding: 0.75rem 1.1rem;
+  border-bottom: 1px solid var(--line); font: 0.78rem var(--font-mono); color: var(--muted); background: var(--zone);
+}
+.mock-head b { color: var(--ink); font-weight: 500; }
+.mock .table-wrap { border: 0; border-radius: 0; }
+.mock td.num, .mock th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mock td.good { color: var(--word); font-weight: 700; }
+.mock td.bad { color: var(--rec); font-weight: 700; }
+.mock ul { padding: 0.9rem 1.1rem 1rem 2.3rem; border-top: 1px solid var(--line); font-size: 0.95rem; }
+.mock ul b { font-family: var(--font-display); }
+.sub { display: grid; gap: 0.75rem; }
+footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--line); padding-top: 1.25rem; }
+
+@media (max-width: 860px) { .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) {
+  .page { gap: 3rem; padding-block: 2.25rem 4rem; }
+  .summary { grid-template-columns: minmax(0, 1fr); }
+  .entry > div { grid-template-columns: minmax(0, 1fr); gap: 0.15rem; }
+}
+@media (max-width: 460px) { .steps { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<main class="page">
+
+<header>
+  <div class="eyebrow">Sunoto · plan</div>
+  <h1>A private diary of your dictations</h1>
+  <p class="lede">Sunoto will remember the text of each dictation on your Mac, so we can see where it goes wrong and prove that a fix helps. After each paste, the pill will also offer two buttons: <b>Fix</b> and <b>Improve</b>.</p>
+  <p class="status">Step 1 built · text only, no audio in this version</p>
+  <p class="meta">Updated 16 October 2026. Engineering detail: <a href="local-history-plan-2026-10-16.md">local-history-plan-2026-10-16.md</a>.</p>
+</header>
+
+<section>
+  <div class="prose"><h2>In one minute</h2></div>
+  <ul class="summary">
+    <li><strong>What is saved</strong><span>Each dictation's text at every stage, the app, and how long it took. One line per dictation in a daily file. No audio.</span></li>
+    <li><strong>Off by default</strong><span>We turn it on for ourselves first. Users get a choice once they can see their history.</span></li>
+    <li><strong>Private</strong><span>Never uploaded. Password fields and password managers are skipped. Deleted after 90 days.</span></li>
+    <li><strong>Never slows pasting</strong><span>A separate worker writes the line after the paste. If it falls behind, the line is skipped.</span></li>
+  </ul>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>What gets saved</h2>
+    <p>Each stage of a dictation copies what it has into one entry. After the paste, the entry is written as one line.</p>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 520" role="img" aria-label="Each stage of a dictation, from microphone to paste, copies what it has into one diary entry. Only numbers are kept about the sound, not the audio. The entry is written to that day's file once, right after the paste.">
+        <defs>
+          <marker id="d1-sound" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-sound"/></marker>
+          <marker id="d1-word" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-word"/></marker>
+          <marker id="d1-copy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-signal"/></marker>
+        </defs>
+
+        <line x1="30" y1="24" x2="64" y2="24" class="k-sound" marker-end="url(#d1-sound)"/>
+        <text x="72" y="28" class="t-lab">audio</text>
+        <line x1="130" y1="24" x2="164" y2="24" class="k-word" marker-end="url(#d1-word)"/>
+        <text x="172" y="28" class="t-lab">words</text>
+        <line x1="232" y1="24" x2="266" y2="24" class="k-copy" marker-end="url(#d1-copy)"/>
+        <text x="274" y="28" class="t-lab">copied into the entry</text>
+        <rect x="420" y="15" width="34" height="18" rx="4" class="box box-opt"/>
+        <text x="462" y="28" class="t-lab">optional stage</text>
+
+        <rect x="30" y="64" width="160" height="80" rx="10" class="box"/>
+        <text x="110" y="98" text-anchor="middle" class="t-title">Microphone</text>
+        <text x="110" y="120" text-anchor="middle" class="t-sub">your voice</text>
+        <rect x="225" y="64" width="160" height="80" rx="10" class="box"/>
+        <text x="305" y="98" text-anchor="middle" class="t-title">Speech engine</text>
+        <text x="305" y="120" text-anchor="middle" class="t-sub">sound → words</text>
+        <rect x="420" y="64" width="160" height="80" rx="10" class="box"/>
+        <text x="500" y="98" text-anchor="middle" class="t-title">Tidy-up rules</text>
+        <text x="500" y="120" text-anchor="middle" class="t-sub">drops “um”, fixes slips</text>
+        <rect x="615" y="64" width="160" height="80" rx="10" class="box box-opt"/>
+        <text x="695" y="98" text-anchor="middle" class="t-title">AI editor</text>
+        <text x="695" y="120" text-anchor="middle" class="t-sub">optional</text>
+        <rect x="810" y="64" width="160" height="80" rx="10" class="box box-main"/>
+        <text x="890" y="98" text-anchor="middle" class="t-title">Paste</text>
+        <text x="890" y="120" text-anchor="middle" class="t-sub">into your app</text>
+
+        <line x1="190" y1="104" x2="219" y2="104" class="k-sound" marker-end="url(#d1-sound)"/>
+        <line x1="385" y1="104" x2="414" y2="104" class="k-word" marker-end="url(#d1-word)"/>
+        <line x1="580" y1="104" x2="609" y2="104" class="k-word" marker-end="url(#d1-word)"/>
+        <line x1="775" y1="104" x2="804" y2="104" class="k-word" marker-end="url(#d1-word)"/>
+
+        <rect x="20" y="222" width="960" height="186" rx="14" class="zone"/>
+        <text x="40" y="246" class="t-eyebrow">ONE DIARY ENTRY PER DICTATION</text>
+
+        <line x1="110" y1="144" x2="110" y2="256" class="k-copy" marker-end="url(#d1-copy)"/>
+        <line x1="305" y1="144" x2="305" y2="256" class="k-copy" marker-end="url(#d1-copy)"/>
+        <line x1="500" y1="144" x2="500" y2="256" class="k-copy" marker-end="url(#d1-copy)"/>
+        <line x1="695" y1="144" x2="695" y2="256" class="k-copy" marker-end="url(#d1-copy)"/>
+        <line x1="890" y1="144" x2="890" y2="256" class="k-copy" marker-end="url(#d1-copy)"/>
+        <text x="120" y="190" class="t-lab">copied in as it happens</text>
+
+        <rect x="30" y="262" width="160" height="68" rx="10" class="chip"/>
+        <text x="110" y="290" text-anchor="middle">How long, how loud</text>
+        <text x="110" y="312" text-anchor="middle" class="t-sub">numbers only, no audio</text>
+        <rect x="225" y="262" width="160" height="68" rx="10" class="chip"/>
+        <text x="305" y="290" text-anchor="middle">What it heard</text>
+        <text x="305" y="312" text-anchor="middle" class="t-sub">the raw words</text>
+        <rect x="420" y="262" width="160" height="68" rx="10" class="chip"/>
+        <text x="500" y="290" text-anchor="middle">After tidy-up</text>
+        <text x="500" y="312" text-anchor="middle" class="t-sub">and every change made</text>
+        <rect x="615" y="262" width="160" height="68" rx="10" class="chip"/>
+        <text x="695" y="290" text-anchor="middle">After AI edit</text>
+        <text x="695" y="312" text-anchor="middle" class="t-sub">or “off”</text>
+        <rect x="810" y="262" width="160" height="68" rx="10" class="chip"/>
+        <text x="890" y="290" text-anchor="middle">What was pasted</text>
+        <text x="890" y="312" text-anchor="middle" class="t-sub">app, timings, result</text>
+
+        <text x="500" y="364" text-anchor="middle" class="t-sub">Failures get an entry too: cancelled, nothing heard, timed out, password field (words left out).</text>
+        <text x="500" y="388" text-anchor="middle" class="t-tag">plus Sunoto version and speech model, so changes can be compared later</text>
+
+        <line x1="500" y1="408" x2="500" y2="450" class="k-word" marker-end="url(#d1-word)"/>
+        <text x="514" y="434" class="t-lab">written once, right after the paste</text>
+        <rect x="320" y="456" width="360" height="48" rx="10" class="box box-main"/>
+        <text x="500" y="485" text-anchor="middle" class="t-key">history/dictations/2026-10-16.jsonl</text>
+      </svg>
+    </div>
+    <figcaption>Nothing touches the disk until the paste is done. Then it is one line in one file.</figcaption>
+  </figure>
+
+  <dl class="entry">
+    <div><dt>When, where</dt><dd>16 Oct, 10:42 · Slack</dd></div>
+    <div><dt>Speech engine heard</dt><dd>Um, send the email to priya on Tuesday, actually Wednesday.</dd></div>
+    <div><dt>Pasted</dt><dd class="final">Send the email to <span class="miss">priya</span> on Wednesday.</dd></div>
+    <div><dt>Result</dt><dd>Pasted 0.28 s after the second tap</dd></div>
+    <div class="fix"><dt>Your fix (added later)</dt><dd>Send the email to Priya on Wednesday.</dd></div>
+  </dl>
+  <p class="note prose">The tidy-up rules removed “Um” and swapped Tuesday for Wednesday, but “priya” stayed lowercase. Seen many times in the diary, that becomes an obvious word-list entry.</p>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>Knowing what you meant</h2>
+    <p>The diary shows what Sunoto produced. Three clues tell us what you wanted, and each is added as a short note on the entry:</p>
+    <ul>
+      <li><strong>You fix it:</strong> click <b>Fix</b> on the pill (below), or run <code>sunoto-daemon history fix last "…"</code>. This records the right words, and it's the best clue.</li>
+      <li><strong>You undo it:</strong> <kbd>⌘Z</kbd> within 10 seconds of a paste (Mac only). Only ⌘Z is watched, and only its timing is kept.</li>
+      <li><strong>You say it again</strong> within 20 seconds, in the same app.</li>
+    </ul>
+    <p class="note">No clue means “probably right”, never “proven right”.</p>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>Two buttons after each paste</h2>
+    <p>For a few seconds after a paste, the pill shows <b>Improve</b> and <b>Fix</b>. They do different jobs:</p>
+    <ul>
+      <li><b>Fix</b> is for teaching. You type what you really said, and Sunoto saves it as a lesson. Your text in the app stays as it is.</li>
+      <li><b>Improve</b> is for correcting. Sunoto fixes spelling and grammar and swaps the corrected text in, after you see it and press Replace.</li>
+    </ul>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 340" role="img" aria-label="After a paste the pill shows Improve and Fix. Fix opens a small box where you type what you said; saving stores it as a lesson and leaves your text alone. Improve sends the text to Sunoto's small grammar model, shows the corrected text, and Replace swaps it in.">
+        <defs>
+          <marker id="d3-signal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-signal"/></marker>
+          <marker id="d3-word" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-word"/></marker>
+        </defs>
+
+        <!-- The pill -->
+        <rect x="20" y="150" width="270" height="56" rx="28" class="pillshape"/>
+        <text x="44" y="183" class="t-pill">✓ Pasted</text>
+        <rect x="128" y="163" width="80" height="30" rx="15" class="pillbtn"/>
+        <text x="168" y="183" text-anchor="middle" class="t-pillbtn">Improve</text>
+        <rect x="216" y="163" width="56" height="30" rx="15" class="pillbtn"/>
+        <text x="244" y="183" text-anchor="middle" class="t-pillbtn">Fix</text>
+
+        <!-- Fix lane -->
+        <path d="M244,163 V95 H324" class="k-signal" marker-end="url(#d3-signal)"/>
+        <text x="256" y="86" class="t-lab">click Fix</text>
+        <rect x="330" y="45" width="270" height="96" rx="10" class="box"/>
+        <text x="345" y="70" class="t-lab">What should it have said?</text>
+        <rect x="340" y="82" width="250" height="28" rx="6" class="field"/>
+        <text x="350" y="101">Send the email to <tspan class="t-word">Priya</tspan> on Wednesday.</text>
+        <text x="585" y="130" text-anchor="end" class="t-tag">Enter to save</text>
+        <line x1="600" y1="93" x2="654" y2="93" class="k-word" marker-end="url(#d3-word)"/>
+        <text x="627" y="83" text-anchor="middle" class="t-lab">Save</text>
+        <rect x="660" y="45" width="320" height="96" rx="10" class="box box-main"/>
+        <text x="820" y="76" text-anchor="middle" class="t-title">Saved as a lesson</text>
+        <text x="820" y="98" text-anchor="middle" class="t-sub">your text in the app is not changed</text>
+        <text x="820" y="122" text-anchor="middle" class="t-tag">after a few: “Always write Priya?”</text>
+
+        <!-- Improve lane -->
+        <path d="M168,193 V265 H324" class="k-signal" marker-end="url(#d3-signal)"/>
+        <text x="180" y="256" class="t-lab">click Improve</text>
+        <rect x="330" y="225" width="200" height="80" rx="10" class="box"/>
+        <text x="430" y="253" text-anchor="middle" class="t-title">Grammar model</text>
+        <text x="430" y="274" text-anchor="middle" class="t-sub">small, ours, on your Mac</text>
+        <text x="430" y="293" text-anchor="middle" class="t-tag">loaded only when needed</text>
+        <line x1="530" y1="265" x2="584" y2="265" class="k-word" marker-end="url(#d3-word)"/>
+        <text x="557" y="255" text-anchor="middle" class="t-lab">checked</text>
+        <rect x="590" y="215" width="390" height="100" rx="10" class="box box-main"/>
+        <text x="606" y="240" class="t-lab">Improved:</text>
+        <text x="606" y="264">Send the email to <tspan class="t-word">Priya</tspan> on Wednesday.</text>
+        <rect x="788" y="278" width="86" height="26" rx="13" class="btn"/>
+        <text x="831" y="295" text-anchor="middle" class="t-btn">Replace</text>
+        <rect x="882" y="278" width="86" height="26" rx="13" class="chip"/>
+        <text x="925" y="295" text-anchor="middle" class="t-ink">Cancel</text>
+      </svg>
+    </div>
+    <figcaption><b>Replace</b> makes Sunoto select the text it just pasted and paste the corrected text over it. If you've typed since, or moved to another window, it doesn't touch your text: it copies the corrected text so you can paste it yourself. It never uses ⌘Z, which in some apps undoes more than the paste.</figcaption>
+  </figure>
+
+  <div class="sub">
+    <h3>What Improve runs on: our own small grammar model</h3>
+    <p class="prose">Improve doesn't use Sunoto's AI editor, which needs a lot of memory, and it doesn't depend on Apple Intelligence, which many Macs don't have turned on. It uses a small model trained only to fix grammar, shipped with Sunoto:</p>
+    <ul class="prose">
+      <li><b>Works everywhere.</b> Every Mac Sunoto runs on, and later Linux, with the same results.</li>
+      <li><b>Small.</b> About 60 times smaller than the AI editor's model. It loads when your pointer reaches the pill and unloads a minute later.</li>
+      <li><b>Ours to teach.</b> Every Fix you save is a “wrong → right” example we can retrain it with.</li>
+      <li><b>Safe.</b> Numbers, file names and links can't change, your word list (“PyTorch”, “Priya”) is put back if the model alters it, and big rewrites are refused.</li>
+    </ul>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Option</th><th>Size</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Small grammar model</strong> (e.g. gec-t5_small)</td><td>~60M parameters, ~120 MB</td><td><b>Our choice</b>, if the test agrees</td></tr>
+          <tr><td><strong>Apple's on-device model</strong></td><td>managed by macOS</td><td>Optional, on Macs that have it, if clearly better</td></tr>
+          <tr><td><strong>Sunoto's AI editor</strong> (Phi-4 mini)</td><td>3.8B parameters</td><td>Not used: too much memory</td></tr>
+          <tr><td><strong>macOS spell checker</strong></td><td>built in</td><td>Not used: tested, it only flags grammar</td></tr>
+          <tr><td><strong>Cloud AI</strong></td><td>none on the Mac</td><td>Not used: your text would leave the Mac</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note prose">Before building, we test it on about 50 real dictations from our own logs. We use it if most results get better, none change the meaning or any numbers, a warm call takes under half a second, and it uses under 300 MB while loaded. Otherwise we try the next, slightly larger model.</p>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>What improving looks like</h2>
+    <p>A small analyzer inside Sunoto reads the diary on your Mac and produces three things. Each one leads to a change, and every change is checked against past dictations before it ships.</p>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 430" role="img" aria-label="An analyzer inside Sunoto reads the diary and produces word-list suggestions that you approve, a report the team reads to fix rules or the AI editor, and a test set that every change must pass before it ships. Afterwards, the fix rate in new dictations shows whether the change worked.">
+        <defs>
+          <marker id="d2-word" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-word"/></marker>
+          <marker id="d2-signal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-signal"/></marker>
+        </defs>
+
+        <!-- Source -->
+        <rect x="20" y="170" width="140" height="80" rx="10" class="box"/>
+        <text x="90" y="204" text-anchor="middle" class="t-title">Diary</text>
+        <text x="90" y="226" text-anchor="middle" class="t-sub">on your Mac</text>
+        <line x1="160" y1="210" x2="194" y2="210" class="k-word" marker-end="url(#d2-word)"/>
+        <rect x="200" y="160" width="170" height="100" rx="12" class="box box-main"/>
+        <text x="285" y="198" text-anchor="middle" class="t-title">Analyzer</text>
+        <text x="285" y="220" text-anchor="middle" class="t-sub">part of Sunoto</text>
+        <text x="285" y="242" text-anchor="middle" class="t-tag">runs on your Mac</text>
+
+        <!-- Fan out -->
+        <path d="M370,190 H400 V72 H434" class="k-signal" marker-end="url(#d2-signal)"/>
+        <line x1="370" y1="210" x2="434" y2="210" class="k-signal" marker-end="url(#d2-signal)"/>
+        <path d="M370,230 H400 V348 H434" class="k-signal" marker-end="url(#d2-signal)"/>
+
+        <!-- Outputs -->
+        <rect x="440" y="40" width="200" height="64" rx="10" class="box"/>
+        <text x="540" y="67" text-anchor="middle" class="t-title">Word-list suggestions</text>
+        <text x="540" y="88" text-anchor="middle" class="t-sub">priya → Priya</text>
+        <rect x="440" y="178" width="200" height="64" rx="10" class="box"/>
+        <text x="540" y="205" text-anchor="middle" class="t-title">Report</text>
+        <text x="540" y="226" text-anchor="middle" class="t-sub">speed, failures, fixes</text>
+        <rect x="440" y="316" width="200" height="64" rx="10" class="box"/>
+        <text x="540" y="343" text-anchor="middle" class="t-title">Test set</text>
+        <text x="540" y="364" text-anchor="middle" class="t-sub">real dictations + fixes</text>
+
+        <!-- Who acts -->
+        <line x1="640" y1="72" x2="754" y2="72" class="k-word" marker-end="url(#d2-word)"/>
+        <text x="697" y="62" text-anchor="middle" class="t-lab">you approve</text>
+        <line x1="640" y1="210" x2="754" y2="210" class="k-word" marker-end="url(#d2-word)"/>
+        <text x="697" y="200" text-anchor="middle" class="t-lab">team decides</text>
+        <line x1="640" y1="348" x2="754" y2="348" class="k-word" marker-end="url(#d2-word)"/>
+        <text x="697" y="338" text-anchor="middle" class="t-lab">eval before/after</text>
+
+        <!-- Results -->
+        <rect x="760" y="40" width="220" height="64" rx="10" class="box box-main"/>
+        <text x="870" y="67" text-anchor="middle" class="t-title">Your word list</text>
+        <text x="870" y="88" text-anchor="middle" class="t-sub">used from the next dictation</text>
+        <rect x="760" y="178" width="220" height="64" rx="10" class="box box-main"/>
+        <text x="870" y="205" text-anchor="middle" class="t-title">Rule or AI editor fix</text>
+        <text x="870" y="226" text-anchor="middle" class="t-sub">in the next version</text>
+        <rect x="760" y="316" width="220" height="64" rx="10" class="box box-main"/>
+        <text x="870" y="343" text-anchor="middle" class="t-title">Ship, or try again</text>
+        <text x="870" y="364" text-anchor="middle" class="t-sub">never ship a change that is worse</text>
+
+        <!-- Feedback -->
+        <path d="M870,380 V402 H90 V256" class="k-signal" marker-end="url(#d2-signal)"/>
+        <text x="480" y="422" text-anchor="middle" class="t-lab">new dictations show whether it worked: the fix rate goes down</text>
+      </svg>
+    </div>
+    <figcaption>Every path ends in a check against real dictations. The <em>fix rate</em> is how often you fix or undo a result. It's the accuracy number this version can measure without audio.</figcaption>
+  </figure>
+
+  <div class="sub">
+    <h3>1 · Word-list suggestions, for you</h3>
+    <p class="prose">Sunoto lists the words you keep fixing, and shows what each one would have changed in your past dictations. You choose which ones to add. Nothing is added on its own.</p>
+<pre class="term"><span class="dim">$</span> sunoto-daemon history suggest
+1. priya   → Priya    fixed 6× · would change 15 past dictations: 6 match your fixes, 0 conflict
+2. get hub → GitHub   fixed 3× · would change 4 past dictations: 3 match your fixes, 0 conflict
+<span class="dim">Add with: sunoto-daemon history suggest --accept 1,2</span></pre>
+  </div>
+
+  <div class="sub">
+    <h3>2 · A report, for the team</h3>
+    <p class="prose">One local page, <code>sunoto-daemon history report</code>, shows speed, failures and fixes for each version side by side, and flags what needs a look. Until observability exists, this is our dashboard, built from our own Macs.</p>
+    <figure class="mock">
+      <div class="mock-head"><span><b>report.html</b> · last 30 days · 1,284 dictations</span><span>mock-up · made-up numbers</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th class="num">0.1.11</th><th class="num">0.1.12</th></tr></thead>
+          <tbody>
+            <tr><td>Paste time, typical</td><td class="num">0.29 s</td><td class="num good">0.27 s</td></tr>
+            <tr><td>Paste time, slowest 5%</td><td class="num">0.61 s</td><td class="num bad">0.94 s ▲</td></tr>
+            <tr><td>Fix rate</td><td class="num">6.1%</td><td class="num good">4.8%</td></tr>
+            <tr><td>Paste failed, text left on clipboard</td><td class="num">0.4%</td><td class="num">0.4%</td></tr>
+            <tr><td>Nothing heard</td><td class="num">1.2%</td><td class="num">1.1%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li><b>Slower:</b> the slowest pastes got 54% slower in 0.1.12, mostly dictations over 20 seconds.</li>
+        <li><b>Rule to review:</b> the self-correction rule changed 41 dictations and 7 were fixed afterwards (17%, against 5% overall). The report lists all 7, each with before, after and the fix.</li>
+        <li><b>Most-fixed phrase:</b> “get hub” → “GitHub” (3×).</li>
+      </ul>
+    </figure>
+  </div>
+
+  <div class="sub">
+    <h3>3 · A test set, for the team</h3>
+    <p class="prose">Our own fixed dictations become test cases. A rule change ships only if <code>sunoto-daemon eval</code> shows it's better and it breaks nothing that was right. After that, the cases stay in the automatic tests for good. Comparing speech models needs audio, so that comes later.</p>
+  </div>
+</section>
+
+<section>
+  <div class="prose"><h2>Steps</h2></div>
+  <ol class="steps">
+    <li><strong>Text diary</strong><span>Saving entries, auto-delete, and the list, show and clear commands.</span><em>about 1–2 days</em></li>
+    <li><strong>Test Improve</strong><span>Run the small grammar model on about 50 real dictations. This can happen first.</span><em>about 1 day</em></li>
+    <li><strong>Pill buttons</strong><span>Improve and Fix on the pill, with Replace and the clipboard fallback.</span><em>about 3–5 days</em></li>
+    <li><strong>Clues and export</strong><span>The fix command, ⌘Z and said-again notes, and export to a test set.</span><em>about 2–3 days</em></li>
+    <li><strong>Improve tools</strong><span>Word-list suggestions with a preview, and the report.</span><em>about 2–3 days</em></li>
+    <li class="later"><strong>Later versions</strong><span>Audio (opt-in), a history window, Improve on Linux, and team observability.</span><em>separate plans</em></li>
+  </ol>
+</section>
+
+<section>
+  <div class="prose"><h2>Decisions</h2></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Question</th><th>Suggestion</th></tr></thead>
+      <tbody>
+        <tr><td><strong>How to store it</strong></td><td>One plain text file per day. A database later, if a history window needs search.</td></tr>
+        <tr><td><strong>On by default?</strong></td><td>Off for now. On, with a choice at setup, once users can see their history.</td></tr>
+        <tr><td><strong>Save audio?</strong></td><td>Not in this version. Decided 16 Oct.</td></tr>
+        <tr><td><strong>Words in the log file</strong></td><td>Stop writing them once the diary exists.</td></tr>
+        <tr><td><strong>Watch for ⌘Z</strong></td><td>Yes. Mac only, 10 seconds after a paste, ⌘Z only.</td></tr>
+        <tr><td><strong>What Improve uses</strong></td><td>Our own small grammar model, loaded only when needed. Apple's model is optional. No extra rules layer.</td></tr>
+        <tr><td><strong>How Replace works</strong></td><td>Select what Sunoto pasted and paste over it. If that isn't safe, copy instead. Never ⌘Z.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>Plan of 16 October 2026. Step 1, the text diary, is built; the rest is not yet. For how dictation works today, see <a href="how-sunoto-works.html">How Sunoto works</a>.</footer>
+
+</main>
+</body>
+</html>
