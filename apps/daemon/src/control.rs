@@ -125,6 +125,14 @@ pub(crate) fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEv
                     })
                     .is_ok();
             }
+            Ok(ControlCommand::Improve { accept }) => {
+                return events
+                    .send(DaemonEvent::ControlImprove {
+                        accept,
+                        response: reader.into_inner(),
+                    })
+                    .is_ok();
+            }
             Err(_) => {
                 let mut stream = reader.into_inner();
                 let _ = serde_json::to_writer(

@@ -1425,6 +1425,9 @@ pub fn print_status(json: bool) -> Result<(), Box<dyn Error>> {
     if status.get("history").is_some() {
         println!("history:       {}", field("history"));
     }
+    if status.get("improve").is_some() {
+        println!("improve:       {}", field("improve"));
+    }
     println!("overlay:       {}", field("overlay"));
     println!("session:       {}", field("session"));
     if status.get("updates").is_some() {

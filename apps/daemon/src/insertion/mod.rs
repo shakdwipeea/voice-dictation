@@ -81,6 +81,14 @@ pub enum UiCommand {
         final_text: String,
         streamed_ok: bool,
     },
+    /// Replace `old`, which Sunoto just pasted, with `new` (the Improve
+    /// button). Only where `old` is verified to sit right before the caret;
+    /// otherwise `new` goes to the clipboard.
+    Replace {
+        session_id: u64,
+        old: String,
+        new: String,
+    },
     Shutdown,
 }
 
@@ -201,6 +209,19 @@ impl UiBackend {
                     WaylandOutcome::ClipboardOnly => InsertionOutcome::ClipboardOnly,
                 })
             }
+        }
+    }
+
+    /// Improve's Replace: `Pasted` when `old` was selected in place and
+    /// pasted over, `ClipboardOnly` when `new` could only be copied.
+    pub(crate) fn replace(&mut self, old: &str, new: &str) -> Result<InsertionOutcome, String> {
+        match self {
+            Self::Macos(ui) => ui.replace(old, new),
+            Self::X11(adapter) => adapter
+                .set_clipboard(new)
+                .map(|_| InsertionOutcome::ClipboardOnly)
+                .map_err(|error| error.to_string()),
+            Self::Wayland(_) => Err("Improve is not supported on Wayland".into()),
         }
     }
 
@@ -363,6 +384,22 @@ pub(crate) fn ui_thread(
                     insert_duration,
                 };
                 if events.send(DaemonEvent::Ui(report)).is_err() {
+                    return;
+                }
+            }
+            Ok(UiCommand::Replace {
+                session_id,
+                old,
+                new,
+            }) => {
+                let started = Instant::now();
+                let result = adapter.replace(&old, &new);
+                let report = UiReport {
+                    session_id,
+                    result,
+                    insert_duration: started.elapsed(),
+                };
+                if events.send(DaemonEvent::Replaced(report)).is_err() {
                     return;
                 }
             }

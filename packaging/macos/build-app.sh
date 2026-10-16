@@ -34,7 +34,8 @@ PBS_URL="${PBS_BASE}/${PBS_ASSET//+/%2B}"
 PBS_SUMS_URL="${PBS_BASE}/SHA256SUMS"
 
 # Pinned packages: the versions the project was benchmarked with.
-ASR_PACKAGES=("parakeet-mlx==0.5.2" "mlx==0.31.2" "huggingface_hub>=0.30.2")
+# tokenizers: the Improve button's grammar helper (services/improve).
+ASR_PACKAGES=("parakeet-mlx==0.5.2" "mlx==0.31.2" "huggingface_hub>=0.30.2" "tokenizers==0.22.2")
 LLM_PACKAGE="llama-cpp-python==0.3.31"
 
 bold() { printf '\033[1m== %s ==\033[0m\n' "$*"; }
@@ -76,7 +77,7 @@ PY="$RES/python/bin/python3"
 ok "installed ${ASR_PACKAGES[*]}"
 CMAKE_ARGS="-DGGML_METAL=on" "$PY" -m pip install --quiet --no-cache-dir "$LLM_PACKAGE"
 ok "installed $LLM_PACKAGE with Metal"
-"$PY" -c "import mlx.core, parakeet_mlx, llama_cpp, huggingface_hub; print('imports ok')"
+"$PY" -c "import mlx.core, parakeet_mlx, llama_cpp, huggingface_hub, tokenizers; print('imports ok')"
 # Trim what no sidecar needs.
 rm -rf "$RES/python/lib/python3.12/test" "$RES/python/lib/python3.12/idlelib"
 find "$RES/python" -name "__pycache__" -type d -prune -exec rm -rf {} +

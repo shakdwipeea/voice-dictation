@@ -45,8 +45,19 @@ unsafe impl Sync for CFStringConstant {}
 
 pub type CFTypeRef = *const c_void;
 pub type AXUIElementRef = *const c_void;
+pub type AXValueRef = *const c_void;
 pub type AXError = i32;
 pub const kAXErrorSuccess: AXError = 0;
+/// `AXValueType` of a wrapped `CFRange` (kAXValueCFRangeType).
+pub const kAXValueCFRangeType: u32 = 4;
+
+/// A range of UTF-16 code units, as text accessibility attributes use.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CFRange {
+    pub location: CFIndex,
+    pub length: CFIndex,
+}
 
 pub type CGEventRef = *const c_void;
 pub type CGEventTapRef = *const c_void;
@@ -169,6 +180,19 @@ unsafe extern "C" {
         attribute: CFStringRef,
         value: *mut CFTypeRef,
     ) -> AXError;
+    pub fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> AXError;
+    pub fn AXUIElementCopyParameterizedAttributeValue(
+        element: AXUIElementRef,
+        parameterizedAttribute: CFStringRef,
+        parameter: CFTypeRef,
+        result: *mut CFTypeRef,
+    ) -> AXError;
+    pub fn AXValueCreate(theType: u32, valuePtr: *const c_void) -> AXValueRef;
+    pub fn AXValueGetValue(value: AXValueRef, theType: u32, valuePtr: *mut c_void) -> bool;
 
     // CoreGraphics: window list
     pub fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFArrayRef;

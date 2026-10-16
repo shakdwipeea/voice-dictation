@@ -1639,11 +1639,444 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
     }
 }
 
+// MARK: Pill actions: Improve and Fix
+
+/// Works on the first click in a panel that never becomes key, so clicking
+/// it leaves keyboard focus in the app the text was pasted into.
+private final class FirstClickButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Never takes keyboard focus: Improve's Replace pastes into the app the
+/// dictation went to, which must stay focused.
+private final class ActionsPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class ActionsView: NSView {
+    var onHover: ((Bool) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let palette = PillPalette.resolve(for: effectiveAppearance)
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
+        palette.body.setFill()
+        shape.fill()
+        palette.edge.setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+    }
+}
+
+/// After a paste, a small chip under the pill offers Improve and Fix for a
+/// few seconds (longer while the pointer is on it). Improve turns the chip
+/// into a preview with Replace and Cancel; Fix opens a box to type what the
+/// dictation should have said.
+private final class ActionsController: NSObject {
+    private enum Mode { case buttons, working, preview, message }
+
+    private static let buttonsVisible: TimeInterval = 6
+    private static let afterHover: TimeInterval = 2.5
+    private static let workingLimit: TimeInterval = 120
+    private static let previewVisible: TimeInterval = 30
+    private static let messageVisible: TimeInterval = 2.5
+    private static let textWidth: CGFloat = 440
+    private static let padding = NSSize(width: 12, height: 9)
+
+    private let panel: ActionsPanel
+    private let content = ActionsView()
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private let buttonRow = NSStackView()
+    private let stack = NSStackView()
+    private let improveButton = FirstClickButton(title: "Improve", target: nil, action: nil)
+    private let fixButton = FirstClickButton(title: "Fix", target: nil, action: nil)
+    private let replaceButton = FirstClickButton(title: "Replace", target: nil, action: nil)
+    private let cancelButton = FirstClickButton(title: "Cancel", target: nil, action: nil)
+    private let emit: ([String: Any]) -> Void
+    private var fixPanel: FixPanelController!
+    private var sessionID: UInt64?
+    private var text = ""
+    private var mode = Mode.buttons
+    private var hovering = false
+    private var hoverReported = false
+    private var hideWork: DispatchWorkItem?
+
+    init(emit: @escaping ([String: Any]) -> Void) {
+        self.emit = emit
+        panel = ActionsPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 160, height: 40),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        fixPanel = FixPanelController { [weak self] sessionID, text in
+            self?.emit(["type": "fix_saved", "session_id": sessionID, "text": text])
+        }
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.contentView = content
+        content.onHover = { [weak self] inside in self?.hover(inside) }
+
+        for (button, action) in [
+            (improveButton, #selector(improveClicked)),
+            (fixButton, #selector(fixClicked)),
+            (replaceButton, #selector(replaceClicked)),
+            (cancelButton, #selector(cancelClicked)),
+        ] {
+            button.target = self
+            button.action = action
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 12, weight: .medium)
+        }
+        replaceButton.bezelColor = .controlAccentColor
+        label.font = .systemFont(ofSize: 13)
+        label.preferredMaxLayoutWidth = Self.textWidth
+        label.maximumNumberOfLines = 6
+
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 6
+        for button in [improveButton, fixButton, cancelButton, replaceButton] {
+            buttonRow.addArrangedSubview(button)
+        }
+        stack.orientation = .vertical
+        stack.alignment = .trailing
+        stack.spacing = 8
+        stack.addArrangedSubview(label)
+        stack.addArrangedSubview(buttonRow)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.padding.width),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.padding.width),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.padding.height),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -Self.padding.height),
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: Self.textWidth),
+        ])
+    }
+
+    func show(sessionID: UInt64, text: String, improve: Bool, fix: Bool) {
+        self.sessionID = sessionID
+        self.text = text
+        hoverReported = false
+        layout(.buttons, message: nil, improve: improve, fix: fix)
+        present()
+        scheduleHide(after: Self.buttonsVisible)
+    }
+
+    func showPreview(sessionID: UInt64, original: String, improved: String) {
+        guard sessionID == self.sessionID else { return }
+        layout(.preview, message: highlighted(original: original, improved: improved))
+        present()
+        scheduleHide(after: Self.previewVisible)
+    }
+
+    func showMessage(sessionID: UInt64, text: String) {
+        guard sessionID == self.sessionID else { return }
+        layout(.message, message: NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: PillPalette.resolve(for: content.effectiveAppearance).secondary,
+        ]))
+        present()
+        scheduleHide(after: Self.messageVisible)
+    }
+
+    func dismiss() {
+        hideWork?.cancel()
+        hideWork = nil
+        panel.orderOut(nil)
+        sessionID = nil
+    }
+
+    private func layout(_ mode: Mode, message: NSAttributedString?, improve: Bool = false, fix: Bool = false) {
+        self.mode = mode
+        label.isHidden = message == nil
+        if let message { label.attributedStringValue = message }
+        improveButton.isHidden = mode != .buttons || !improve
+        fixButton.isHidden = mode != .buttons || !fix
+        replaceButton.isHidden = mode != .preview
+        cancelButton.isHidden = mode != .preview
+        buttonRow.isHidden = mode == .working || mode == .message
+    }
+
+    /// The chip sits centred under the pill, which is 14 pt below the menu bar.
+    private func present() {
+        let inner = stack.fittingSize
+        let size = NSSize(
+            width: inner.width + 2 * Self.padding.width,
+            height: inner.height + 2 * Self.padding.height
+        )
+        guard let screen = NSScreen.main else { return }
+        let frame = screen.visibleFrame
+        let origin = NSPoint(
+            x: (frame.midX - size.width / 2).rounded(),
+            y: frame.maxY - 14 - PillView.rowHeight - 8 - size.height
+        )
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        content.layoutSubtreeIfNeeded()
+        content.needsDisplay = true
+        panel.orderFrontRegardless()
+        snapshotForTesting()
+    }
+
+    /// Development aid: with SUNOTO_OVERLAY_SNAPSHOT_DIR set, save each chip
+    /// state as a PNG, drawn by the chip's own code (no screen recording).
+    private var snapshotCount = 0
+    private func snapshotForTesting() {
+        guard let dir = ProcessInfo.processInfo.environment["SUNOTO_OVERLAY_SNAPSHOT_DIR"],
+              let image = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
+        content.cacheDisplay(in: content.bounds, to: image)
+        snapshotCount += 1
+        let name = String(format: "actions-%02d-%@.png", snapshotCount, "\(mode)")
+        try? image.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: dir).appendingPathComponent(name))
+    }
+
+    private func scheduleHide(after delay: TimeInterval) {
+        hideWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.timedOut() }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func timedOut() {
+        guard !hovering || mode == .working else { return }
+        if mode == .preview, let sessionID {
+            // Walking away from a preview is a Cancel.
+            emit(["type": "improve_cancelled", "session_id": sessionID])
+        }
+        dismiss()
+    }
+
+    private func hover(_ inside: Bool) {
+        hovering = inside
+        guard let sessionID else { return }
+        if inside {
+            if mode == .buttons {
+                hideWork?.cancel()
+                if !hoverReported {
+                    // Load Improve's model while the pointer is on its way.
+                    hoverReported = true
+                    emit(["type": "actions_hovered", "session_id": sessionID])
+                }
+            }
+        } else if mode == .buttons {
+            scheduleHide(after: Self.afterHover)
+        }
+    }
+
+    @objc private func improveClicked() {
+        guard let sessionID else { return }
+        layout(.working, message: NSAttributedString(string: "Improving…", attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: PillPalette.resolve(for: content.effectiveAppearance).secondary,
+        ]))
+        present()
+        scheduleHide(after: Self.workingLimit)
+        emit(["type": "improve_requested", "session_id": sessionID])
+    }
+
+    @objc private func fixClicked() {
+        guard let sessionID else { return }
+        let text = self.text
+        dismiss()
+        fixPanel.show(sessionID: sessionID, text: text)
+    }
+
+    @objc private func replaceClicked() {
+        guard let sessionID else { return }
+        emit(["type": "improve_accepted", "session_id": sessionID])
+        dismiss()
+    }
+
+    @objc private func cancelClicked() {
+        guard let sessionID else { return }
+        emit(["type": "improve_cancelled", "session_id": sessionID])
+        dismiss()
+    }
+
+    /// The improved text with the words that changed in the accent colour.
+    private func highlighted(original: String, improved: String) -> NSAttributedString {
+        let palette = PillPalette.resolve(for: content.effectiveAppearance)
+        let before = original.split(separator: " ").map(String.init)
+        let after = improved.split(separator: " ").map(String.init)
+        var table = Array(repeating: Array(repeating: 0, count: after.count + 1), count: before.count + 1)
+        for i in stride(from: before.count - 1, through: 0, by: -1) {
+            for j in stride(from: after.count - 1, through: 0, by: -1) {
+                table[i][j] = before[i] == after[j]
+                    ? table[i + 1][j + 1] + 1
+                    : max(table[i + 1][j], table[i][j + 1])
+            }
+        }
+        var kept = Set<Int>()
+        var i = 0, j = 0
+        while i < before.count && j < after.count {
+            if before[i] == after[j] {
+                kept.insert(j)
+                i += 1
+                j += 1
+            } else if table[i + 1][j] >= table[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        let plain: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: palette.primary,
+        ]
+        let changed: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: palette.ink,
+        ]
+        let result = NSMutableAttributedString()
+        for (index, word) in after.enumerated() {
+            if index > 0 { result.append(NSAttributedString(string: " ", attributes: plain)) }
+            result.append(NSAttributedString(string: word, attributes: kept.contains(index) ? plain : changed))
+        }
+        return result
+    }
+}
+
+/// "What should it have said?": a small window to type the right words.
+/// Saving keeps them as a lesson in the history; the app's text is not
+/// changed. Focus goes back to the app afterwards.
+private final class FixPanelController: NSObject, NSWindowDelegate {
+    private let panel: NSPanel
+    private let field = NSTextField(string: "")
+    private let onSave: (UInt64, String) -> Void
+    private var sessionID: UInt64?
+    private var original = ""
+    private var previousApp: NSRunningApplication?
+
+    init(onSave: @escaping (UInt64, String) -> Void) {
+        self.onSave = onSave
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 150),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        panel.title = "What should it have said?"
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.delegate = self
+
+        field.font = .systemFont(ofSize: 14)
+        field.usesSingleLineMode = false
+        field.cell?.wraps = true
+        field.cell?.isScrollable = false
+        field.lineBreakMode = .byWordWrapping
+        field.preferredMaxLayoutWidth = 448
+        let hint = NSTextField(wrappingLabelWithString: "Sunoto keeps this as a lesson. The text in your app is not changed.")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        let save = NSButton(title: "Save", target: self, action: #selector(save))
+        save.keyEquivalent = "\r"
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancel.keyEquivalent = "\u{1b}"
+        let buttons = NSStackView(views: [hint, cancel, save])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        hint.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let stack = NSStackView(views: [field, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView()
+        content.addSubview(stack)
+        panel.contentView = content
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: content.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            field.widthAnchor.constraint(equalToConstant: 448),
+            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            buttons.widthAnchor.constraint(equalTo: field.widthAnchor),
+        ])
+    }
+
+    func show(sessionID: UInt64, text: String) {
+        self.sessionID = sessionID
+        original = text
+        field.stringValue = text
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
+        if let screen = NSScreen.main {
+            let frame = screen.visibleFrame
+            panel.setFrameTopLeftPoint(NSPoint(
+                x: (frame.midX - panel.frame.width / 2).rounded(),
+                y: frame.maxY - 14 - PillView.rowHeight - 8
+            ))
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+    }
+
+    @objc private func save() {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionID = self.sessionID
+        close()
+        if let sessionID, !text.isEmpty, text != original {
+            onSave(sessionID, text)
+        }
+    }
+
+    @objc private func cancel() {
+        close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        returnFocus()
+    }
+
+    private func close() {
+        sessionID = nil
+        panel.orderOut(nil)
+        returnFocus()
+    }
+
+    private func returnFocus() {
+        previousApp?.activate(options: [])
+        previousApp = nil
+    }
+}
+
 private final class OverlayApp: NSObject, NSApplicationDelegate {
     private var panel = OverlayApp.makePillPanel()
     private let pill = PillView(frame: NSRect(x: 0, y: 0, width: PillView.captureWidth, height: PillView.rowHeight))
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
+    private var actions: ActionsController!
     private var visible = false
     private var displayClock: Timer?
     /// A close waiting for the check mark to be seen.
@@ -1672,6 +2105,9 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                 self?.emit(["type": "onboarding_done"])
             }
         )
+        actions = ActionsController(emit: { [weak self] message in
+            self?.emit(message)
+        })
         pill.autoresizingMask = [.width, .height]
         panel.contentView = pill
     }
@@ -1794,6 +2230,26 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             if let sessionID = uint64(message["session_id"]) {
                 palette.dismiss(sessionID: sessionID)
             }
+        case "actions":
+            guard let sessionID = uint64(message["session_id"]),
+                  let text = message["text"] as? String else { return }
+            actions.show(
+                sessionID: sessionID,
+                text: text,
+                improve: message["improve"] as? Bool ?? false,
+                fix: message["fix"] as? Bool ?? false
+            )
+        case "improve_preview":
+            guard let sessionID = uint64(message["session_id"]),
+                  let original = message["original"] as? String,
+                  let improved = message["improved"] as? String else { return }
+            actions.showPreview(sessionID: sessionID, original: original, improved: improved)
+        case "improve_message":
+            guard let sessionID = uint64(message["session_id"]),
+                  let text = message["text"] as? String else { return }
+            actions.showMessage(sessionID: sessionID, text: text)
+        case "dismiss_actions":
+            actions.dismiss()
         case "segment", "clear":
             break
         case "shutdown":

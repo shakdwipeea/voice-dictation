@@ -79,6 +79,12 @@ impl UiAdapter {
         accessibility::focused_element_is_secure()
     }
 
+    /// Select `text` when it is exactly what sits before the caret in the
+    /// focused text field. See `accessibility::select_text_before_caret`.
+    pub fn select_text_before_caret(&self, text: &str) -> Option<bool> {
+        accessibility::select_text_before_caret(text)
+    }
+
     /// Copy of the user's clipboard, taken before we overwrite it.
     pub fn clipboard_snapshot(&self) -> Option<PasteboardSnapshot> {
         appkit::snapshot()

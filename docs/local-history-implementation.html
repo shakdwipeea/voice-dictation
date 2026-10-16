@@ -139,9 +139,9 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
 
 <header>
   <div class="eyebrow">Sunoto · implementation report</div>
-  <h1>Dictation history: what we built and how we tested it</h1>
-  <p class="lede">Sunoto can now keep a private, text-only diary of every dictation on the Mac. This page shows what changed in the daemon's design, what each new piece does, and the results of testing it in the real app, plus the first test of the small grammar model planned for the Improve button.</p>
-  <p class="meta">16 October 2026 · step 1 of <a href="local-history-plan-2026-10-16.md">the history plan</a> (<a href="local-history-plan.html">plain-language version</a>) · built on <code>515caa4a</code>, not yet committed.</p>
+  <h1>Dictation history, Fix and Improve: what we built and how we tested it</h1>
+  <p class="lede">Sunoto can now keep a private, text-only diary of every dictation on the Mac. This page shows what changed in the daemon's design, what each new piece does, and the results of testing it in the real app, the test of the small grammar model, and the pill's new Fix and Improve buttons.</p>
+  <p class="meta">16 October 2026 · steps 1–3 of <a href="local-history-plan-2026-10-16.md">the history plan</a> (<a href="local-history-plan.html">plain-language version</a>) · branch <code>local-dictation-history</code>.</p>
   <nav aria-label="Sections">
     <ul>
       <li><a href="#architecture">Architecture change</a></li>
@@ -149,6 +149,7 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
       <li><a href="#code">What changed in the code</a></li>
       <li><a href="#tests">How it was tested</a></li>
       <li><a href="#model">Grammar model test</a></li>
+      <li><a href="#buttons">Fix and Improve</a></li>
       <li><a href="#next">Next</a></li>
     </ul>
   </nav>
@@ -426,14 +427,100 @@ footer { color: var(--muted); font-size: 0.92rem; border-top: 1px solid var(--li
   <p class="note prose"><b>Verdict:</b> promising, and worth building the Improve button on, with three conditions: greedy decoding, the stricter guard rail, and an MLX runtime to meet the memory target. The meaning changes are the real risk: they are rare, but the guard rails can't see them, so Improve must always preview before it replaces anything. A larger T5-base model should be tried if real dictations show too many of them.</p>
 </section>
 
+<section id="buttons">
+  <div class="prose">
+    <h2>Fix and Improve (plan step 3)</h2>
+    <p>After each paste, a small chip appears under the pill for a few seconds. The pill's own check-mark animation is unchanged.</p>
+    <ul>
+      <li><b>Fix</b> opens a box for what the dictation should have said. It's saved as a note on that dictation in the history, and the text in the app is not changed.</li>
+      <li><b>Improve</b> asks a new helper process for a corrected version, checks it, shows it with the changed words highlighted, and <b>Replace</b> swaps it in.</li>
+    </ul>
+    <p>The architecture change is one more helper process beside the speech engine. It's started on demand, loads the model only while it's needed, and exits when idle.</p>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 400" role="img" aria-label="One Improve click: the chip in the overlay asks the daemon, the daemon sends the pasted text to the grammar helper on MLX, checks its answer, shows a preview in the chip, and on Replace the UI thread selects the pasted text through Accessibility and pastes the correction over it, or copies it to the clipboard when it cannot confirm the selection.">
+        <defs>
+          <marker id="c-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-new"/></marker>
+          <marker id="c-old" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-old"/></marker>
+        </defs>
+        <!-- Lanes -->
+        <rect x="20" y="20" width="960" height="100" rx="12" class="zone"/>
+        <text x="36" y="40" class="t-eyebrow">OVERLAY (SWIFT)</text>
+        <rect x="20" y="140" width="960" height="120" rx="12" class="zone"/>
+        <text x="36" y="160" class="t-eyebrow">DAEMON (RUST)</text>
+        <rect x="20" y="280" width="960" height="100" rx="12" class="zone"/>
+        <text x="36" y="300" class="t-eyebrow">GRAMMAR HELPER · NEW PROCESS</text>
+
+        <!-- Overlay -->
+        <rect x="40" y="52" width="170" height="54" rx="10" class="box-new"/>
+        <text x="125" y="75" text-anchor="middle" class="t-title">Chip</text>
+        <text x="125" y="94" text-anchor="middle" class="t-sub">Improve · Fix</text>
+        <rect x="560" y="52" width="200" height="54" rx="10" class="box-new"/>
+        <text x="660" y="75" text-anchor="middle" class="t-title">Preview</text>
+        <text x="660" y="94" text-anchor="middle" class="t-sub">Replace · Cancel</text>
+
+        <!-- Daemon -->
+        <rect x="40" y="176" width="170" height="64" rx="10" class="box-new"/>
+        <text x="125" y="202" text-anchor="middle" class="t-title">Last paste</text>
+        <text x="125" y="222" text-anchor="middle" class="t-sub">what Improve acts on</text>
+        <rect x="330" y="176" width="200" height="64" rx="10" class="box-new"/>
+        <text x="430" y="202" text-anchor="middle" class="t-title">Safety checks</text>
+        <text x="430" y="222" text-anchor="middle" class="t-sub">numbers · code · 40% · word list</text>
+        <rect x="700" y="170" width="260" height="58" rx="10" class="box-new"/>
+        <text x="830" y="194" text-anchor="middle" class="t-title">Replace (UI thread)</text>
+        <text x="830" y="213" text-anchor="middle" class="t-sub">select via Accessibility, paste</text>
+
+        <!-- Helper -->
+        <rect x="330" y="312" width="200" height="56" rx="10" class="box-new"/>
+        <text x="430" y="336" text-anchor="middle" class="t-title">T5 grammar model</text>
+        <text x="430" y="355" text-anchor="middle" class="t-sub">MLX · ~225 MB while loaded</text>
+
+        <!-- Steps -->
+        <line x1="185" y1="106" x2="185" y2="170" class="k-new" marker-end="url(#c-new)"/>
+        <text x="193" y="134" class="t-lab">1 click</text>
+        <path d="M210,226 H260 V340 H324" class="k-new" marker-end="url(#c-new)"/>
+        <text x="268" y="273" class="t-lab">2 text</text>
+        <line x1="430" y1="312" x2="430" y2="246" class="k-new" marker-end="url(#c-new)"/>
+        <text x="438" y="273" class="t-lab">3 corrected</text>
+        <path d="M530,190 H600 V112" class="k-new" marker-end="url(#c-new)"/>
+        <text x="608" y="150" class="t-lab">4 preview</text>
+        <path d="M720,106 V170" class="k-new" marker-end="url(#c-new)"/>
+        <text x="728" y="142" class="t-lab">5 Replace</text>
+        <text x="830" y="247" text-anchor="middle" class="t-tag">not confirmed → clipboard, app untouched</text>
+      </svg>
+    </div>
+    <figcaption>One Improve click. The helper sees only the pasted text, and the daemon decides what may be shown. Replace touches the app only when Accessibility confirms the pasted text sits right before the cursor.</figcaption>
+  </figure>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>MLX model against PyTorch, all 91 test sentences, fp32 and bf16</td><td><span class="pass">identical output</span></td></tr>
+        <tr><td>Speed</td><td>34 ms typical once loaded. The first use took 12 s, including the 240 MB download; reloading after idle takes 0.4 s.</td></tr>
+        <tr><td>Memory of the helper</td><td><span class="pass">224 MB</span> while loaded (target 300). Zero when idle: it unloads after 60 s and exits after 5 min.</td></tr>
+        <tr><td>Live: dictated "She don't like the new design." into TextEdit, then Improve with Replace</td><td><span class="pass">replaced in place</span> with "She doesn't like the new design.", in 9 ms. Verified in the saved file.</td></tr>
+        <tr><td>Live: a sentence that needs nothing</td><td><span class="pass">"Looks right already"</span></td></tr>
+        <tr><td>Live: Replace with the cursor in another document</td><td><span class="pass">no text touched</span>; the correction went to the clipboard</td></tr>
+        <tr><td>Safety checks (5 unit tests built from the model's real failures)</td><td><span class="pass">pass</span>: file names, flags, versions, links and numbers are protected; the word list keeps its spelling</td></tr>
+        <tr><td>Chip drawing: buttons, preview, message</td><td>rendered from the overlay's own drawing code and checked</td></tr>
+        <tr><td>History notes for Improve (accepted or cancelled) and Fix</td><td><span class="pass">written</span>, pointing at the dictation's id; <code>history fix</code> does the same from the command line</td></tr>
+        <tr><td>Clicking Fix, and the Fix box</td><td><span class="muted">Not tested live: a script can't click it. Built and compiled; the history side is unit-tested.</span></td></tr>
+        <tr><td>All checks</td><td><span class="pass">241</span> Rust tests, <code>make test</code> (with 8 new helper tests), and clippy clean</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <section id="next">
   <div class="prose">
     <h2>Next</h2>
     <ul>
-      <li>Commit this work on a branch; it is uncommitted on <code>master</code> today.</li>
+      <li>Try Fix and Improve by hand: clicking them is the one thing not yet tested live.</li>
       <li>Let history collect a week of real dictations, then re-run the grammar test on those.</li>
-      <li>Port the T5 grammar model to MLX and measure memory against the 300 MB target.</li>
-      <li>Build the pill's Fix and Improve buttons (plan step 3).</li>
+      <li>Try Replace in Slack, Chrome, Notes and Mail. Where Accessibility can't confirm the text, the correction goes to the clipboard.</li>
       <li>Turn <code>log_transcripts</code> off once the grammar test no longer needs the log.</li>
     </ul>
   </div>

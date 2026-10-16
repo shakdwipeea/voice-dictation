@@ -280,6 +280,50 @@ impl Record {
     }
 }
 
+/// A later note about a dictation, pointing at it by `id`: what it should
+/// have said (the Fix button), or an Improve the user accepted or
+/// cancelled. Lines are only ever appended, so the dictation's own line is
+/// never rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct Note {
+    pub(crate) v: u32,
+    #[serde(rename = "type")]
+    pub(crate) kind: &'static str,
+    pub(crate) id: String,
+    pub(crate) ts: u64,
+    pub(crate) text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accepted: Option<bool>,
+}
+
+/// One line of a day file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum Entry {
+    Dictation(Box<Record>),
+    Note(Note),
+}
+
+impl Entry {
+    fn ts(&self) -> u64 {
+        match self {
+            Self::Dictation(record) => record.ts,
+            Self::Note(note) => note.ts,
+        }
+    }
+}
+
+/// A recently written dictation that notes may still refer to.
+struct Recent {
+    session_id: u64,
+    id: String,
+    redacted: bool,
+}
+
+const RECENT_KEPT: usize = 8;
+
 struct Draft {
     session_id: u64,
     record: Record,
@@ -293,10 +337,11 @@ struct Draft {
 /// The event loop's handle on history. Every method is a cheap no-op when
 /// history is off, so the loop calls them unconditionally.
 pub(crate) struct HistoryRecorder {
-    writer: Option<SyncSender<Box<Record>>>,
+    writer: Option<SyncSender<Entry>>,
     exclude_apps: Vec<String>,
     asr: Asr,
     draft: Option<Draft>,
+    recent: std::collections::VecDeque<Recent>,
     dropped: u64,
 }
 
@@ -327,7 +372,7 @@ impl HistoryRecorder {
         recorder
     }
 
-    fn new(writer: Option<SyncSender<Box<Record>>>, settings: &Settings) -> Self {
+    fn new(writer: Option<SyncSender<Entry>>, settings: &Settings) -> Self {
         let model = settings.backend.starts_with("parakeet").then(|| {
             // A local folder path carries the home directory; its name is
             // enough to tell models apart.
@@ -347,6 +392,7 @@ impl HistoryRecorder {
                 profile_ms: settings.profile_ms,
             },
             draft: None,
+            recent: std::collections::VecDeque::new(),
             dropped: 0,
         }
     }
@@ -362,7 +408,7 @@ impl HistoryRecorder {
             return;
         }
         if let Some(stale) = self.draft.take() {
-            self.send(stale.record);
+            self.send(Entry::Dictation(Box::new(stale.record)));
         }
         self.draft = Some(Draft {
             session_id,
@@ -478,7 +524,66 @@ impl HistoryRecorder {
         if status == Status::SecureField || excluded {
             record.redact();
         }
-        self.send(record);
+        if self.recent.len() == RECENT_KEPT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(Recent {
+            session_id,
+            id: record.id.clone(),
+            redacted: record.redacted,
+        });
+        self.send(Entry::Dictation(Box::new(record)));
+    }
+
+    /// Whether notes can be kept for this session's dictation: it was
+    /// recorded recently and its text was not withheld (password field or
+    /// excluded app).
+    pub(crate) fn can_note(&self, session_id: u64) -> bool {
+        self.writer.is_some()
+            && self
+                .recent
+                .iter()
+                .any(|recent| recent.session_id == session_id && !recent.redacted)
+    }
+
+    fn note(
+        &mut self,
+        session_id: u64,
+        kind: &'static str,
+        text: &str,
+        source: Option<&'static str>,
+        accepted: Option<bool>,
+    ) -> bool {
+        if !self.can_note(session_id) {
+            return false;
+        }
+        let id = self
+            .recent
+            .iter()
+            .rev()
+            .find(|recent| recent.session_id == session_id)
+            .map(|recent| recent.id.clone())
+            .expect("checked by can_note");
+        self.send(Entry::Note(Note {
+            v: SCHEMA_VERSION,
+            kind,
+            id,
+            ts: now_ms(),
+            text: text.to_string(),
+            source,
+            accepted,
+        }));
+        true
+    }
+
+    /// What the dictation should have said, typed by the user (Fix).
+    pub(crate) fn correction(&mut self, session_id: u64, text: &str) -> bool {
+        self.note(session_id, "correction", text, Some("fix_button"), None)
+    }
+
+    /// An Improve result the user replaced the text with, or cancelled.
+    pub(crate) fn improve(&mut self, session_id: u64, text: &str, accepted: bool) -> bool {
+        self.note(session_id, "improve", text, None, Some(accepted))
     }
 
     /// Ends a draft whose session the machine dropped before a transcript
@@ -501,11 +606,11 @@ impl HistoryRecorder {
         );
     }
 
-    fn send(&mut self, record: Record) {
+    fn send(&mut self, entry: Entry) {
         let Some(writer) = self.writer.as_ref() else {
             return;
         };
-        match writer.try_send(Box::new(record)) {
+        match writer.try_send(entry) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 self.dropped += 1;
@@ -525,9 +630,9 @@ impl HistoryRecorder {
 
 /// Create `root/dictations` (mode 0700) and start the writer thread, which
 /// also deletes expired day files at start and once a day.
-fn spawn_writer(root: &Path, retention_days: u32) -> io::Result<SyncSender<Box<Record>>> {
+fn spawn_writer(root: &Path, retention_days: u32) -> io::Result<SyncSender<Entry>> {
     let dir = prepare_dir(root)?;
-    let (tx, rx) = mpsc::sync_channel::<Box<Record>>(CHANNEL_CAPACITY);
+    let (tx, rx) = mpsc::sync_channel::<Entry>(CHANNEL_CAPACITY);
     std::thread::Builder::new()
         .name("history-writer".into())
         .spawn(move || {
@@ -535,8 +640,8 @@ fn spawn_writer(root: &Path, retention_days: u32) -> io::Result<SyncSender<Box<R
             let mut next_prune = Instant::now() + PRUNE_INTERVAL;
             loop {
                 match rx.recv_timeout(next_prune.saturating_duration_since(Instant::now())) {
-                    Ok(record) => {
-                        if let Err(error) = append_record(&dir, &record) {
+                    Ok(entry) => {
+                        if let Err(error) = append_entry(&dir, &entry) {
                             logging::warn(&format!(
                                 "dictation history: cannot write {}: {error}",
                                 dir.display()
@@ -564,9 +669,9 @@ pub(crate) fn prepare_dir(root: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-pub(crate) fn append_record(dir: &Path, record: &Record) -> io::Result<()> {
-    let line = serde_json::to_string(record).map_err(io::Error::other)?;
-    append_line(&dir.join(day_file_name(record.ts)), &line)
+pub(crate) fn append_entry(dir: &Path, entry: &Entry) -> io::Result<()> {
+    let line = serde_json::to_string(entry).map_err(io::Error::other)?;
+    append_line(&dir.join(day_file_name(entry.ts())), &line)
 }
 
 /// One `write_all` of the whole line in append mode, so a concurrent reader
@@ -630,7 +735,16 @@ mod tests {
         dir
     }
 
-    fn recorder(settings: &Settings) -> (HistoryRecorder, mpsc::Receiver<Box<Record>>) {
+    impl Entry {
+        fn record(self) -> Record {
+            match self {
+                Entry::Dictation(record) => *record,
+                Entry::Note(note) => panic!("expected a dictation, got {note:?}"),
+            }
+        }
+    }
+
+    fn recorder(settings: &Settings) -> (HistoryRecorder, mpsc::Receiver<Entry>) {
         let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
         (HistoryRecorder::new(Some(tx), settings), rx)
     }
@@ -705,7 +819,7 @@ mod tests {
             ..TimingBreakdown::default()
         };
         history.finish(7, Status::Inserted, None, Some("pasted"), Some(timing));
-        let record = rx.try_recv().expect("record queued");
+        let record = rx.try_recv().expect("record queued").record();
         assert_eq!(record.status, Status::Inserted);
         assert!(record.id.ends_with("-7"));
         assert_eq!(record.target.as_ref().unwrap().name, "TextEdit");
@@ -713,7 +827,7 @@ mod tests {
         assert_eq!(record.text.inserted.as_deref(), Some("Send it Wednesday."));
         assert_eq!(record.polish_trace.len(), 1);
 
-        let json: serde_json::Value = serde_json::to_value(&*record).unwrap();
+        let json: serde_json::Value = serde_json::to_value(&record).unwrap();
         assert_eq!(json["v"], 1);
         assert_eq!(json["type"], "dictation");
         assert_eq!(json["status"], "inserted");
@@ -737,10 +851,10 @@ mod tests {
         history.polished(1, StyleProfile::Prose, &[], "My secret.");
         history.inserted(1, "My secret.", false);
         history.finish(1, Status::SecureField, None, None, None);
-        let record = rx.try_recv().unwrap();
+        let record = rx.try_recv().unwrap().record();
         assert!(record.redacted);
         assert_eq!(record.text, Texts::default());
-        assert!(!serde_json::to_string(&*record).unwrap().contains("secret"));
+        assert!(!serde_json::to_string(&record).unwrap().contains("secret"));
 
         history.begin(2);
         history.target(Some(&(
@@ -750,11 +864,11 @@ mod tests {
         history.transcript(2, "vault words", None);
         history.inserted(2, "Vault words.", true);
         history.finish(2, Status::Inserted, None, None, None);
-        let record = rx.try_recv().unwrap();
+        let record = rx.try_recv().unwrap().record();
         assert!(record.redacted);
         assert_eq!(record.status, Status::Inserted);
         assert!(
-            !serde_json::to_string(&*record)
+            !serde_json::to_string(&record)
                 .unwrap()
                 .contains("ault words")
         );
@@ -775,8 +889,44 @@ mod tests {
         history.finish(2, Status::EmptyTranscript, None, None, None);
         history.finish(2, Status::Inserted, None, None, None);
 
-        let statuses: Vec<_> = rx.try_iter().map(|record| record.status).collect();
+        let statuses: Vec<_> = rx.try_iter().map(|entry| entry.record().status).collect();
         assert_eq!(statuses, [Status::Cancelled, Status::EmptyTranscript]);
+    }
+
+    #[test]
+    fn fixes_and_improves_become_notes_on_the_dictation() {
+        let settings = Settings::default();
+        let (mut history, rx) = recorder(&settings);
+        history.begin(3);
+        history.transcript(3, "send it to priya", None);
+        history.inserted(3, "Send it to priya.", false);
+        history.finish(3, Status::Inserted, None, Some("pasted"), None);
+        let id = rx.try_recv().unwrap().record().id;
+
+        assert!(history.can_note(3));
+        assert!(history.correction(3, "Send it to Priya."));
+        assert!(history.improve(3, "Send it to Priya.", false));
+        let notes: Vec<serde_json::Value> = rx
+            .try_iter()
+            .map(|entry| serde_json::to_value(&entry).unwrap())
+            .collect();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0]["type"], "correction");
+        assert_eq!(notes[0]["id"], id.as_str());
+        assert_eq!(notes[0]["source"], "fix_button");
+        assert_eq!(notes[0]["text"], "Send it to Priya.");
+        assert_eq!(notes[1]["type"], "improve");
+        assert_eq!(notes[1]["accepted"], false);
+        assert!(notes[0].get("accepted").is_none());
+
+        // Unknown sessions and password-field dictations get no notes.
+        assert!(!history.correction(99, "anything"));
+        history.begin(4);
+        history.finish(4, Status::SecureField, None, Some("secure_field"), None);
+        rx.try_recv().unwrap();
+        assert!(!history.can_note(4));
+        assert!(!history.correction(4, "my password"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -786,7 +936,7 @@ mod tests {
         history.begin(1);
         history.transcript(1, "hello", None);
         history.begin(2);
-        let record = rx.try_recv().unwrap();
+        let record = rx.try_recv().unwrap().record();
         assert_eq!(record.status, Status::Abandoned);
         assert!(record.id.ends_with("-1"));
         assert_eq!(history.draft.as_ref().unwrap().session_id, 2);
@@ -800,7 +950,7 @@ mod tests {
         history.reap(Some(3));
         assert!(rx.try_recv().is_err(), "still recording");
         history.reap(None);
-        let record = rx.try_recv().unwrap();
+        let record = rx.try_recv().unwrap().record();
         assert_eq!(record.status, Status::AsrError);
 
         // After the transcript, only an explicit finish ends it.
@@ -847,9 +997,9 @@ mod tests {
         };
         let mut record = Record::new(1, 20_742 * DAY_MS + 1_000, asr);
         record.status = Status::Cancelled;
-        append_record(&dir, &record).unwrap();
+        append_entry(&dir, &Entry::Dictation(Box::new(record.clone()))).unwrap();
         record.id = "second".into();
-        append_record(&dir, &record).unwrap();
+        append_entry(&dir, &Entry::Dictation(Box::new(record))).unwrap();
 
         let path = dir.join("2026-10-16.jsonl");
         let contents = fs::read_to_string(&path).unwrap();
@@ -921,7 +1071,10 @@ mod tests {
 
         let path = dictations_dir(&root).join(day_file_name(now_ms()));
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !path.exists() && Instant::now() < deadline {
+        // The file appears before its line is written; wait for the line.
+        while !fs::read_to_string(&path).is_ok_and(|text| text.ends_with('\n'))
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(10));
         }
         let saved: serde_json::Value =

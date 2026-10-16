@@ -10,10 +10,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::history::{dictations_dir, format_utc, history_dir, parse_day_file};
+use crate::history::{
+    Entry, Note, SCHEMA_VERSION, append_entry, dictations_dir, format_utc, history_dir, now_ms,
+    parse_day_file, prepare_dir,
+};
 use crate::settings::{self, Settings};
 
-const USAGE: &str = "usage: sunoto-daemon history status | list [-n N] | show ID|last | forget ID|last | clear [--yes]";
+const USAGE: &str = "usage: sunoto-daemon history status | list [-n N] | show ID|last | fix ID|last TEXT | forget ID|last | clear [--yes]";
 const LIST_DEFAULT: usize = 20;
 const LIST_TEXT_CHARS: usize = 60;
 
@@ -34,6 +37,13 @@ pub fn run_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
             list(&dir, count)
         }
         Some("show") if args.len() == 2 => show(&dir, &args[1]),
+        Some("fix") if args.len() >= 3 => {
+            let id = resolve_id(&dir, &args[1])?;
+            let text = args[2..].join(" ");
+            fix(&dir, &id, text.trim())?;
+            println!("saved what {id} should have said");
+            Ok(())
+        }
         Some("forget") if args.len() == 2 => {
             let id = resolve_id(&dir, &args[1])?;
             if forget(&dir, &id)? {
@@ -219,6 +229,39 @@ fn show(dir: &Path, requested: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Record what a dictation should have said, like the pill's Fix button.
+fn fix(dir: &Path, id: &str, text: &str) -> Result<(), Box<dyn Error>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("give the text it should have said".into());
+    }
+    let entries = read_entries(dir)?;
+    let dictation = entries
+        .iter()
+        .find(|value| is_dictation(value) && value.get("id").and_then(Value::as_str) == Some(id))
+        .ok_or_else(|| format!("no dictation {id}"))?;
+    if dictation.get("redacted").and_then(Value::as_bool) == Some(true) {
+        return Err(format!(
+            "{id} was a password field or an excluded app; no text is kept for it"
+        )
+        .into());
+    }
+    let root = dir.parent().unwrap_or(dir);
+    append_entry(
+        &prepare_dir(root)?,
+        &Entry::Note(Note {
+            v: SCHEMA_VERSION,
+            kind: "correction",
+            id: id.to_string(),
+            ts: now_ms(),
+            text: text.to_string(),
+            source: Some("cli"),
+            accepted: None,
+        }),
+    )?;
+    Ok(())
+}
+
 /// Remove every line about `id` from the day file that holds it, through a
 /// temporary file and a rename. An emptied day file is deleted. A dictation
 /// the daemon appends to the same file during the rewrite can be lost; the
@@ -337,6 +380,43 @@ mod tests {
         assert!(forget(&dir, "z").unwrap());
         assert!(!dir.join("2026-10-15.jsonl").exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fix_appends_a_correction_note_for_the_dictation() {
+        let root = temp_dir("fix");
+        let dir = root.join("dictations");
+        fs::create_dir_all(&dir).unwrap();
+        let redacted =
+            serde_json::json!({"v": 1, "type": "dictation", "id": "pw", "ts": 1, "redacted": true});
+        fs::write(
+            dir.join("2026-10-16.jsonl"),
+            format!("{}\n{redacted}\n", line("a", 1, "send it to priya")),
+        )
+        .unwrap();
+
+        fix(&dir, "a", "Send it to Priya.").unwrap();
+        let notes: Vec<Value> = read_entries(&dir)
+            .unwrap()
+            .into_iter()
+            .filter(|value| value["type"] == "correction")
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0]["id"], "a");
+        assert_eq!(notes[0]["text"], "Send it to Priya.");
+        assert_eq!(notes[0]["source"], "cli");
+        assert!(fix(&dir, "missing", "x").is_err());
+        assert!(fix(&dir, "pw", "my password").is_err());
+        assert!(fix(&dir, "a", "  ").is_err());
+        // The note goes with the dictation: forgetting it removes both.
+        assert!(forget(&dir, "a").unwrap());
+        assert!(
+            read_entries(&dir)
+                .unwrap()
+                .iter()
+                .all(|value| value["id"] != "a")
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

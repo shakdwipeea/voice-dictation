@@ -74,7 +74,43 @@ pub enum OverlayRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shortcut: Option<String>,
     },
+    /// After a paste (macOS pill): offer Improve and Fix for this dictation
+    /// for a few seconds. `text` is what was pasted; Fix opens with it.
+    Actions {
+        session_id: u64,
+        text: String,
+        improve: bool,
+        fix: bool,
+    },
+    /// Improve's corrected text, shown with Replace and Cancel.
+    ImprovePreview {
+        session_id: u64,
+        original: String,
+        improved: String,
+    },
+    /// Improve has nothing to replace ("Looks right already") or failed.
+    ImproveMessage {
+        session_id: u64,
+        text: String,
+    },
+    /// Close the actions and any Improve preview: a new dictation started.
+    DismissActions,
     Shutdown,
+}
+
+/// Requests to the grammar helper behind the Improve button
+/// (services/improve/grammar_sidecar.py).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GrammarRequest {
+    Health,
+    /// Load the model now; the user is about to click.
+    Warm,
+    Improve {
+        session_id: u64,
+        text: String,
+    },
+    Unload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +162,31 @@ pub enum SidecarEvent {
     },
     /// The user confirmed every onboarding row is granted.
     OnboardingDone,
+    /// The pointer reached the actions after a paste.
+    ActionsHovered {
+        session_id: u64,
+    },
+    ImproveRequested {
+        session_id: u64,
+    },
+    ImproveAccepted {
+        session_id: u64,
+    },
+    ImproveCancelled {
+        session_id: u64,
+    },
+    /// The user typed what the dictation should have said.
+    FixSaved {
+        session_id: u64,
+        text: String,
+    },
+    /// The grammar helper's corrected text.
+    Improved {
+        session_id: u64,
+        text: String,
+        #[serde(default)]
+        ms: u64,
+    },
 }
 
 /// Everything the reader thread can deliver. The sidecar streams events on its
@@ -419,6 +480,64 @@ mod tests {
             serde_json::to_string(&SidecarEvent::OnboardingDone).unwrap(),
             r#"{"type":"onboarding_done"}"#
         );
+    }
+
+    #[test]
+    fn improve_and_fix_messages_keep_their_wire_format() {
+        // The Swift overlay and the Python grammar helper read these names.
+        let actions = OverlayRequest::Actions {
+            session_id: 4,
+            text: "Send it.".into(),
+            improve: true,
+            fix: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&actions).unwrap(),
+            r#"{"type":"actions","session_id":4,"text":"Send it.","improve":true,"fix":false}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::DismissActions).unwrap(),
+            r#"{"type":"dismiss_actions"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&GrammarRequest::Improve {
+                session_id: 4,
+                text: "She dont.".into()
+            })
+            .unwrap(),
+            r#"{"type":"improve","session_id":4,"text":"She dont."}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&GrammarRequest::Warm).unwrap(),
+            r#"{"type":"warm"}"#
+        );
+        for (line, event) in [
+            (
+                r#"{"type":"improved","session_id":4,"text":"She doesn't.","ms":35}"#,
+                SidecarEvent::Improved {
+                    session_id: 4,
+                    text: "She doesn't.".into(),
+                    ms: 35,
+                },
+            ),
+            (
+                r#"{"type":"fix_saved","session_id":4,"text":"Send it to Priya."}"#,
+                SidecarEvent::FixSaved {
+                    session_id: 4,
+                    text: "Send it to Priya.".into(),
+                },
+            ),
+            (
+                r#"{"type":"improve_accepted","session_id":4}"#,
+                SidecarEvent::ImproveAccepted { session_id: 4 },
+            ),
+            (
+                r#"{"type":"actions_hovered","session_id":4}"#,
+                SidecarEvent::ActionsHovered { session_id: 4 },
+            ),
+        ] {
+            assert_eq!(serde_json::from_str::<SidecarEvent>(line).unwrap(), event);
+        }
     }
 
     #[test]

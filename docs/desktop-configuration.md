@@ -76,6 +76,50 @@ Dictation history (all optional, off by default):
   and deletes entries. `sunoto-daemon history status` shows the folder and
   the counts.
 
+Improve and Fix (macOS):
+
+```json
+{
+  "improve_enabled": true,
+  "improve_python": null,
+  "improve_model_dir": null
+}
+```
+
+After a paste, a small chip under the pill offers two buttons for about
+6 seconds, or longer while the pointer is on it:
+
+- **Improve** fixes spelling and grammar with a small model,
+  `Unbabel/gec-t5_small`, run on MLX. It shows the result with the changed
+  words highlighted. **Replace** swaps it in place.
+  - Replace selects the pasted text only where Accessibility confirms it is
+    exactly what sits before the cursor. Anywhere else nothing in the app is
+    touched, and the corrected text goes to the clipboard.
+  - Answers that change numbers, code, file names, links or brand-style
+    names, or that rewrite more than 40% of the words, are refused.
+  - Word-list terms (`polish.dictionary`) keep their spelling.
+- **Fix** opens a box to type what the dictation should have said. It is
+  saved as a note in the history and does not change the app's text. It is
+  shown only when `history_enabled` is on.
+
+Settings:
+
+- `improve_enabled`: on by default on macOS.
+- `improve_python`: the Python for the grammar helper. It defaults to the
+  speech engine's, which has MLX. It also needs the `tokenizers` package.
+- `improve_model_dir`: a local folder with `config.json`, `tokenizer.json`
+  and `model.safetensors`. Without it, the helper downloads the model
+  (about 240 MB) from Hugging Face the first time Improve is used, at a
+  pinned revision, into the same cache as the speech model.
+
+The helper loads the model when the pointer reaches the chip, unloads it
+after 60 seconds idle, and exits after 5 minutes. It uses about 225 MB while
+loaded.
+
+`sunoto-daemon improve` runs Improve on the last paste without the click
+and prints the result; `--accept` also replaces.
+`sunoto-daemon history fix last "…"` records a Fix from the command line.
+
 Updates (macOS release installs):
 
 ```json

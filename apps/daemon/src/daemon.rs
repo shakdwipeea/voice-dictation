@@ -28,6 +28,7 @@ use crate::control::{control_polish_response, spawn_control_thread};
 use crate::events::{DaemonEvent, ModeHotkeyEvent};
 use crate::health::{DaemonHealth, HealthMonitor, MicState, health_inputs, publish_health};
 use crate::history::{HistoryRecorder, Llm, LlmStatus, Status, empty_status};
+use crate::improve::PillActions;
 use crate::insertion::{DesktopBackend, UiCommand, UiOptions, desktop_backend, ui_thread};
 use crate::llm_polish;
 use crate::llm_report::{format_llm_diagnostics, format_llm_warmup_summary};
@@ -249,6 +250,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     let mut machine = SessionMachine::default();
     let mut history = HistoryRecorder::start(&settings);
+    // The pill's Improve and Fix buttons act on the last pasted dictation;
+    // `pending_insert` is the text on its way to the UI thread.
+    let mut actions = PillActions::new(events_tx.clone());
+    let mut pending_insert: Option<(u64, String)> = None;
     let mut preroll = AudioPreRoll::new(settings.preroll_ms as usize * SAMPLES_PER_MS);
     let mut focused_class: Option<(String, String)> = None;
     let mut timing: Option<SessionTiming> = None;
@@ -461,6 +466,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                 }
                 if let SessionAction::Started { session_id, .. } = machine.press_mode(mode) {
+                    actions.new_dictation(&ui);
                     if mode == SessionMode::System {
                         system_worker.activate_session(session_id);
                     } else {
@@ -1014,6 +1020,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                             ui.hide();
                                         } else {
                                             history.inserted(session_id, &sanitized_outcome, true);
+                                            pending_insert =
+                                                Some((session_id, sanitized_outcome.clone()));
                                             let _ = ui_tx.send(UiCommand::InsertStreamEnd {
                                                 session_id,
                                                 final_text: sanitized_outcome,
@@ -1060,6 +1068,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                             timing.insert_dispatched_at = Some(Instant::now());
                                         }
                                         history.inserted(session_id, &output, true);
+                                        pending_insert = Some((session_id, output.clone()));
                                         let _ = ui_tx.send(UiCommand::InsertStreamEnd {
                                             session_id,
                                             final_text: output.clone(),
@@ -1094,6 +1103,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                     timing.insert_dispatched_at = Some(Instant::now());
                                 }
                                 history.inserted(session_id, &sanitized, false);
+                                pending_insert = Some((session_id, sanitized.clone()));
                                 let _ = ui_tx.send(UiCommand::Insert {
                                     session_id,
                                     text: sanitized,
@@ -1135,7 +1145,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 SidecarEvent::SystemSelection { .. }
                 | SidecarEvent::SystemCancelled { .. }
                 | SidecarEvent::PermissionAction { .. }
-                | SidecarEvent::OnboardingDone => {
+                | SidecarEvent::OnboardingDone
+                | SidecarEvent::ActionsHovered { .. }
+                | SidecarEvent::ImproveRequested { .. }
+                | SidecarEvent::ImproveAccepted { .. }
+                | SidecarEvent::ImproveCancelled { .. }
+                | SidecarEvent::FixSaved { .. }
+                | SidecarEvent::Improved { .. } => {
                     logging::warn("unexpected UI event from ASR sidecar");
                 }
             },
@@ -1290,6 +1306,22 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     last_onboarding = None;
                 }
             }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ActionsHovered {
+                session_id,
+            }))) => actions.hovered(session_id, &settings),
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ImproveRequested {
+                session_id,
+            }))) => actions.requested(session_id, &settings, &ui),
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ImproveAccepted {
+                session_id,
+            }))) => actions.accepted(session_id, &ui_tx),
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ImproveCancelled {
+                session_id,
+            }))) => actions.cancelled(session_id, &mut history),
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::FixSaved {
+                session_id,
+                text,
+            }))) => actions.fix_saved(session_id, &text, &mut history),
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(event))) => {
                 logging::warn(&format!("unexpected overlay event: {event:?}"));
             }
@@ -1573,6 +1605,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             }
                             InsertionOutcome::Typed | InsertionOutcome::Pasted => ui.pasted(),
                         }
+                        if matches!(outcome, InsertionOutcome::Typed | InsertionOutcome::Pasted)
+                            && let Some((_, text)) = pending_insert
+                                .take()
+                                .filter(|(id, _)| *id == report.session_id)
+                        {
+                            actions.pasted(report.session_id, &text, &settings, &ui, &history);
+                        }
                     }
                     Err(message) => {
                         logging::error(&format!(
@@ -1627,6 +1666,33 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            Ok(DaemonEvent::ControlImprove { accept, response }) => {
+                actions.control(accept, response, &settings, &ui)
+            }
+            Ok(DaemonEvent::Grammar(SidecarMessage::Event(SidecarEvent::Improved {
+                session_id,
+                text,
+                ms,
+            }))) => actions.improved(session_id, &text, ms, &settings, &ui, &ui_tx),
+            Ok(DaemonEvent::Grammar(SidecarMessage::Event(SidecarEvent::Error {
+                session_id,
+                message,
+            }))) => actions.helper_failed(session_id, &message, &ui),
+            Ok(DaemonEvent::Grammar(SidecarMessage::Event(event))) => {
+                logging::info(&format!("grammar helper: {event:?}"));
+            }
+            Ok(DaemonEvent::Grammar(SidecarMessage::Garbage { line })) => {
+                logging::warn(&format!(
+                    "ignored non-protocol grammar helper output: {line}"
+                ));
+            }
+            Ok(DaemonEvent::Grammar(SidecarMessage::Closed)) => {
+                logging::info("grammar helper exited");
+                actions.helper_exited();
+            }
+            Ok(DaemonEvent::Replaced(report)) => {
+                actions.replaced(report, &ui, &mut history, &mut bubble_hide_at)
+            }
             Ok(DaemonEvent::ControlStatus { mut response }) => {
                 let current = health.current();
                 let hotkey = if !blocked_modes.is_empty() {
@@ -1660,6 +1726,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     "asr_backend": settings.backend,
                     "polish": polish,
                     "history": if history.is_enabled() { "on" } else { "off" },
+                    "improve": if settings.improve_enabled && cfg!(target_os = "macos") { "on" } else { "off" },
                     "overlay": if ui.overlay_active() { "ready" } else if ui.overlay.is_some() { "starting" } else { "native" },
                     "session": match machine.state() {
                         SessionState::Idle => "idle",

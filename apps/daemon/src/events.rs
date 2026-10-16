@@ -38,6 +38,16 @@ pub enum DaemonEvent {
     ControlStatus {
         response: UnixStream,
     },
+    /// `sunoto-daemon improve [--accept]`: the Improve button without the
+    /// click, for testing and keyboard use. `accept` also presses Replace.
+    ControlImprove {
+        accept: bool,
+        response: UnixStream,
+    },
+    /// Messages from the grammar helper behind the Improve button.
+    Grammar(SidecarMessage),
+    /// The UI thread replaced pasted text with Improve's version.
+    Replaced(UiReport),
     /// A newer release, verified and unpacked, waiting for an idle moment.
     UpdateReady(crate::update::Staged),
     Fatal(String),
@@ -52,6 +62,10 @@ pub(crate) enum ControlCommand {
     PlanSystem {
         text: String,
         dry_run: bool,
+    },
+    Improve {
+        #[serde(default)]
+        accept: bool,
     },
     Trigger {
         mode: ControlMode,

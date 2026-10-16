@@ -6,6 +6,7 @@ mod events;
 mod health;
 mod history;
 mod history_cli;
+mod improve;
 mod insertion;
 mod llm_polish;
 mod llm_report;
@@ -41,6 +42,8 @@ Commands:
   selftest hotkey           synthesize the configured shortcut and verify press/release
   insert TEXT               type TEXT at the focused cursor
   polish TEXT               send TEXT through the running daemon polish path
+  improve [--accept]        run the pill's Improve on the last paste (--accept
+                            also replaces it); prints the result
   system plan [--daemon] TEXT
                             route a System request without resolving or executing it
   system resolve TEXT       resolve installed-app suggestions without executing them
@@ -177,6 +180,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
         }
         "polish" if !rest.is_empty() => polish_control(rest),
+        "improve" => improve_control(rest.iter().any(|arg| arg == "--accept")),
         "system" => system_mode::run_cli(rest),
         "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
@@ -222,6 +226,23 @@ fn polish_control(args: &[String]) -> Result<(), Box<dyn Error>> {
             "type": "polish",
             "text": text,
         }),
+    )?;
+    stream.write_all(b"\n")?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    print!("{response}");
+    Ok(())
+}
+
+fn improve_control(accept: bool) -> Result<(), Box<dyn Error>> {
+    let path = settings::control_socket_path();
+    let mut stream = UnixStream::connect(&path)
+        .map_err(|error| format!("cannot connect to {}: {error}", path.display()))?;
+    // The first use downloads and loads the model.
+    stream.set_read_timeout(Some(Duration::from_secs(180)))?;
+    serde_json::to_writer(
+        &mut stream,
+        &serde_json::json!({"type": "improve", "accept": accept}),
     )?;
     stream.write_all(b"\n")?;
     let mut response = String::new();

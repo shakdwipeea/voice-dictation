@@ -4,10 +4,16 @@
 version, so this version saves text and numbers only. Added the pill's Fix
 and Improve buttons (§6). Improve runs on our own small grammar model, so it
 works on every device; Apple's model is optional.
-**Status:** step 1 (text history) is implemented in `apps/daemon/src/history.rs`
-and `history_cli.rs`; the other steps are not yet. D4 (`log_transcripts`
-off) waits until the Improve test (step 2) has read its sample dictations
-from the log.
+**Status:**
+- **Step 1, text history:** implemented in `apps/daemon/src/history.rs` and
+  `history_cli.rs`.
+- **Step 2, Improve test:** done; see §6.3.
+- **Step 3, Fix and Improve buttons:** implemented in `improve.rs`,
+  `services/improve/grammar_sidecar.py` and the overlay's
+  `ActionsController`. Improve and Replace are tested live; the Fix click is
+  not yet. "As built" notes are in §6.
+- **Steps 4–5:** not started.
+- **D4** (`log_transcripts` off) is still pending.
 **Scope:** the daemon (`apps/daemon`), macOS first. Linux gets the same text
 history for free because the code path is shared; the undo signal is
 macOS-only. System mode is out of scope.
@@ -210,6 +216,12 @@ Dictations with no clue are exported as `assumed`, never as `corrected`.
 After a paste, the pill shows the check mark and two buttons for 6 s. They
 stay while the pointer is over the pill.
 
+*As built:* the buttons sit in a small chip under the pill, not inside it.
+The pill keeps its own check-mark animation (`515caa4a`) unchanged. The
+chip is a borderless, non-activating `NSPanel` that never becomes key, and
+its buttons accept the first click (`ActionsController` in
+`sunoto-overlay.swift`).
+
 ```
  ┌───────────────────────────────────────┐
  │  ✓ Pasted      [ Improve ]  [ Fix ]   │
@@ -315,6 +327,18 @@ published figures, not yet measured by us.
   Transformers. MLX by itself adds about 7 MB to a Python process.
 - **Runtime.** Ship it on MLX, which Sunoto already bundles, to stay under
   300 MB. That target is an estimate until the T5 port to MLX is measured.
+- **Measured on MLX (as built).** `services/improve/grammar_sidecar.py` is a
+  compact T5 on MLX. Checked with `tools/improve/grammar_mlx_check.py`
+  against the PyTorch run:
+  - output identical on all 91 cases, in fp32 and bf16;
+  - warm call p50 34 ms, p95 82 ms;
+  - 0.3 s to load;
+  - about 200–225 MB while loaded, with MLX's buffer cache capped at 16 MB;
+    without the cap, the freed fp32 copy kept it at about 420 MB.
+  - Weights come from the pinned safetensors conversion on Hugging Face
+    (revision `779c0250`), so no PyTorch is needed.
+  - The model's `tokenizer.json` pads to 128 tokens; padding must be off or
+    the output is garbage.
 
 **How it runs: a grammar helper**
 
@@ -387,6 +411,20 @@ window, and the time.
    paste.
 4. **Otherwise, use the clipboard.** Put the new text on the clipboard; the
    pill says "Improved text copied: press ⌘V".
+
+*As built:* steps 1, 2 and 4 are implemented. Step 2 lives in
+`select_text_before_caret` in `crates/sunoto-macos/src/accessibility.rs`:
+it reads the span with `AXStringForRange`, selects it, and reads the
+selection back to confirm. Step 3, keyboard selection, is left out for now.
+Without Accessibility's confirmation it cannot know what it would select, so
+the clipboard is the safer fallback.
+
+Tested live in TextEdit:
+- "She don't like the new design." became "She doesn't like the new
+  design." in place, with nothing duplicated (read back from the autosaved
+  file). The replace took 9 ms.
+- With the cursor in another document, no text was touched and the
+  correction went to the clipboard.
 
 ### 6.6 Where the code goes
 

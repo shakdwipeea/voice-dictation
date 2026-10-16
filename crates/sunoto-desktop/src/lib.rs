@@ -42,6 +42,14 @@ pub trait DesktopAdapter: Sized {
     fn focused_is_secure_field(&self) -> Option<bool> {
         None
     }
+    /// Select `text` when it is exactly what sits just before the caret in
+    /// the focused text field, so a paste replaces it. `Some(true)` when
+    /// selected and verified, `Some(false)` when the field holds something
+    /// else, `None` when the platform cannot tell.
+    fn select_text_before_caret(&self, text: &str) -> Option<bool> {
+        let _ = text;
+        None
+    }
     fn insert_direct(&self, text: &str) -> Result<(), DesktopError>;
     fn insert_via_clipboard(&mut self, text: &str) -> Result<(), DesktopError>;
     fn set_clipboard(&mut self, text: &str) -> Result<(), DesktopError>;
@@ -74,6 +82,10 @@ impl DesktopAdapter for UiAdapter {
     #[cfg(target_os = "macos")]
     fn focused_is_secure_field(&self) -> Option<bool> {
         UiAdapter::focused_is_secure_field(self)
+    }
+    #[cfg(target_os = "macos")]
+    fn select_text_before_caret(&self, text: &str) -> Option<bool> {
+        UiAdapter::select_text_before_caret(self, text)
     }
     fn insert_direct(&self, text: &str) -> Result<(), DesktopError> {
         UiAdapter::insert_direct(self, text)

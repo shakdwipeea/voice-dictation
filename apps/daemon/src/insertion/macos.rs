@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use sunoto_desktop::{InsertionOutcome, UiAdapter};
+use sunoto_desktop::{DesktopAdapter, InsertionOutcome, UiAdapter};
 
 use crate::logging;
 
@@ -89,6 +89,37 @@ impl MacosUi {
             self.schedule_restore(snapshot);
         }
         outcome
+    }
+
+    /// Improve's Replace. Select `old` only where Accessibility confirms it
+    /// is exactly the text before the caret, then paste `new` over it;
+    /// anywhere else nothing in the app is touched and `new` goes to the
+    /// clipboard.
+    pub(crate) fn replace(&mut self, old: &str, new: &str) -> Result<InsertionOutcome, String> {
+        if self.focused_is_secure_field() {
+            return Ok(InsertionOutcome::SecureField);
+        }
+        if DesktopAdapter::select_text_before_caret(&self.adapter, old) != Some(true) {
+            return self
+                .adapter
+                .set_clipboard(new)
+                .map(|_| InsertionOutcome::ClipboardOnly)
+                .map_err(|error| error.to_string());
+        }
+        let snapshot = self.take_snapshot();
+        match self.adapter.insert_via_clipboard(new) {
+            Ok(()) => {
+                self.schedule_restore(snapshot);
+                Ok(InsertionOutcome::Pasted)
+            }
+            Err(error) => {
+                logging::warn(&format!(
+                    "Improve paste failed ({error}); left on clipboard"
+                ));
+                self.drop_snapshot();
+                Ok(InsertionOutcome::ClipboardOnly)
+            }
+        }
     }
 
     /// Run the deferred clipboard restore once its delay has elapsed.

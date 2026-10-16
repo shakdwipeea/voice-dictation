@@ -173,6 +173,39 @@ impl UiFront {
         self.hide();
     }
 
+    /// Offer Improve and Fix for the dictation just pasted.
+    pub(crate) fn actions(&self, session_id: u64, text: &str, improve: bool, fix: bool) {
+        if self.overlay_active() && (improve || fix) {
+            self.overlay_send(OverlayRequest::Actions {
+                session_id,
+                text: text.to_string(),
+                improve,
+                fix,
+            });
+        }
+    }
+
+    pub(crate) fn dismiss_actions(&self) {
+        if self.overlay_active() {
+            self.overlay_send(OverlayRequest::DismissActions);
+        }
+    }
+
+    pub(crate) fn improve_preview(&self, session_id: u64, original: &str, improved: &str) {
+        self.overlay_send(OverlayRequest::ImprovePreview {
+            session_id,
+            original: original.to_string(),
+            improved: improved.to_string(),
+        });
+    }
+
+    pub(crate) fn improve_message(&self, session_id: u64, text: &str) {
+        self.overlay_send(OverlayRequest::ImproveMessage {
+            session_id,
+            text: text.to_string(),
+        });
+    }
+
     pub(crate) fn level(&self, elapsed_s: f64, peak: f64, rms: f64) {
         if self.overlay_active() {
             self.overlay_send(OverlayRequest::Recording {

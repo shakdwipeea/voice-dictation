@@ -244,6 +244,17 @@ pub struct Settings {
     /// app names on macOS, WM_CLASS names on X11). Password managers by
     /// default; password fields are always left out.
     pub history_exclude_apps: Vec<String>,
+    /// After a paste, offer an Improve button that fixes spelling and
+    /// grammar with a small model and replaces the text in place after a
+    /// preview. macOS only (the model runs on MLX). The model, about 240 MB,
+    /// downloads from Hugging Face the first time it is used.
+    pub improve_enabled: bool,
+    /// Python for the grammar helper. Default: the speech engine's Python,
+    /// which already has MLX.
+    pub improve_python: Option<String>,
+    /// A local folder with config.json, tokenizer.json and model.safetensors
+    /// instead of the pinned Hugging Face download.
+    pub improve_model_dir: Option<String>,
     /// Progressive LLM-polish insertion (default off). When on, the sidecar
     /// streams decoded tokens as `polish_chunk` deltas and the daemon types
     /// them into the focused window as they arrive (CGEvent keypresses, the
@@ -301,6 +312,9 @@ impl Default for Settings {
             history_enabled: false,
             history_retention_days: 90,
             history_exclude_apps: crate::history::default_exclude_apps(),
+            improve_enabled: cfg!(target_os = "macos"),
+            improve_python: None,
+            improve_model_dir: None,
             llm_polish_stream_insert: false,
             polish: PolishConfig::default(),
         }
@@ -423,6 +437,42 @@ impl Settings {
         let mut args = vec![script];
         args.extend(extra_args);
         Ok((python, args))
+    }
+
+    /// The grammar helper behind the Improve button: program and arguments.
+    pub fn improve_command(&self) -> (String, Vec<String>) {
+        let python = self
+            .improve_python
+            .clone()
+            .filter(|python| !python.trim().is_empty())
+            .unwrap_or_else(|| {
+                // The speech engine's Python has MLX; use it whatever the
+                // configured backend is.
+                let venv = repo_root().join(".venv-nemotron-mac/bin/python");
+                match self.sidecar_python.clone() {
+                    Some(python) if self.backend.starts_with("parakeet") => python,
+                    _ if venv.is_file() => venv.to_string_lossy().into_owned(),
+                    _ => "python3".to_string(),
+                }
+            });
+        // -B: never write bytecode next to the script (inside a signed bundle
+        // that would break its seal).
+        let mut args = vec![
+            "-B".to_string(),
+            repo_root()
+                .join("services/improve/grammar_sidecar.py")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        if let Some(dir) = self
+            .improve_model_dir
+            .as_deref()
+            .filter(|dir| !dir.trim().is_empty())
+        {
+            args.push("--model-dir".into());
+            args.push(expand_home(dir.trim()));
+        }
+        (python, args)
     }
 
     fn parakeet_mlx_args(&self) -> Vec<String> {
@@ -894,6 +944,25 @@ mod tests {
         assert_eq!(shortcut_label("right-command"), "Right Command");
         assert_eq!(shortcut_label("Ctrl+F1"), "Control-F1");
         assert_eq!(shortcut_label("cmd+shift+space"), "Command-Shift-Space");
+    }
+
+    #[test]
+    fn improve_runs_the_grammar_helper_on_the_speech_python() {
+        let settings = Settings::default();
+        assert_eq!(settings.improve_enabled, cfg!(target_os = "macos"));
+        let (_, args) = settings.improve_command();
+        assert_eq!(args[0], "-B");
+        assert!(args[1].ends_with("services/improve/grammar_sidecar.py"));
+        assert_eq!(args.len(), 2);
+
+        let local = Settings {
+            improve_python: Some("/opt/py/bin/python".into()),
+            improve_model_dir: Some("/models/gec".into()),
+            ..Settings::default()
+        };
+        let (python, args) = local.improve_command();
+        assert_eq!(python, "/opt/py/bin/python");
+        assert_eq!(args[2..], ["--model-dir", "/models/gec"]);
     }
 
     #[test]
