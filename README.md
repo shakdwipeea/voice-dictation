@@ -43,11 +43,11 @@ sunoto uninstall           # --purge also removes settings, models and history
 sunoto history list        # recent dictations, if history is on
 ```
 
-Dictation history is off by default. With `"history_enabled": true`, Sunoto
-keeps the text and timings of each dictation, but never audio, in
-`~/Library/Application Support/sunoto/history/` on your Mac only. Password
-fields and password managers are left out, entries older than 90 days are
-deleted, and `sunoto history clear --yes` removes them all.
+Sunoto keeps a history of your dictations: the text and timings of each
+one, never audio, in `~/Library/Application Support/sunoto/history/` on
+your Mac only. Password fields and password managers are left out, and
+entries older than 90 days are deleted. `sunoto history clear --yes` removes
+it all, and `"history_enabled": false` in the settings turns it off.
 
 Sunoto updates itself. Once a day it checks for a new release, downloads it,
 and checks its signature. It installs the update after 10 minutes without

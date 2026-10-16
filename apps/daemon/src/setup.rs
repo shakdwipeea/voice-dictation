@@ -281,6 +281,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         loaded.save_changes(&config_path)?;
         ok(&format!("config:  created {}", config_path.display()));
     }
+    report_history(&loaded);
     let asr_python = preflight_asr_runtime(&root, &loaded)?;
     // An update leaves the polish model and its setting as the user had them.
     let loaded = if args.update {
@@ -1357,6 +1358,25 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// History is on by default, so setup says what is kept and where.
+fn report_history(settings: &Settings) {
+    if !settings.history_enabled {
+        note("history: off");
+        return;
+    }
+    let kept = match settings.history_retention_days {
+        0 => "until deleted".to_string(),
+        days => format!("{days} days"),
+    };
+    ok(&format!(
+        "history: on; the text of each dictation (never audio) stays on this Mac for {kept} in {}",
+        crate::history::history_dir().display()
+    ));
+    note(
+        "set \"history_enabled\": false in the config to turn it off; `sunoto-daemon history clear --yes` deletes it",
+    );
 }
 
 fn section(title: &str) {

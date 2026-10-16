@@ -47,18 +47,19 @@ Idle and privacy keys (all optional):
 - `log_transcripts`: `false` replaces transcript text in the log with its
   length and a short hash.
 
-Dictation history (all optional, off by default):
+Dictation history (on by default):
 
 ```json
 {
-  "history_enabled": false,
+  "history_enabled": true,
   "history_retention_days": 90,
   "history_exclude_apps": ["com.1password.1password", "com.bitwarden.desktop"]
 }
 ```
 
 - `history_enabled`: keep a private record of each dictation on this
-  machine, for finding mistakes and slow spots. Each dictation is one JSON
+  machine, for finding mistakes and slow spots. On by default; `false`
+  turns it off. Setup says so when it runs. Each dictation is one JSON
   line in a daily file under
   `~/Library/Application Support/sunoto/history/dictations/` (macOS) or
   `$XDG_DATA_HOME/sunoto/history/dictations/` (Linux, default

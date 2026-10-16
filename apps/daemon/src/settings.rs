@@ -235,7 +235,8 @@ pub struct Settings {
     pub log_transcripts: bool,
     /// Keep a private history of dictations on this machine: one JSON line
     /// per dictation under `history/dictations/` next to the config (macOS)
-    /// or in `$XDG_DATA_HOME/sunoto/history` (Linux). Off by default; see
+    /// or in `$XDG_DATA_HOME/sunoto/history` (Linux). On by default (owner
+    /// decision, 2026-10-16); setup says so and `false` turns it off. See
     /// docs/local-history-plan-2026-10-16.md.
     pub history_enabled: bool,
     /// Days of history to keep; older day files are deleted. 0 keeps all.
@@ -298,7 +299,7 @@ impl Default for Settings {
             capture_idle_stop_secs: 0,
             auto_update: "install".to_string(),
             log_transcripts: true,
-            history_enabled: false,
+            history_enabled: true,
             history_retention_days: 90,
             history_exclude_apps: crate::history::default_exclude_apps(),
             llm_polish_stream_insert: false,
@@ -894,6 +895,13 @@ mod tests {
         assert_eq!(shortcut_label("right-command"), "Right Command");
         assert_eq!(shortcut_label("Ctrl+F1"), "Control-F1");
         assert_eq!(shortcut_label("cmd+shift+space"), "Command-Shift-Space");
+    }
+
+    #[test]
+    fn dictation_history_is_on_by_default() {
+        let settings = Settings::default();
+        assert!(settings.history_enabled);
+        assert_eq!(settings.history_retention_days, 90);
     }
 
     #[test]

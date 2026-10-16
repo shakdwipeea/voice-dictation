@@ -827,8 +827,10 @@ mod tests {
 
     #[test]
     fn disabled_history_records_nothing() {
-        let settings = Settings::default();
-        assert!(!settings.history_enabled);
+        let settings = Settings {
+            history_enabled: false,
+            ..Settings::default()
+        };
         let mut history = HistoryRecorder::start(&settings);
         assert!(!history.is_enabled());
         history.begin(1);

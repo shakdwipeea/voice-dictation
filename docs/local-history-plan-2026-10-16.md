@@ -52,7 +52,7 @@ observability for the team. All three are in §11.
 | # | Question | Recommendation | Why |
 | --- | --- | --- | --- |
 | D1 | Storage | **JSONL, one file per day** | Uses `serde_json`, which we already have. Appending only, so a crash costs at most one line. Old days expire by deleting files. Revisit SQLite (as `product-plan.md:185` assumed) when a history window needs search. |
-| D2 | Default | **Off.** The developer turns it on. | Don't record without showing the user. Turn it on by default once there is a history window and a setup choice. |
+| D2 | Default | **On** (owner decision, 2026-10-16; first recommended off). Setup prints that history is on, where it is kept, and how to turn it off. | Was: don't record without showing the user, and turn it on once there is a history window and a setup choice. |
 | D3 | Audio | **Not in this version** (owner decision, 2026-10-16) | Text covers goals 1–4. Audio is in §11. |
 | D4 | `log_transcripts` default | **Flip to `false`** when this ships | Keeps the user's words in one place, and closes usability plan §4.4. |
 | D5 | Undo signal | **Yes. macOS only, 10 s after a paste, Cmd+Z only** | The tap already receives the key. Nothing else is read or stored. |
@@ -172,7 +172,7 @@ At startup and then once a day, delete day files older than
 
 | Key | Default |
 | --- | --- |
-| `history_enabled` | `false` |
+| `history_enabled` | `true` (D2) |
 | `history_retention_days` | `90` |
 | `history_exclude_apps` | password managers (above) |
 
@@ -587,7 +587,7 @@ Manual check on macOS:
 
 | Risk | Mitigation |
 | --- | --- |
-| Someone is recorded without realizing it | Off by default, shown in `status` |
+| Someone is recorded without realizing it | Setup says history is on, where it is kept and how to turn it off; shown in `status`; README privacy note |
 | Saving slows down pasting | Writer thread with `try_send`, verified with the timing breakdown |
 | A failure path is never recorded | `abandoned` safety net, a test per status |
 | Format changes break old data | `v` field, unknown fields ignored, files only appended |
