@@ -89,6 +89,8 @@ def main() -> int:
         elif request_type == "cancel_session" and session_id == active_session:
             active_session = None
             emit({"type": "error", "session_id": session_id, "message": "session cancelled"})
+        elif request_type == "session_words":
+            pass  # words to favour; the mock has no decoder to favour them in
         else:
             emit(
                 {

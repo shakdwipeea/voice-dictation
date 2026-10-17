@@ -51,6 +51,7 @@ from array import array
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
+import word_boost
 from nemotron_offline_sidecar import SAMPLE_RATE, _OfflineBufferEngine
 from nemotron_sidecar import SidecarServer, log, serve
 
@@ -149,6 +150,8 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         self._mx = None
         self._dtype = None
         self._get_logmel = None
+        self._token_index = None
+        self._booster = None  # this dictation's words; touched on the worker only
         self.precision = precision
         self.chunk_duration = chunk_duration
         self.overlap_duration = overlap_duration
@@ -195,6 +198,7 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         if cache_dir:
             kwargs["cache_dir"] = os.path.expanduser(cache_dir)
         self.model = from_pretrained(model_name, **kwargs)
+        self._token_index = word_boost.TokenIndex(self.model.vocabulary)
         log(
             f"model loaded: {model_name} precision={precision} "
             f"dtype={_dtype_name(self._dtype)} in {time.perf_counter() - load_started:.1f}s"
@@ -229,6 +233,24 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
     def start(self, profile_ms: int) -> None:
         # profile_ms is accepted for config parity but ignored offline.
         self.cancel()
+        self._worker.submit(self._set_booster, None)
+
+    def set_words(self, words: dict) -> None:
+        """Favour these words in this dictation's decodes (see word_boost)."""
+        self._worker.submit(self._set_booster, words)
+
+    def _set_booster(self, words) -> None:
+        if not words or self._token_index is None:
+            self._booster = None
+            return
+        t0 = time.perf_counter()
+        booster = word_boost.WordBooster(self._token_index, words)
+        self._booster = booster or None
+        log(
+            f"word list: {len(booster.targets)} words, "
+            f"{len(booster.start_bonus)} start pieces, "
+            f"built in {(time.perf_counter() - t0) * 1000:.1f}ms"
+        )
 
     def accept_audio(self, samples) -> list:
         super().accept_audio(samples)
@@ -283,6 +305,8 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
                 for _text, more in results[1:]:
                     tokens = self._merge_tokens(tokens, more)
                 text = self._tokens_text(tokens)
+            if self._booster is not None and text:
+                text = self._booster.respell(text)
             log(
                 f"finish: {end} samples ({end / SAMPLE_RATE:.2f}s audio), "
                 f"{len(pieces)} piece(s), last one "
@@ -464,11 +488,16 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         t_mel = time.perf_counter() - t_mel0
 
         t_gen0 = time.perf_counter()
-        results = self.model.generate(mel)
+        booster = self._booster
+        if booster is None:
+            results = self.model.generate(mel)
+        else:
+            results = [word_boost.generate(self.model, self._mx, mel, booster)]
         t_generate = time.perf_counter() - t_gen0
         log(
             f"model.generate: audio_array {t_audio*1000:.0f}ms, "
-            f"logmel {t_mel*1000:.0f}ms, decode {t_generate*1000:.0f}ms, "
+            f"logmel {t_mel*1000:.0f}ms, decode {t_generate*1000:.0f}ms"
+            f"{f' with {len(booster.targets)} words' if booster else ''}, "
             f"total {(time.perf_counter() - t0)*1000:.0f}ms"
         )
         if not results:

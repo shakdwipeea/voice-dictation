@@ -47,6 +47,17 @@ pub type CFTypeRef = *const c_void;
 pub type AXUIElementRef = *const c_void;
 pub type AXError = i32;
 pub const kAXErrorSuccess: AXError = 0;
+pub type AXValueRef = *const c_void;
+pub type CFTypeID = c_ulong;
+/// `kAXValueCFRangeType`: an AXValue wrapping a CFRange.
+pub const kAXValueCFRangeType: u32 = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CFRange {
+    pub location: CFIndex,
+    pub length: CFIndex,
+}
 
 pub type CGEventRef = *const c_void;
 pub type CGEventTapRef = *const c_void;
@@ -169,6 +180,9 @@ unsafe extern "C" {
         attribute: CFStringRef,
         value: *mut CFTypeRef,
     ) -> AXError;
+    pub fn AXUIElementCreateApplication(pid: c_int) -> AXUIElementRef;
+    pub fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeoutInSeconds: f32) -> AXError;
+    pub fn AXValueGetValue(value: AXValueRef, theType: u32, valuePtr: *mut c_void) -> bool;
 
     // CoreGraphics: window list
     pub fn CGWindowListCopyWindowInfo(option: u32, relativeToWindow: u32) -> CFArrayRef;
@@ -191,6 +205,13 @@ unsafe extern "C" {
         encoding: CFStringEncoding,
     ) -> *const c_char;
     pub fn CFStringGetLength(theString: CFStringRef) -> CFIndex;
+    pub fn CFStringCreateWithSubstring(
+        alloc: CFAllocatorRef,
+        theString: CFStringRef,
+        range: CFRange,
+    ) -> CFStringRef;
+    pub fn CFStringGetTypeID() -> CFTypeID;
+    pub fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
     pub fn CFStringGetCString(
         theString: CFStringRef,
         buffer: *mut c_char,

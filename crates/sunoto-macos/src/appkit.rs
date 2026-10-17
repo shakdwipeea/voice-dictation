@@ -12,6 +12,9 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 
+#[link(name = "NaturalLanguage", kind = "framework")]
+unsafe extern "C" {}
+
 #[link(name = "AppKit", kind = "framework")]
 #[link(name = "objc")]
 unsafe extern "C" {
@@ -215,6 +218,79 @@ pub fn frontmost_application() -> Option<(String, String)> {
     };
     drop(pool);
     result
+}
+
+/// The system's English vocabulary: NaturalLanguage's English word
+/// embedding, about 57,000 everyday words ("timeout", "email"), memory-mapped
+/// by the OS. Used to tell ordinary words from names.
+pub struct EnglishVocabulary {
+    embedding: *mut c_void,
+    /// NLEmbedding does not document thread safety; lookups take turns.
+    lock: std::sync::Mutex<()>,
+}
+
+// SAFETY: the embedding is retained for the process lifetime, never mutated,
+// and every use goes through `lock`.
+unsafe impl Send for EnglishVocabulary {}
+unsafe impl Sync for EnglishVocabulary {}
+
+impl EnglishVocabulary {
+    /// `None` when this Mac has no English embedding.
+    pub fn load() -> Option<Self> {
+        let pool = Pool::new()?;
+        // SAFETY: documented NLEmbedding selectors; the embedding is
+        // retained and intentionally never released.
+        let embedding = unsafe {
+            let embedding = send_id_id(
+                objc_class("NLEmbedding")?,
+                sel("wordEmbeddingForLanguage:")?,
+                ns_string("en")?,
+            );
+            if !embedding.is_null() {
+                send_id(embedding, sel("retain")?);
+            }
+            embedding
+        };
+        drop(pool);
+        (!embedding.is_null()).then(|| Self {
+            embedding,
+            lock: std::sync::Mutex::new(()),
+        })
+    }
+
+    /// Whether the vocabulary has `word` (lowercase it first).
+    pub fn contains(&self, word: &str) -> bool {
+        let _turn = self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(pool) = Pool::new() else {
+            return false;
+        };
+        // SAFETY: documented `containsString:` on the retained embedding.
+        let found = (|| unsafe {
+            Some(send_bool_id(self.embedding, sel("containsString:")?, ns_string(word)?))
+        })()
+        .unwrap_or(false);
+        drop(pool);
+        found
+    }
+}
+
+/// Process id of the frontmost application.
+pub fn frontmost_pid() -> Option<i32> {
+    let pool = Pool::new()?;
+    // SAFETY: documented NSWorkspace / NSRunningApplication selectors.
+    let pid = unsafe {
+        let workspace = send_id(objc_class("NSWorkspace")?, sel("sharedWorkspace")?);
+        if workspace.is_null() {
+            return None;
+        }
+        let app = send_id(workspace, sel("frontmostApplication")?);
+        if app.is_null() {
+            return None;
+        }
+        send_i32(app, sel("processIdentifier")?)
+    };
+    drop(pool);
+    (pid > 0).then_some(pid)
 }
 
 /// Opt the process out of App Nap for its whole lifetime. Without this a
@@ -431,6 +507,12 @@ unsafe fn send_bool_id_id(
 
 unsafe fn send_usize(receiver: *mut c_void, selector: *mut c_void) -> usize {
     let function: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector) }
+}
+
+unsafe fn send_i32(receiver: *mut c_void, selector: *mut c_void) -> i32 {
+    let function: unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32 =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector) }
 }
