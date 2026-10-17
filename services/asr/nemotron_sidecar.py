@@ -501,6 +501,21 @@ class SidecarServer:
             events.append({"type": "session_started", "session_id": session_id})
             return events
 
+        if request_type == "session_words":
+            # Words to favour in this dictation. Late or stale lists are
+            # dropped quietly; engines without word boosting ignore them.
+            if session_id is not None and session_id == self.active_session:
+                set_words = getattr(self.engine, "set_words", None)
+                if set_words is not None:
+                    set_words(
+                        {
+                            tier: request.get(tier)
+                            for tier in ("screen", "project", "everywhere")
+                            if isinstance(request.get(tier), list)
+                        }
+                    )
+            return []
+
         if request_type == "audio_chunk":
             if session_id is None or session_id != self.active_session:
                 return [self._error(session_id, "invalid request: audio_chunk")]

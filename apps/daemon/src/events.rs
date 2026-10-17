@@ -38,6 +38,13 @@ pub enum DaemonEvent {
     ControlStatus {
         response: UnixStream,
     },
+    /// The word list for a dictation, from the word-list thread.
+    Words {
+        session_id: u64,
+        words: crate::vocabulary::SessionWords,
+        english: std::sync::Arc<crate::vocabulary::EnglishWords>,
+        took: std::time::Duration,
+    },
     /// A newer release, verified and unpacked, waiting for an idle moment.
     UpdateReady(crate::update::Staged),
     Fatal(String),

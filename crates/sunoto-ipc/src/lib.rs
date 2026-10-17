@@ -9,6 +9,15 @@ use std::thread::JoinHandle;
 pub enum SidecarRequest {
     Health,
     StartSession { session_id: u64, profile_ms: u16 },
+    /// Words to favour in this dictation, strongest source first (see the
+    /// daemon's `vocabulary` module). Sent once, soon after StartSession;
+    /// backends without word boosting ignore it.
+    SessionWords {
+        session_id: u64,
+        screen: Vec<String>,
+        project: Vec<String>,
+        everywhere: Vec<String>,
+    },
     AudioChunk { session_id: u64, samples: Vec<i16> },
     FinishSession { session_id: u64 },
     CancelSession { session_id: u64 },

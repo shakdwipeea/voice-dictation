@@ -272,6 +272,19 @@ muted; check System Settings → Sound → Input.
   session (real or synthetic Ctrl+F8) without first focusing a disposable
   target window; treat injection as a security surface (see the product
   plan's injection-safety section).
+- Word list (`word_list_enabled`, macOS + `parakeet_mlx_offline`): at each
+  press a `word-list` thread (`apps/daemon/src/vocabulary.rs`) gathers
+  unusual words from the focused window (Accessibility: text, title,
+  `AXDocument`), its project, and project folders/apps, and sends them as
+  `session_words`; `services/asr/word_boost.py` favours them in the greedy
+  TDT decode, and the daemon fixes one-letter misses after the final. Never
+  log the words themselves (screen text). "Unusual" uses the system English
+  vocabulary (NaturalLanguage) plus `/usr/share/dict/words`; one-letter
+  start pieces get no bonus and a start bonus never beats blank or a longer
+  start — both stopped real damage ("Uh"→"A", "Mar"→"Ma"). Change bonuses
+  only with `tools/vocab/bench_words.py` (app stopped): 2026-10-18 baseline
+  93 names 11→49 exact (71 with the name on screen), ordinary speech 0/133
+  changed, decode time and MLX peak unchanged, daemon +7 MB.
 - The pill never shows partial transcripts: they are often wrong where the
   final is right. While recording it shows the dot, sound ribbon, timer, and
   a start hint that fades once you start talking (3 s at most). After the

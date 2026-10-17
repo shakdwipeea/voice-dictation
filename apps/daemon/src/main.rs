@@ -19,6 +19,7 @@ mod system_dispatch;
 mod system_mode;
 mod system_worker;
 mod update;
+mod vocabulary;
 
 use std::error::Error;
 use std::io::{Read, Write};
@@ -50,6 +51,9 @@ Commands:
   status [--json]           show the running daemon's health
   history status|list|show|forget|clear
                             the local dictation history (history_enabled in the config)
+  words [--json] [--delay S]
+                            show the word list a dictation would favour in the focused
+                            window now (word_list_enabled in the config)
   setup [OPTIONS]           macOS: build Sunoto.app, register it at login, start it,
                             and wait until it reports ready (see setup --help)
   restart                   macOS: quit and reopen the installed Sunoto.app
@@ -203,6 +207,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
         "bench" => bench::run(load_settings(rest)?, parse_bench_args(rest)?),
         "eval" => eval::run(parse_eval_args(rest)),
         "history" => history_cli::run_cli(rest),
+        "words" => vocabulary::run_cli(rest).map_err(Into::into),
         "config" => config(rest),
         _ => {
             eprint!("{USAGE}");

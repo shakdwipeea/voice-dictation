@@ -1,0 +1,26 @@
+{"id": "daanlytics-push", "say": "Push the daanlytics report to the main branch.", "names": ["daanlytics"], "source": "everywhere"}
+{"id": "husky-repo", "say": "Open the husky A I repo and check the readme.", "names": ["huskyAI"], "source": "everywhere"}
+{"id": "vaani-agent", "say": "The vaani live kit agent keeps dropping the call.", "names": ["vaani", "livekit"], "source": "everywhere"}
+{"id": "uniblox-deploy", "say": "Can you deploy uniblox to staging tonight?", "names": ["uniblox"], "source": "everywhere"}
+{"id": "tinysds-rebuild", "say": "Rebuild tiny S D S 3 D with the new shaders.", "names": ["tinySDS3d"], "source": "everywhere"}
+{"id": "vcpkg-install", "say": "Install the library with V C package before you build.", "names": ["vcpkg"], "source": "everywhere"}
+{"id": "sunoto-restart", "say": "Restart the soo no toe daemon and test it again.", "names": ["Sunoto"], "source": "everywhere"}
+{"id": "ghostty-crash", "say": "Ghostty crashed when I resized the window.", "names": ["Ghostty"], "source": "everywhere"}
+{"id": "stremio-subs", "say": "Stremio is not loading the subtitles.", "names": ["Stremio"], "source": "everywhere"}
+{"id": "chatgpt-xcode", "say": "Ask ChatGPT about the Xcode signing error.", "names": ["ChatGPT", "Xcode"], "source": "everywhere"}
+{"id": "daanlytics-next", "say": "Check daanlytics next J S for the broken chart.", "names": ["daanlytics", "nextjs"], "source": "everywhere"}
+{"id": "husky-build", "say": "Did the husky A I build pass on the first try?", "names": ["huskyAI"], "source": "everywhere"}
+{"id": "livekit-token", "say": "Add the live kit token to the vaani backend.", "names": ["livekit", "vaani"], "source": "everywhere"}
+{"id": "sunoto-ghostty", "say": "Soo no toe pastes into Ghostty now.", "names": ["Sunoto", "Ghostty"], "source": "everywhere"}
+{"id": "workation", "say": "The airbnb workation finder needs a new filter.", "names": ["workation"], "source": "everywhere"}
+{"id": "nemotron-warm", "say": "The nemotron sidecar takes thirty seconds to warm up.", "names": ["nemotron"], "source": "project"}
+{"id": "hyprland-bind", "say": "Move the hyprland bindings into the config file.", "names": ["Hyprland"], "source": "project"}
+{"id": "minisign-zip", "say": "Sign the release zip with mini sign first.", "names": ["minisign"], "source": "screen"}
+{"id": "cgeventtap", "say": "The C G event tap stops firing after sleep.", "names": ["CGEventTap"], "source": "screen"}
+{"id": "pbcopy", "say": "Use P B copy as the fallback for the clipboard.", "names": ["pbcopy"], "source": "screen"}
+{"id": "weif-fix", "say": "I pushed the fix to the weif repo this morning.", "names": ["weif"], "source": "screen"}
+{"id": "xtest", "say": "Paste through X test when the clipboard fails.", "names": ["XTEST"], "source": "screen"}
+{"id": "llama-cpp", "say": "Update llama dot C P P to the latest release.", "names": ["llama.cpp"], "source": "screen"}
+{"id": "parakeet-mlx", "say": "Parakeet M L X runs on the Apple G P U.", "names": ["MLX"], "source": "screen"}
+{"id": "supabase", "say": "Move the auth tables to supabase next week.", "names": ["supabase"], "source": "screen"}
+{"id": "tauri", "say": "Should we build the settings window in tauri?", "names": ["Tauri"], "source": "screen"}
