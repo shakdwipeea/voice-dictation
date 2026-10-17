@@ -44,6 +44,7 @@ use crate::system_dispatch::{
     suggestion_action_label,
 };
 use crate::system_worker::{SystemJob, SystemWorker, SystemWorkerEvent};
+use crate::vocabulary::{EnglishWords, SessionWords, WordWorker, fix_near_misses};
 
 const TICK: Duration = Duration::from_millis(50);
 
@@ -145,6 +146,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     };
     let (events_tx, events) = mpsc::channel::<DaemonEvent>();
     let system_worker = SystemWorker::spawn(events_tx.clone(), settings.system_search_root_paths());
+    // Only the Parakeet-MLX sidecar can favour words; other backends would
+    // pay for reading the screen and gain nothing.
+    let word_worker = (settings.word_list_enabled && settings.backend == "parakeet_mlx_offline")
+        .then(|| WordWorker::spawn(settings.word_list.clone(), events_tx.clone()));
 
     // UI thread (insertion/clipboard/bubble on its own backend connection).
     let (ui_tx, ui_rx) = mpsc::channel::<UiCommand>();
@@ -249,6 +254,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
 
     let mut machine = SessionMachine::default();
     let mut history = HistoryRecorder::start(&settings);
+    // This dictation's word list, for the near-miss fix after the transcript.
+    let mut session_words: Option<(u64, SessionWords, Arc<EnglishWords>)> = None;
     let mut preroll = AudioPreRoll::new(settings.preroll_ms as usize * SAMPLES_PER_MS);
     let mut focused_class: Option<(String, String)> = None;
     let mut timing: Option<SessionTiming> = None;
@@ -506,6 +513,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     let mut stats = SessionAudioStats::default();
                     stats.observe(&preroll_samples);
                     audio_stats = Some(stats);
+                    session_words = None;
+                    if mode == SessionMode::Dictation
+                        && let Some(worker) = word_worker.as_ref()
+                    {
+                        worker.collect(session_id);
+                    }
                     if let Some(client) = sidecar.as_mut() {
                         let mut send_result = client.send(&SidecarRequest::StartSession {
                             session_id,
@@ -889,6 +902,20 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             continue;
                         }
                         let raw_text = text.clone();
+                        let text = match session_words.take() {
+                            Some((words_session, words, english)) if words_session == session_id => {
+                                let fixed = fix_near_misses(&text, &words, &english);
+                                if fixed != text {
+                                    logging::info(&format!(
+                                        "session {session_id}: word list: {} -> {}",
+                                        transcript_for_log(&text, settings.log_transcripts),
+                                        transcript_for_log(&fixed, settings.log_transcripts)
+                                    ));
+                                }
+                                fixed
+                            }
+                            _ => text,
+                        };
                         let mut output = if settings.polish_enabled {
                             let style = resolve_style(
                                 focused_class
@@ -1682,6 +1709,36 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 });
                 let _ = serde_json::to_writer(&mut response, &payload);
                 let _ = response.write_all(b"\n");
+            }
+            Ok(DaemonEvent::Words {
+                session_id,
+                words,
+                english,
+                took,
+            }) => {
+                // A list for a dictation that already ended is no use.
+                if machine.current_session() != Some(session_id) {
+                    continue;
+                }
+                logging::info(&format!(
+                    "session {session_id}: word list: {} (read in {}ms)",
+                    words.summary(),
+                    took.as_millis()
+                ));
+                if !words.is_empty()
+                    && let Some(client) = sidecar.as_mut()
+                {
+                    let request = SidecarRequest::SessionWords {
+                        session_id,
+                        screen: words.screen.clone(),
+                        project: words.project.clone(),
+                        everywhere: words.everywhere.clone(),
+                    };
+                    if let Err(error) = client.send(&request) {
+                        logging::warn(&format!("session {session_id}: word list not sent: {error}"));
+                    }
+                }
+                session_words = Some((session_id, words, english));
             }
             Ok(DaemonEvent::UpdateReady(staged)) => {
                 pending_update = Some(staged);

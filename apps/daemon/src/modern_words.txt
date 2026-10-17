@@ -1,0 +1,41 @@
+# Everyday and tech words newer than the system word list (Webster's Second,
+# 1934). The word list treats them as English: they are never favoured, and a
+# heard one is never "fixed" into a listed name. Plural and verb endings are
+# tried on lookup, so list base forms. Whitespace-separated; # starts a comment.
+
+app email online offline website internet laptop smartphone okay ok wifi login
+logout signup username setup startup backend frontend database workflow dropdown
+checkbox popup inbox upload download update blog podcast selfie emoji google
+youtube facebook twitter instagram linkedin whatsapp iphone ipad macbook android
+github gmail readme todo timestamp screenshot repo config debug debugger refactor
+async localhost admin unsubscribe desktop browser smartwatch chatbot hashtag
+livestream voicemail webcam passcode touchscreen keyboard spreadsheet printout
+freelance workout skincare lifestyle takeaway endpoint workspace dataset handoff
+warmup benchmark linux unix macos windows mini eval api apis sdk url urls http
+https www html css json yaml toml xml csv pdf sql jpeg png gif svg mp3 mp4 usb
+bluetooth gps cpu gpu ram ssd os ios ui ux ai ml llm llms gpt chatgpt openai
+javascript typescript python rust golang java kotlin swift ruby php perl bash
+shell zsh terminal npm pip cargo docker kubernetes git commit commits rebase
+merge branch fork pull push deploy deployment devops server serverless cloud
+codebase frontend backend fullstack middleware runtime toolchain compiler linter
+formatter plugin plugins addon extension webhook webhooks cron daemon sidecar
+cache caching cached proxy router routing payload metadata analytics dashboard
+signin sign checkout cart ecommerce startup startups fintech crypto blockchain
+bitcoin nft wallet subscription onboarding offboarding roadmap backlog sprint
+standup scrum kanban agile retro retrospective stakeholder deliverable milestone
+deadline brainstorm feedback followup touchpoint workaround bugfix hotfix patch
+release changelog version versioning upgrade downgrade install uninstall
+reinstall login multitask multitasking screenshot screencast livestreaming
+streaming streamer podcaster vlog vlogger influencer emoji emojis gif meme memes
+selfie selfies smartwatch earbuds headphones airpods wireless broadband modem
+router hotspot ethernet firewall antivirus malware spyware phishing spam
+username password passwords keychain fingerprint faceid touchid biometric
+autocomplete autocorrect autofill autosave autoplay autoscroll dropdown tooltip
+sidebar navbar toolbar taskbar menubar dock widget widgets popup modal tab tabs
+scrollbar checkbox textbox inbox outbox spam folder folders desktop wallpaper
+screensaver bookmark bookmarks hyperlink homepage webpage webpages website
+websites blogpost newsletter unsubscribe offline online inline realtime
+fulltime parttime remote hybrid onsite offsite coworker coworkers teammate
+teammates timezone timezones weekday weekdays weekend weekends today tomorrow
+tonight yesterday okay alright gonna wanna gotta kinda sorta yeah yep nope
+hmm uh um mhm wow cool awesome

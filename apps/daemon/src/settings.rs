@@ -260,6 +260,16 @@ pub struct Settings {
     /// dropped by apps that ignore CGEvent keypresses; on such failure the
     /// daemon keeps the typed text and logs a warning).
     pub llm_polish_stream_insert: bool,
+    /// Favour unusual words from around you while transcribing: names on the
+    /// screen, in the project you are working on (a terminal's folder, an
+    /// editor's window title), and among your project folders and apps. They
+    /// are read when a dictation starts, used for that dictation only, and
+    /// never written anywhere. Needs Accessibility for the screen; only the
+    /// parakeet_mlx_offline backend uses the list.
+    pub word_list_enabled: bool,
+    /// Your own words to favour in every dictation, spelled as you want them
+    /// written ("Kubernetes", "Priya").
+    pub word_list: Vec<String>,
     pub polish: PolishConfig,
 }
 
@@ -308,6 +318,8 @@ impl Default for Settings {
             history_retention_days: 90,
             history_exclude_apps: crate::history::default_exclude_apps(),
             llm_polish_stream_insert: false,
+            word_list_enabled: true,
+            word_list: Vec::new(),
             polish: PolishConfig::default(),
         }
     }

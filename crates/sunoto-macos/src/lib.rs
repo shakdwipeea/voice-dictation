@@ -17,7 +17,8 @@ mod permissions;
 mod system;
 mod types;
 
-pub use appkit::{PasteboardSnapshot, keep_process_responsive};
+pub use accessibility::{FocusSnapshot, app_snapshot, focus_snapshot};
+pub use appkit::{EnglishVocabulary, PasteboardSnapshot, keep_process_responsive};
 pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
 pub use insertion::{ProbeWindow, UiAdapter};
 pub use permissions::{accessibility_granted, microphone_authorized, request_accessibility};

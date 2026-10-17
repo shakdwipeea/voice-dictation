@@ -77,6 +77,37 @@ Dictation history (on by default):
   and deletes entries. `sunoto-daemon history status` shows the folder and
   the counts.
 
+Your words (macOS, `parakeet_mlx_offline`; on by default):
+
+```json
+{
+  "word_list_enabled": true,
+  "word_list": ["Kubernetes", "Priya"]
+}
+```
+
+- `word_list_enabled`: spell names and tech words from around you right.
+  When a dictation starts, the daemon gathers unusual words (ones the
+  system's English vocabulary does not know) from three places: the
+  focused window (its text box or terminal screen, and its title), the
+  project you are in (Ghostty's working folder, a file's folder, or a
+  project name in an editor's title), and your project folders
+  (`~/workspace`, `~/Developer`, `~/Projects`, `~/code`, …) and apps.
+  The speech model favours those words while it decodes, and afterwards a
+  word one or two letters off a listed word ("Tsunoto", "Dun Lytics"), or
+  two words that spell one ("mini sign"), becomes the listed word. Ordinary
+  words are never touched. The words are used for that dictation only and
+  never logged or saved. Reading takes a few ms on its own thread while
+  you talk; decoding time and memory stay the same. `false` turns it off.
+- `word_list`: your own words to favour in every dictation, spelled as you
+  want them written.
+- `sunoto-daemon words` prints what a dictation would favour in the focused
+  window now (`--delay 3` gives you time to switch windows).
+- Benchmark: `tools/vocab/make_audio.py` builds test audio (your names said
+  by macOS voices, your own history, LibriSpeech), then
+  `tools/vocab/bench_words.py --words LISTS.json` compares off / on with
+  the app stopped.
+
 Updates (macOS release installs):
 
 ```json
