@@ -82,7 +82,31 @@ pub struct FocusSnapshot {
     /// most `max_chars` of it around the cursor. Never read from a password
     /// field.
     pub text: Option<String>,
+    /// Text shown elsewhere in the window (a chat's messages, the email
+    /// being answered), read only when the focused element has little and
+    /// `SnapshotOptions::walk_window` asks for it.
+    pub window_text: Option<String>,
 }
+
+/// How much `focus_snapshot` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotOptions {
+    /// Most characters kept from the focused element, and from the window.
+    pub max_chars: usize,
+    /// Read the window's visible text when the focused element holds less
+    /// than WALK_BELOW_CHARS (an empty chat box, a new email).
+    pub walk_window: bool,
+    /// Ask an app that shows no focused element to turn its accessibility
+    /// on (`AXManualAccessibility`, which Electron apps such as Slack and
+    /// VS Code need); it shares its text from the next dictation on.
+    pub wake_electron: bool,
+}
+
+/// The focused element is "short" below this many characters.
+const WALK_BELOW_CHARS: usize = 300;
+/// A window walk stops after this many elements or this long.
+const WALK_MAX_ELEMENTS: usize = 1_500;
+const WALK_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Seconds an app gets to answer each Accessibility question. A busy app
 /// would otherwise hold the reading thread for up to six seconds.
@@ -90,7 +114,7 @@ const SNAPSHOT_TIMEOUT_S: f32 = 0.05;
 
 /// Read the focused window's title, document and text. `None` without
 /// Accessibility permission or without a focused app.
-pub fn focus_snapshot(max_chars: usize) -> Option<FocusSnapshot> {
+pub fn focus_snapshot(options: SnapshotOptions) -> Option<FocusSnapshot> {
     if !unsafe { ffi::AXIsProcessTrusted() } {
         return None;
     }
@@ -111,46 +135,137 @@ pub fn focus_snapshot(max_chars: usize) -> Option<FocusSnapshot> {
             let app = ffi::AXUIElementCreateApplication(pid);
             (!app.is_null()).then_some(app)
         })?;
-        Some(snapshot_of(app, max_chars))
+        Some(snapshot_of(app, options))
     }
 }
 
 /// `focus_snapshot` for the app with process id `pid`, focused or not (for
 /// `sunoto-daemon words --pid`).
-pub fn app_snapshot(pid: i32, max_chars: usize) -> Option<FocusSnapshot> {
+pub fn app_snapshot(pid: i32, options: SnapshotOptions) -> Option<FocusSnapshot> {
     if !unsafe { ffi::AXIsProcessTrusted() } {
         return None;
     }
-    // SAFETY: the created element is released by snapshot_of.
+    // SAFETY: the created elements are released here and by snapshot_of.
     unsafe {
+        // The system-wide element sets the time limit for every element.
+        let system_wide = ffi::AXUIElementCreateSystemWide();
+        if !system_wide.is_null() {
+            ffi::AXUIElementSetMessagingTimeout(system_wide, SNAPSHOT_TIMEOUT_S);
+            ffi::CFRelease(system_wide);
+        }
         let app = ffi::AXUIElementCreateApplication(pid);
-        (!app.is_null()).then(|| snapshot_of(app, max_chars))
+        (!app.is_null()).then(|| snapshot_of(app, options))
     }
 }
 
 /// SAFETY: `app` must be a live AXUIElementRef owned by the caller; it is
 /// released here.
-unsafe fn snapshot_of(app: ffi::AXUIElementRef, max_chars: usize) -> FocusSnapshot {
+unsafe fn snapshot_of(app: ffi::AXUIElementRef, options: SnapshotOptions) -> FocusSnapshot {
     unsafe {
         ffi::AXUIElementSetMessagingTimeout(app, SNAPSHOT_TIMEOUT_S);
         let mut snapshot = FocusSnapshot::default();
-        if let Some(window) = copy_attribute(app, "AXFocusedWindow") {
+        let window = copy_attribute(app, "AXFocusedWindow");
+        if let Some(window) = window {
             snapshot.window_title = copy_text_attribute(window, "AXTitle");
             snapshot.document = copy_text_attribute(window, "AXDocument");
-            ffi::CFRelease(window);
         }
+        let mut secure = false;
+        let mut focused_found = false;
         if let Some(focused) = copy_attribute(app, "AXFocusedUIElement") {
+            focused_found = true;
             let role = copy_string_attribute(focused, "AXRole");
             let subrole = copy_string_attribute(focused, "AXSubrole");
-            let secure = role.as_deref() == Some(SECURE_ROLE) || subrole.as_deref() == Some(SECURE_ROLE);
+            secure = role.as_deref() == Some(SECURE_ROLE) || subrole.as_deref() == Some(SECURE_ROLE);
             if !secure {
-                snapshot.text = copy_text_near_cursor(focused, max_chars);
+                snapshot.text = copy_text_near_cursor(focused, options.max_chars);
             }
             ffi::CFRelease(focused);
+        }
+        let short = snapshot.text.as_deref().map_or(0, |text| text.chars().count()) < WALK_BELOW_CHARS;
+        if let Some(window) = window {
+            if options.walk_window && short && !secure {
+                snapshot.window_text = window_text(window, options.max_chars);
+            }
+            ffi::CFRelease(window);
+        }
+        // After reading: the app rebuilds its tree once it is woken, and a
+        // walk during that rebuild finds nothing. Once per app is enough.
+        if options.wake_electron
+            && !focused_found
+            && first_wake(app)
+            && let Some(key) = cf_string("AXManualAccessibility")
+        {
+            ffi::AXUIElementSetAttributeValue(app, key, ffi::kCFBooleanTrue);
+            ffi::CFRelease(key);
         }
         ffi::CFRelease(app);
         snapshot
     }
+}
+
+/// Whether this is the first time `app` would be woken in this process.
+///
+/// SAFETY: `app` must be a live AXUIElementRef.
+unsafe fn first_wake(app: ffi::AXUIElementRef) -> bool {
+    static WOKEN: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+    let mut pid = 0;
+    if unsafe { ffi::AXUIElementGetPid(app, &mut pid) } != ffi::kAXErrorSuccess {
+        return false;
+    }
+    let mut woken = WOKEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if woken.contains(&pid) {
+        return false;
+    }
+    if woken.len() > 512 {
+        woken.clear();
+    }
+    woken.push(pid);
+    true
+}
+
+/// The visible text of `window`: values, titles and descriptions of its
+/// elements, depth first, within WALK_MAX_ELEMENTS, WALK_BUDGET and
+/// `max_chars`. Password fields are skipped.
+///
+/// SAFETY: `window` must be a live AXUIElementRef; it is not released.
+unsafe fn window_text(window: ffi::AXUIElementRef, max_chars: usize) -> Option<String> {
+    let started = std::time::Instant::now();
+    let mut text = String::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![unsafe { ffi::CFRetain(window) }];
+    let mut visited = 0;
+    while let Some(element) = stack.pop() {
+        visited += 1;
+        let done = visited > WALK_MAX_ELEMENTS
+            || started.elapsed() > WALK_BUDGET
+            || text.len() >= max_chars;
+        if !done {
+            let role = unsafe { copy_string_attribute(element, "AXRole") };
+            if role.as_deref() != Some(SECURE_ROLE) {
+                for name in ["AXValue", "AXTitle", "AXDescription"] {
+                    if let Some(value) = unsafe { copy_text_attribute(element, name) }
+                        && value.len() < 4_000
+                        && seen.insert(value.clone())
+                    {
+                        text.push_str(&value);
+                        text.push('\n');
+                    }
+                }
+                if let Some(children) = unsafe { copy_attribute(element, "AXChildren") } {
+                    let count = unsafe { ffi::CFArrayGetCount(children as ffi::CFArrayRef) };
+                    for index in (0..count).rev() {
+                        let child = unsafe { ffi::CFArrayGetValueAtIndex(children as ffi::CFArrayRef, index) };
+                        if !child.is_null() {
+                            stack.push(unsafe { ffi::CFRetain(child) });
+                        }
+                    }
+                    unsafe { ffi::CFRelease(children) };
+                }
+            }
+        }
+        unsafe { ffi::CFRelease(element) };
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 /// SAFETY: `element` must be a live AXUIElementRef.

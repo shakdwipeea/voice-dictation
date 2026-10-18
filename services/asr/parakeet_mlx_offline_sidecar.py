@@ -502,13 +502,35 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         )
         if not results:
             return "", []
-        result = results[0]
+        result = self._without_special_tokens(results[0], mel)
         tokens = result.tokens
         for token in tokens:
             token.start += offset_s
             token.end = token.start + token.duration
         text = getattr(result, "text", result)
         return (text if isinstance(text, str) else ""), tokens
+
+    def _without_special_tokens(self, result, mel):
+        """Never let <unk> and other special tokens reach the user.
+
+        With several MLX programs on the GPU at once, a decode now and then
+        comes back as a run of <unk> (seen in 7 of ~3,600 LibriSpeech
+        decodes, with and without a word list). Decode once more; if that is
+        no better, drop the special tokens.
+        """
+        vocabulary = self.model.vocabulary
+        special = lambda r: any(vocabulary[t.id].startswith("<") for t in r.tokens)  # noqa: E731
+        if not special(result):
+            return result
+        log("decode emitted special tokens (<unk>); decoding again")
+        retry = self.model.generate(mel)[0]
+        if not special(retry):
+            return retry
+        from parakeet_mlx.alignment import sentences_to_result, tokens_to_sentences  # noqa: delayed
+
+        kept = [t for t in retry.tokens if not vocabulary[t.id].startswith("<")]
+        log(f"still special tokens after the retry; dropped {len(retry.tokens) - len(kept)}")
+        return sentences_to_result(tokens_to_sentences(kept)) if kept else retry.__class__("", [])
 
     def _transcribe_wav(self, path: str) -> str:
         if self.model is None:

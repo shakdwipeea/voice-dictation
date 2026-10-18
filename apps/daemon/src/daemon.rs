@@ -149,7 +149,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // Only the Parakeet-MLX sidecar can favour words; other backends would
     // pay for reading the screen and gain nothing.
     let word_worker = (settings.word_list_enabled && settings.backend == "parakeet_mlx_offline")
-        .then(|| WordWorker::spawn(settings.word_list.clone(), events_tx.clone()));
+        .then(|| WordWorker::spawn(settings.word_list.clone(), settings.word_sources(), events_tx.clone()));
 
     // UI thread (insertion/clipboard/bubble on its own backend connection).
     let (ui_tx, ui_rx) = mpsc::channel::<UiCommand>();

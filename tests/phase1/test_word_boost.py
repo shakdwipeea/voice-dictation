@@ -188,6 +188,10 @@ class DecodeLoopTest(unittest.TestCase):
         self.assertEqual(self.decode(rows, {"everywhere": ["zzzzz"]}), " suny" + "to")
         self.assertEqual(self.decode(rows, {"screen": ["sunoto"]}), " sunoto")
 
+    def test_a_non_finite_step_falls_back_to_the_stock_choice(self):
+        rows = [{f"{S}so": float("inf"), f"{S}sun": -0.1}, {"blank": -0.1}]
+        self.assertEqual(self.decode(rows, {"screen": ["sunoto"]}), " so")
+
     def test_start_bonus_leaves_a_longer_start_and_silence_alone(self):
         # "sun" is not how "suzuki" goes on, so the model's longer start stays;
         # then the bonus for "su" cannot fill a silence.

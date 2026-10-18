@@ -275,16 +275,34 @@ muted; check System Settings → Sound → Input.
 - Word list (`word_list_enabled`, macOS + `parakeet_mlx_offline`): at each
   press a `word-list` thread (`apps/daemon/src/vocabulary.rs`) gathers
   unusual words from the focused window (Accessibility: text, title,
-  `AXDocument`), its project, and project folders/apps, and sends them as
-  `session_words`; `services/asr/word_boost.py` favours them in the greedy
-  TDT decode, and the daemon fixes one-letter misses after the final. Never
-  log the words themselves (screen text). "Unusual" uses the system English
-  vocabulary (NaturalLanguage) plus `/usr/share/dict/words`; one-letter
-  start pieces get no bonus and a start bonus never beats blank or a longer
-  start — both stopped real damage ("Uh"→"A", "Mar"→"Ma"). Change bonuses
-  only with `tools/vocab/bench_words.py` (app stopped): 2026-10-18 baseline
-  93 names 11→49 exact (71 with the name on screen), ordinary speech 0/133
-  changed, decode time and MLX peak unchanged, daemon +7 MB.
+  `AXDocument`, and a bounded walk of the window when the box is nearly
+  empty), its project, project folders and apps (opt-in: Contacts,
+  Documents/recent files), and sends them as `session_words`;
+  `services/asr/word_boost.py` favours them in the greedy TDT decode, and
+  the daemon fixes misses after the final (`fix_near_misses`: letters,
+  sound, joins of up to 4 words). Never log the words themselves (screen
+  text). "Unusual" = not in the system's everyday vocabulary
+  (NaturalLanguage, which has no proper names) nor MODERN_WORDS; the fix
+  also spares exact `/usr/share/dict/words` entries ("William"),
+  contractions and possessives. Never read under Documents/Desktop/
+  Downloads/iCloud without `word_list_documents`: it raises a macOS dialog.
+  Guards that came from benchmark failures: no first-piece bonus for
+  one-letter pieces, a start bonus never beats blank or a longer start, a
+  quarter-strength first piece (noise), <unk> output is decoded again (MLX
+  emits runs of <unk> now and then when several MLX processes share the GPU,
+  with or without a list). Change bonuses only with `tools/vocab/` (app
+  stopped; never run two GPU benchmarks at once, see <unk> above).
+  2026-10-18: LibriSpeech rare-word error 9.8%→5.3% (clean), 18.3%→10.0%
+  (other), common words unchanged; personas 207→385 of 536 names (404 with
+  both opt-ins); ordinary speech unchanged; decode time +0.3–1.4%, MLX peak
+  unchanged, daemon 7.8→14 MB.
+- Qwen3-ASR-0.6B (context in its prompt, mlx-audio) was benchmarked against
+  Parakeet on 2026-10-18 and not adopted: better with the screen text itself
+  (433 vs 385 persona names) and in loud background talk, but 2–3× slower
+  (≈360 vs 108 ms per clip with screen text), worse on LibriSpeech rare
+  words and harder speech, 11 languages vs 25, and with a list in its prompt
+  it writes the list out on silence. Rerun with `--engine qwen3-8bit` on the
+  tools/vocab benchmarks (venv: build/venv-qwen3-asr) before revisiting.
 - The pill never shows partial transcripts: they are often wrong where the
   final is right. While recording it shows the dot, sound ribbon, timer, and
   a start hint that fades once you start talking (3 s at most). After the

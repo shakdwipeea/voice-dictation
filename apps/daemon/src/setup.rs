@@ -864,6 +864,8 @@ pub fn info_plist() -> String {
     <key>NSAppSleepDisabled</key><true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Sunoto records your voice only while you dictate with its shortcut.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>If you turn it on, Sunoto spells the names in your contacts right when you dictate. They never leave this Mac.</string>
 </dict>
 </plist>
 "#,
