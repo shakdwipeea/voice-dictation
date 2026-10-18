@@ -47,6 +47,8 @@ pub enum DaemonEvent {
     },
     /// A newer release, verified and unpacked, waiting for an idle moment.
     UpdateReady(crate::update::Staged),
+    /// The background fetch of the speech model's copy ended.
+    SpeechModelFetched(Result<(), String>),
     Fatal(String),
 }
 

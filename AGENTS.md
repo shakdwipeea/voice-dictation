@@ -125,6 +125,14 @@ comes up. The quick facts:
   `SUNOTO_UPDATE_KEY` (a test public key file), `SUNOTO_UPDATE_IDLE_SECS`.
   Restart the app, and `launchctl unsetenv` them afterwards. Progress goes to
   `~/Library/Logs/sunoto/update.log`.
+- An update never downloads the speech model: the updater gives the new
+  version 240 s to start. `setup --update` leaves an install on the model it
+  has (v3 before 0.1.12, `Settings::stopgap_parakeet_model`). The app then
+  fetches Sunoto's copy of the new one in the background, moves the sidecar to
+  it after the same idle wait as an update, and deletes what Sunoto downloaded
+  for the old one. To test it, set `SUNOTO_MODEL_RELEASE` to a `file://`
+  folder holding the two files (spaces as `%20`) and set `HF_HUB_CACHE` to an
+  empty folder when the shared cache already holds the new original.
 
 ### Recurring issues
 

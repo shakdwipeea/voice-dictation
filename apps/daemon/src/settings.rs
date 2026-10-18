@@ -11,14 +11,17 @@ const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 /// setup downloads it in place of the 2.5 GB float32 original; the sidecar
 /// casts the original to bf16 on load anyway, so the weights are identical.
 const LOCAL_PARAKEET_MLX_MODEL: &str = "models/parakeet-tdt-0.6b-v2-bf16";
+/// The model before 0.1.12: multilingual v3, and Sunoto's bf16 copy of it.
+const RETIRED_PARAKEET_MLX_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+const RETIRED_PARAKEET_MLX_COPY: &str = "models/parakeet-tdt-0.6b-v3-bf16";
 /// Models Sunoto downloaded for v3, relative to its Application Support
-/// folder; setup deletes them once v2 is in. Sunoto's bf16 copy (1.25 GB),
+/// folder; they are deleted once v2 is in. Sunoto's bf16 copy (1.25 GB),
 /// and the original (2.5 GB) in the Hugging Face cache a release install
 /// keeps there (`setup::apply_bundle_environment` points HF_HOME at
 /// `sunoto/hf`). The shared ~/.cache/huggingface is never touched: other
 /// tools may have downloaded the same model.
-pub const RETIRED_PARAKEET_MLX_MODELS: &[&str] = &[
-    "models/parakeet-tdt-0.6b-v3-bf16",
+const RETIRED_PARAKEET_MLX_MODELS: &[&str] = &[
+    RETIRED_PARAKEET_MLX_COPY,
     "hf/hub/models--mlx-community--parakeet-tdt-0.6b-v3",
     "hf/hub/.locks/models--mlx-community--parakeet-tdt-0.6b-v3",
 ];
@@ -495,11 +498,30 @@ impl Settings {
     }
 
     /// The model the Parakeet sidecar loads: `asr_model` when set, else the
-    /// local bf16 copy once setup has fetched it, else the Hugging Face
-    /// original.
+    /// local bf16 copy once setup has fetched it, else the old model of an
+    /// updated install while the app fetches that copy
+    /// (`stopgap_parakeet_model`), else the Hugging Face original.
     pub fn parakeet_model(&self) -> String {
         let local = local_parakeet_model_dir().filter(|dir| model_dir_complete(dir));
-        choose_parakeet_model(self.asr_model.as_deref(), local.as_deref())
+        let stopgap = local.is_none().then(stopgap_parakeet_model).flatten();
+        choose_parakeet_model(
+            self.asr_model.as_deref(),
+            local.as_deref(),
+            stopgap.as_deref(),
+        )
+    }
+
+    /// The Parakeet sidecar runs the model Sunoto picks, not one set in
+    /// `asr_model`.
+    pub fn runs_default_parakeet(&self) -> bool {
+        self.backend.starts_with("parakeet_mlx")
+            && self.asr_model.as_deref().is_none_or(str::is_empty)
+    }
+
+    /// The sidecar runs the old model of an updated install, so the app
+    /// should fetch the copy of the current one.
+    pub fn on_stopgap_model(&self) -> bool {
+        self.runs_default_parakeet() && stopgap_parakeet_model().is_some()
     }
 
     /// The GGUF the polish sidecar will load: the explicit path if set,
@@ -823,30 +845,102 @@ pub fn expand_home(path: &str) -> String {
     path.to_string()
 }
 
-/// Where setup puts the bf16 speech model. macOS only: Linux uses Nemotron.
-pub fn local_parakeet_model_dir() -> Option<PathBuf> {
+/// Sunoto's folder under Application Support, where its speech models
+/// live. macOS only: Linux uses Nemotron.
+fn support_dir() -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
     let home = std::env::var("HOME").ok()?;
-    Some(
-        PathBuf::from(home)
-            .join("Library/Application Support/sunoto")
-            .join(LOCAL_PARAKEET_MLX_MODEL),
-    )
+    Some(PathBuf::from(home).join("Library/Application Support/sunoto"))
 }
 
-/// Both files are in place. setup moves each one there only after checking
-/// its size and SHA-256, so present means verified.
+/// Where setup puts the bf16 speech model.
+pub fn local_parakeet_model_dir() -> Option<PathBuf> {
+    Some(support_dir()?.join(LOCAL_PARAKEET_MLX_MODEL))
+}
+
+/// Both files are in place. Each one is moved there only after its size
+/// and SHA-256 are checked, so present means verified.
 pub fn model_dir_complete(dir: &Path) -> bool {
     dir.join("config.json").is_file() && dir.join("model.safetensors").is_file()
 }
 
-fn choose_parakeet_model(configured: Option<&str>, local: Option<&Path>) -> String {
+/// The model an install that updated from 0.1.11 or older already has,
+/// while Sunoto's copy of the current one is missing and the Hugging Face
+/// cache has no original: Sunoto's v3 copy, else the v3 original in the
+/// cache. An update has minutes to start the new version (update.rs), too
+/// few for 1.24 GB, so the app runs this one while it fetches the copy in
+/// the background, then moves to the copy and deletes what Sunoto
+/// downloaded for v3.
+pub fn stopgap_parakeet_model() -> Option<String> {
+    let local = local_parakeet_model_dir()?;
+    let support = local.parent()?.parent()?;
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    stopgap_in(&local, support, &hub_cache_dir(&home))
+}
+
+fn stopgap_in(local: &Path, support: &Path, hub: &Path) -> Option<String> {
+    if model_dir_complete(local) || hub_has_model(hub, DEFAULT_PARAKEET_MLX_MODEL) {
+        return None;
+    }
+    let copy = support.join(RETIRED_PARAKEET_MLX_COPY);
+    if model_dir_complete(&copy) {
+        return Some(copy.to_string_lossy().into_owned());
+    }
+    hub_has_model(hub, RETIRED_PARAKEET_MLX_REPO).then(|| RETIRED_PARAKEET_MLX_REPO.to_string())
+}
+
+/// The Hugging Face cache the sidecar reads, found the way huggingface_hub
+/// finds it.
+fn hub_cache_dir(home: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("HF_HUB_CACHE") {
+        return PathBuf::from(dir);
+    }
+    if let Some(dir) = std::env::var_os("HF_HOME") {
+        return PathBuf::from(dir).join("hub");
+    }
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cache"))
+        .join("huggingface/hub")
+}
+
+/// Some revision of `repo` in the cache has both files.
+fn hub_has_model(hub: &Path, repo: &str) -> bool {
+    let snapshots = hub
+        .join(format!("models--{}", repo.replace('/', "--")))
+        .join("snapshots");
+    std::fs::read_dir(snapshots).is_ok_and(|mut revisions| {
+        revisions.any(|revision| revision.is_ok_and(|r| model_dir_complete(&r.path())))
+    })
+}
+
+/// The retired models Sunoto downloaded that are still on disk.
+pub fn retired_model_dirs() -> Vec<PathBuf> {
+    support_dir()
+        .map(|support| retired_model_dirs_in(&support))
+        .unwrap_or_default()
+}
+
+fn retired_model_dirs_in(support: &Path) -> Vec<PathBuf> {
+    RETIRED_PARAKEET_MLX_MODELS
+        .iter()
+        .map(|retired| support.join(retired))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+fn choose_parakeet_model(
+    configured: Option<&str>,
+    local: Option<&Path>,
+    stopgap: Option<&str>,
+) -> String {
     configured
         .filter(|model| !model.is_empty())
         .map(str::to_string)
         .or_else(|| local.map(|dir| dir.to_string_lossy().into_owned()))
+        .or_else(|| stopgap.map(str::to_string))
         .unwrap_or_else(|| DEFAULT_PARAKEET_MLX_MODEL.to_string())
 }
 
@@ -1400,24 +1494,91 @@ mod tests {
     }
 
     #[test]
-    fn parakeet_model_prefers_config_then_local_copy_then_hub() {
+    fn parakeet_model_prefers_config_then_local_copy_then_stopgap_then_hub() {
         let local = Path::new("/models/parakeet-bf16");
+        let old = Some("/models/old-bf16");
         assert_eq!(
-            choose_parakeet_model(Some("mlx-community/parakeet-tdt-1.1b"), Some(local)),
+            choose_parakeet_model(Some("mlx-community/parakeet-tdt-1.1b"), Some(local), old),
             "mlx-community/parakeet-tdt-1.1b"
         );
         assert_eq!(
-            choose_parakeet_model(Some(""), Some(local)),
+            choose_parakeet_model(Some(""), Some(local), old),
             "/models/parakeet-bf16"
         );
         assert_eq!(
-            choose_parakeet_model(None, Some(local)),
+            choose_parakeet_model(None, Some(local), old),
             "/models/parakeet-bf16"
         );
+        assert_eq!(choose_parakeet_model(None, None, old), "/models/old-bf16");
         assert_eq!(
-            choose_parakeet_model(None, None),
+            choose_parakeet_model(None, None, None),
             DEFAULT_PARAKEET_MLX_MODEL
         );
+    }
+
+    fn put_model(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.json"), "{}").unwrap();
+        std::fs::write(dir.join("model.safetensors"), "x").unwrap();
+    }
+
+    #[test]
+    fn an_updated_install_runs_its_old_model_until_the_new_copy_is_in() {
+        let support = std::env::temp_dir().join(format!("sunoto-stopgap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&support);
+        let local = support.join(LOCAL_PARAKEET_MLX_MODEL);
+        let hub = support.join("hf/hub");
+        let v3_hub = hub.join("models--mlx-community--parakeet-tdt-0.6b-v3/snapshots/abc");
+        let v2_hub = hub.join("models--mlx-community--parakeet-tdt-0.6b-v2/snapshots/def");
+        let v3_copy = support.join(RETIRED_PARAKEET_MLX_COPY);
+
+        assert_eq!(
+            stopgap_in(&local, &support, &hub),
+            None,
+            "nothing to fall back on"
+        );
+        put_model(&v3_hub);
+        assert_eq!(
+            stopgap_in(&local, &support, &hub).as_deref(),
+            Some(RETIRED_PARAKEET_MLX_REPO)
+        );
+        put_model(&v3_copy);
+        assert_eq!(
+            stopgap_in(&local, &support, &hub),
+            Some(v3_copy.to_string_lossy().into_owned()),
+            "Sunoto's copy before the original"
+        );
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("config.json"), "{}").unwrap();
+        assert!(
+            stopgap_in(&local, &support, &hub).is_some(),
+            "a half-fetched copy does not count"
+        );
+        put_model(&local);
+        assert_eq!(stopgap_in(&local, &support, &hub), None);
+        std::fs::remove_dir_all(&local).unwrap();
+        put_model(&v2_hub);
+        assert_eq!(
+            stopgap_in(&local, &support, &hub),
+            None,
+            "the original v2 is cached"
+        );
+        std::fs::remove_dir_all(&support).unwrap();
+    }
+
+    #[test]
+    fn only_the_models_sunoto_retired_are_listed_for_deletion() {
+        let support = std::env::temp_dir().join(format!("sunoto-retired-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&support);
+        let old_copy = support.join("models/parakeet-tdt-0.6b-v3-bf16");
+        let old_hub = support.join("hf/hub/models--mlx-community--parakeet-tdt-0.6b-v3");
+        let current = support.join(LOCAL_PARAKEET_MLX_MODEL);
+        let other_hub = support.join("hf/hub/models--mlx-community--parakeet-tdt-0.6b-v2");
+        for dir in [&old_copy, &old_hub, &current, &other_hub] {
+            put_model(dir);
+        }
+        assert_eq!(retired_model_dirs_in(&support), vec![old_copy, old_hub]);
+        std::fs::remove_dir_all(&support).unwrap();
     }
 
     #[test]

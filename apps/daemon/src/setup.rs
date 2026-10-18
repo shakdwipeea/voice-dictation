@@ -18,7 +18,8 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::settings::{self, Settings};
@@ -291,7 +292,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?
     };
     if let Some(python) = asr_python.filter(|_| loaded.backend.starts_with("parakeet_mlx")) {
-        ensure_asr_model(&python, &loaded, args.dry_run)?;
+        ensure_asr_model(&python, &loaded, args.update, args.dry_run)?;
     }
 
     section("bundle");
@@ -500,10 +501,12 @@ fn preflight_asr_runtime(
 /// daemon start do it silently behind a "loading speech model..." pill.
 /// Prefers Sunoto's 1.24 GB bf16 copy; an install that already has the
 /// float32 original in the Hugging Face cache keeps using it. Once the model
-/// is in place, the copy of a model the app no longer uses is deleted.
+/// is in place, the copy of a model the app no longer uses is deleted. An
+/// update that still has its old model leaves the fetch to the app.
 fn ensure_asr_model(
     python: &str,
     settings: &Settings,
+    update: bool,
     dry_run: bool,
 ) -> Result<(), Box<dyn Error>> {
     section("speech model");
@@ -526,6 +529,14 @@ fn ensure_asr_model(
         remove_retired_models(dry_run);
         return Ok(());
     }
+    if update && let Some(old) = settings::stopgap_parakeet_model() {
+        // The updater gives the new version minutes to start, which 1.24 GB
+        // may not fit in. The app runs the old model meanwhile.
+        note(&format!(
+            "the app keeps {old} until it has downloaded the new speech model (about 1.24 GB) in the background"
+        ));
+        return Ok(());
+    }
     let script = format!(
         "from huggingface_hub import snapshot_download\nimport sys\np = snapshot_download('{ASR_MODEL_REPO}', local_files_only=True) if '--check' in sys.argv else snapshot_download('{ASR_MODEL_REPO}')\nprint(p)"
     );
@@ -546,17 +557,7 @@ fn ensure_asr_model(
     }
     if let Some(dir) = &local {
         note("downloading the speech model (about 1.24 GB, one time)...");
-        let fetched = ASR_MODEL_FILES
-            .iter()
-            .try_for_each(|(name, sha256, bytes)| {
-                download_verified(
-                    &format!("{ASR_MODEL_RELEASE}/{name}"),
-                    &dir.join(name),
-                    sha256,
-                    *bytes,
-                )
-            });
-        match fetched {
+        match fetch_speech_model(dir, Progress::Shown) {
             Ok(()) => {
                 ok(&format!("speech model ready: {}", dir.display()));
                 remove_retired_models(dry_run);
@@ -579,29 +580,50 @@ fn ensure_asr_model(
     Ok(())
 }
 
+/// Fetch Sunoto's copy of the speech model into `dir`. A file already there
+/// was checked before it was moved in, so it is kept. `SUNOTO_MODEL_RELEASE`
+/// replaces the release URL, for testing with a `file://` folder.
+pub(crate) fn fetch_speech_model(dir: &Path, progress: Progress) -> Result<(), Box<dyn Error>> {
+    let release =
+        std::env::var("SUNOTO_MODEL_RELEASE").unwrap_or_else(|_| ASR_MODEL_RELEASE.to_string());
+    ASR_MODEL_FILES
+        .iter()
+        .try_for_each(|(name, sha256, bytes)| {
+            let destination = dir.join(name);
+            if destination.is_file() {
+                return Ok(());
+            }
+            download_verified(
+                &format!("{release}/{name}"),
+                &destination,
+                sha256,
+                *bytes,
+                progress,
+            )
+        })
+}
+
 /// Delete the models Sunoto downloaded and no longer uses (v3: its bf16
 /// copy and, on release installs, the original in Sunoto's own Hugging Face
 /// cache). Only folders under Sunoto's Application Support folder; the
 /// shared ~/.cache/huggingface is left alone.
 fn remove_retired_models(dry_run: bool) {
-    // The model folder is <Application Support>/sunoto/models/<name>.
-    if let Some(base) = settings::local_parakeet_model_dir().and_then(|dir| dir.parent()?.parent().map(Path::to_path_buf)) {
-        remove_retired_models_in(&base, dry_run);
-    }
-}
-
-fn remove_retired_models_in(base: &Path, dry_run: bool) {
-    for retired in settings::RETIRED_PARAKEET_MLX_MODELS {
-        let dir = base.join(retired);
-        if !dir.is_dir() {
-            continue;
-        }
+    for dir in settings::retired_model_dirs() {
         if dry_run {
-            note(&format!("would delete the old speech model at {}", dir.display()));
+            note(&format!(
+                "would delete the old speech model at {}",
+                dir.display()
+            ));
         } else if let Err(error) = std::fs::remove_dir_all(&dir) {
-            warn(&format!("could not delete the old speech model at {}: {error}", dir.display()));
+            warn(&format!(
+                "could not delete the old speech model at {}: {error}",
+                dir.display()
+            ));
         } else {
-            ok(&format!("deleted the old speech model at {}", dir.display()));
+            ok(&format!(
+                "deleted the old speech model at {}",
+                dir.display()
+            ));
         }
     }
 }
@@ -673,6 +695,7 @@ fn ensure_llm_model(
         &destination,
         LLM_MODEL_SHA256,
         LLM_MODEL_BYTES,
+        Progress::Shown,
     )?;
     settings.llm_polish_model_path = Some(destination.to_string_lossy().into_owned());
     settings.llm_polish_enabled = true;
@@ -703,13 +726,23 @@ fn ask_yes_no(prompt: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-/// `curl` with a progress bar into a `.part` file, then verify the SHA-256
-/// and size before moving it into place. A verified file is never replaced.
+/// How a download shows itself: in setup, with notes and curl's progress
+/// bar; in the running app, quietly, and stopped when the app quits (the
+/// next start resumes the partial file).
+#[derive(Clone, Copy)]
+pub(crate) enum Progress<'a> {
+    Shown,
+    Quiet { stop: &'a AtomicBool },
+}
+
+/// `curl` into a `.part` file, then verify the SHA-256 and size before
+/// moving it into place. A verified file is never replaced.
 fn download_verified(
     url: &str,
     destination: &Path,
     sha256: &str,
     expected_bytes: u64,
+    progress: Progress,
 ) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
@@ -717,14 +750,28 @@ fn download_verified(
     let mut partial = destination.as_os_str().to_owned();
     partial.push(".part");
     let partial = PathBuf::from(partial);
-    note(&format!("downloading {url}"));
-    let status = Command::new("curl")
-        .args(["-L", "--fail", "--progress-bar", "-C", "-", "-o"])
+    let mut curl = Command::new("curl");
+    curl.args(["-L", "--fail", "-C", "-", "-o"])
         .arg(&partial)
-        .arg(url)
-        .status()?;
+        .arg(url);
+    let status = match progress {
+        Progress::Shown => {
+            note(&format!("downloading {url}"));
+            curl.arg("--progress-bar").status()?
+        }
+        Progress::Quiet { stop } => {
+            let child = curl
+                .args(["--silent", "--show-error"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()?;
+            wait_unless_stopped(child, stop)?
+        }
+    };
     if !status.success() {
-        return Err(format!("download failed ({status}); rerun setup to resume").into());
+        return Err(
+            format!("download of {url} failed ({status}); it resumes on the next try").into(),
+        );
     }
     let size = fs::metadata(&partial)?.len();
     if size != expected_bytes {
@@ -734,7 +781,9 @@ fn download_verified(
         )
         .into());
     }
-    note("verifying checksum...");
+    if let Progress::Shown = progress {
+        note("verifying checksum...");
+    }
     let output = Command::new("shasum")
         .args(["-a", "256"])
         .arg(&partial)
@@ -752,6 +801,21 @@ fn download_verified(
     }
     fs::rename(&partial, destination)?;
     Ok(())
+}
+
+/// Wait for `child`, killing it first if `stop` is set.
+fn wait_unless_stopped(mut child: Child, stop: &AtomicBool) -> Result<ExitStatus, Box<dyn Error>> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if stop.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("stopped".into());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// `sunoto-daemon restart`: quit the installed app and open it again.
@@ -1609,21 +1673,14 @@ mod tests {
     }
 
     #[test]
-    fn retired_model_copies_are_deleted_and_others_kept() {
-        let base = std::env::temp_dir().join(format!("sunoto-retired-{}", std::process::id()));
-        let old_copy = base.join("models/parakeet-tdt-0.6b-v3-bf16");
-        let old_hub = base.join("hf/hub/models--mlx-community--parakeet-tdt-0.6b-v3");
-        let current = base.join("models/parakeet-tdt-0.6b-v2-bf16");
-        let other_hub = base.join("hf/hub/models--mlx-community--parakeet-tdt-0.6b-v2");
-        for dir in [&old_copy, &old_hub, &current, &other_hub] {
-            std::fs::create_dir_all(dir).unwrap();
-            std::fs::write(dir.join("model.safetensors"), "x").unwrap();
-        }
-        remove_retired_models_in(&base, true);
-        assert!(old_copy.exists() && old_hub.exists(), "a dry run deletes nothing");
-        remove_retired_models_in(&base, false);
-        assert!(!old_copy.exists() && !old_hub.exists());
-        assert!(current.exists() && other_hub.exists());
-        std::fs::remove_dir_all(&base).unwrap();
+    fn a_background_download_stops_when_the_app_quits() {
+        let stop = AtomicBool::new(false);
+        let quick = Command::new("true").spawn().unwrap();
+        assert!(wait_unless_stopped(quick, &stop).unwrap().success());
+        let slow = Command::new("sleep").arg("30").spawn().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        assert!(wait_unless_stopped(slow, &stop).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

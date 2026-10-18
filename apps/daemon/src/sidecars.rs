@@ -41,6 +41,46 @@ pub(crate) fn spawn_sidecar(
     Ok(client)
 }
 
+/// Fetch Sunoto's copy of the speech model while the sidecar runs the old
+/// model of an updated install (`Settings::on_stopgap_model`). Reports once;
+/// setting `stop` ends the download, and the next start resumes it.
+pub(crate) fn spawn_model_fetch(
+    events: Sender<DaemonEvent>,
+    stop: Arc<AtomicBool>,
+) -> Option<JoinHandle<()>> {
+    let dir = crate::settings::local_parakeet_model_dir()?;
+    Some(std::thread::spawn(move || {
+        let result =
+            crate::setup::fetch_speech_model(&dir, crate::setup::Progress::Quiet { stop: &stop })
+                .map_err(|error| error.to_string());
+        if !stop.load(Ordering::SeqCst) {
+            let _ = events.send(DaemonEvent::SpeechModelFetched(result));
+        }
+    }))
+}
+
+/// Delete the models Sunoto downloaded and no longer runs, off the loop.
+pub(crate) fn remove_retired_models() {
+    let dirs = crate::settings::retired_model_dirs();
+    if dirs.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for dir in dirs {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => logging::info(&format!(
+                    "deleted the old speech model at {}",
+                    dir.display()
+                )),
+                Err(error) => logging::warn(&format!(
+                    "could not delete the old speech model at {}: {error}",
+                    dir.display()
+                )),
+            }
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_sidecar_loss(
     reason: &str,

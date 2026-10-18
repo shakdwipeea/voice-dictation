@@ -36,8 +36,8 @@ use crate::overlay::{ERROR_BUBBLE_VISIBLE, UiFront, show_error, spawn_overlay};
 use crate::session::{SAMPLES_PER_MS, SessionAudioStats, SessionTiming, frame_levels, mode_label};
 use crate::settings::{Settings, sanitize_for_insertion, transcript_for_log};
 use crate::sidecars::{
-    SIDECAR_BACKOFF_CAP, SIDECAR_BACKOFF_START, handle_sidecar_loss, spawn_capture_thread,
-    spawn_hotkey_thread, spawn_sidecar,
+    SIDECAR_BACKOFF_CAP, SIDECAR_BACKOFF_START, handle_sidecar_loss, remove_retired_models,
+    spawn_capture_thread, spawn_hotkey_thread, spawn_model_fetch, spawn_sidecar,
 };
 use crate::system_dispatch::{
     PendingSystemSelection, SelectedSystemAction, present_navigation_confirmation,
@@ -149,7 +149,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // Only the Parakeet-MLX sidecar can favour words; other backends would
     // pay for reading the screen and gain nothing.
     let word_worker = (settings.word_list_enabled && settings.backend == "parakeet_mlx_offline")
-        .then(|| WordWorker::spawn(settings.word_list.clone(), settings.word_sources(), events_tx.clone()));
+        .then(|| {
+            WordWorker::spawn(
+                settings.word_list.clone(),
+                settings.word_sources(),
+                events_tx.clone(),
+            )
+        });
 
     // UI thread (insertion/clipboard/bubble on its own backend connection).
     let (ui_tx, ui_rx) = mpsc::channel::<UiCommand>();
@@ -219,6 +225,25 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     }
 
     let mut sidecar = Some(spawn_sidecar(&settings, events_tx.clone())?);
+    // An install updated from a version on another model runs that model
+    // until the copy of this one is fetched in the background; the sidecar
+    // then moves to it at an idle moment, and the old model is deleted once
+    // the new one is ready.
+    let on_stopgap = settings.on_stopgap_model();
+    let model_fetch_stop = Arc::new(AtomicBool::new(false));
+    let model_fetch = if on_stopgap {
+        logging::info(&format!(
+            "speech model: running {} while the new one (1.24 GB) downloads in the background",
+            settings.parakeet_model()
+        ));
+        spawn_model_fetch(events_tx.clone(), Arc::clone(&model_fetch_stop))
+    } else {
+        None
+    };
+    let mut model_switch_due = false;
+    // The old sidecar was stopped for the switch; its Closed starts the new one.
+    let mut model_switching = false;
+    let mut retire_old_models = settings.runs_default_parakeet() && !on_stopgap;
     let llm_model_present = settings
         .llm_polish_model_file()
         .is_some_and(|path| path.is_file());
@@ -702,6 +727,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     sidecar_ready = true;
                     respawn_backoff = SIDECAR_BACKOFF_START;
                     logging::info(&format!("ASR sidecar ready: {backend}"));
+                    if retire_old_models {
+                        retire_old_models = false;
+                        remove_retired_models();
+                    }
                     llm_post_asr_warmed = llm_polish.is_none();
                     if llm_polish.is_some() && !blocked_modes.is_empty() {
                         // The warm-up blocks the loop for several seconds
@@ -903,7 +932,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         }
                         let raw_text = text.clone();
                         let text = match session_words.take() {
-                            Some((words_session, words, english)) if words_session == session_id => {
+                            Some((words_session, words, english))
+                                if words_session == session_id =>
+                            {
                                 let fixed = fix_near_misses(&text, &words, &english);
                                 if fixed != text {
                                     logging::info(&format!(
@@ -1168,6 +1199,17 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             },
             Ok(DaemonEvent::Sidecar(SidecarMessage::Garbage { line })) => {
                 logging::warn(&format!("ignored non-protocol sidecar output: {line}"));
+            }
+            Ok(DaemonEvent::Sidecar(SidecarMessage::Closed)) if model_switching => {
+                model_switching = false;
+                retire_old_models = true;
+                match spawn_sidecar(&settings, events_tx.clone()) {
+                    Ok(client) => sidecar = Some(client),
+                    Err(error) => {
+                        logging::error(&format!("sidecar respawn failed: {error}"));
+                        respawn_at = Some(Instant::now() + respawn_backoff);
+                    }
+                }
             }
             Ok(DaemonEvent::Sidecar(SidecarMessage::Closed)) => {
                 handle_sidecar_loss(
@@ -1735,13 +1777,27 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         everywhere: words.everywhere.clone(),
                     };
                     if let Err(error) = client.send(&request) {
-                        logging::warn(&format!("session {session_id}: word list not sent: {error}"));
+                        logging::warn(&format!(
+                            "session {session_id}: word list not sent: {error}"
+                        ));
                     }
                 }
                 session_words = Some((session_id, words, english));
             }
             Ok(DaemonEvent::UpdateReady(staged)) => {
                 pending_update = Some(staged);
+            }
+            Ok(DaemonEvent::SpeechModelFetched(Ok(()))) => {
+                model_switch_due = true;
+                logging::info(&format!(
+                    "new speech model downloaded; Sunoto moves to it after {} without dictation",
+                    crate::update::idle_wait_label()
+                ));
+            }
+            Ok(DaemonEvent::SpeechModelFetched(Err(error))) => {
+                logging::warn(&format!(
+                    "could not download the new speech model ({error}); keeping the old one and trying again at the next start"
+                ));
             }
             Ok(DaemonEvent::Fatal(message)) => {
                 exit_error = Some(message);
@@ -1848,6 +1904,21 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         staged.version
                     )),
                 }
+            }
+            // The same rule moves the sidecar to a freshly fetched model:
+            // stop it here, and its Closed starts the new one.
+            if model_switch_due
+                && idle_for >= crate::update::idle_before_install()
+                && health.current().is_ready()
+                && !onboarding_in_progress
+                && pending_system.is_none()
+                && !STOP_REQUESTED.load(Ordering::SeqCst)
+            {
+                model_switch_due = false;
+                model_switching = true;
+                logging::info("moving to the new speech model");
+                sidecar = None;
+                sidecar_ready = false;
             }
             if keepalive_active
                 && idle_for >= KEEPALIVE_GRACE
@@ -1971,6 +2042,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     hotkey_stop.store(true, Ordering::SeqCst);
     capture_stop.store(true, Ordering::SeqCst);
     capture_handle.thread().unpark();
+    model_fetch_stop.store(true, Ordering::SeqCst);
+    if let Some(handle) = model_fetch {
+        let _ = handle.join();
+    }
     drop(sidecar);
     let _ = ui_handle.join();
     let _ = control_handle.join();
