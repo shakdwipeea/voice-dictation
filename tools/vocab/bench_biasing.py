@@ -56,6 +56,8 @@ def main() -> int:
                         help="pass each list through the app's own filter first (sunoto-daemon words --filter)")
     parser.add_argument("--daemon", default=str(REPO / "target/release/sunoto-daemon"))
     parser.add_argument("--engine", default="parakeet", choices=("parakeet", "qwen3-bf16", "qwen3-8bit"))
+    parser.add_argument("--model", default=None,
+                        help="Parakeet checkpoint (default: the app's local v3 copy), e.g. mlx-community/parakeet-tdt-0.6b-v2")
     args = parser.parse_args()
     sizes = [int(x) for x in args.lists.split(",") if x]
     out = Path(args.out or BIASING / f"run-{args.set}")
@@ -90,7 +92,7 @@ def main() -> int:
         ids, audios = ids[: args.limit], audios[: args.limit]
 
     if args.engine == "parakeet":
-        kwargs = {"model_name": str(LOCAL_MODEL)} if LOCAL_MODEL.exists() else {}
+        kwargs = {"model_name": args.model} if args.model else ({"model_name": str(LOCAL_MODEL)} if LOCAL_MODEL.exists() else {})
         engine = sidecar.OfflineParakeetMlxEngine(segment_min_s=0, pause_decode=False, **kwargs)
         run = lambda fn, *a: engine._worker.submit(fn, *a).result()  # noqa: E731
     else:
