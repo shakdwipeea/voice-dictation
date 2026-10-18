@@ -3,11 +3,16 @@ use std::path::{Path, PathBuf};
 
 use sunoto_polish::PolishConfig;
 
-const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+/// The speech model: Parakeet TDT 0.6B v2, English. It beat the
+/// multilingual v3 on every English test at the same speed and memory
+/// (tools/vocab, 2026-10-18), so it is the only model the app offers.
+const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 /// Sunoto's bf16 copy of the default model, under Application Support.
 /// setup downloads it in place of the 2.5 GB float32 original; the sidecar
 /// casts the original to bf16 on load anyway, so the weights are identical.
-const LOCAL_PARAKEET_MLX_MODEL: &str = "models/parakeet-tdt-0.6b-v3-bf16";
+const LOCAL_PARAKEET_MLX_MODEL: &str = "models/parakeet-tdt-0.6b-v2-bf16";
+/// Where the earlier v3 copy lived; setup deletes it (1.25 GB) once v2 is in.
+pub const RETIRED_PARAKEET_MLX_MODELS: &[&str] = &["models/parakeet-tdt-0.6b-v3-bf16"];
 
 /// Default named LLM polish model profile. Resolved (see
 /// `llm_polish_model_relative`) under `models/llm-polish-hf/` relative to
@@ -1389,8 +1394,8 @@ mod tests {
     fn parakeet_model_prefers_config_then_local_copy_then_hub() {
         let local = Path::new("/models/parakeet-bf16");
         assert_eq!(
-            choose_parakeet_model(Some("mlx-community/parakeet-tdt-0.6b-v2"), Some(local)),
-            "mlx-community/parakeet-tdt-0.6b-v2"
+            choose_parakeet_model(Some("mlx-community/parakeet-tdt-1.1b"), Some(local)),
+            "mlx-community/parakeet-tdt-1.1b"
         );
         assert_eq!(
             choose_parakeet_model(Some(""), Some(local)),
@@ -1411,11 +1416,11 @@ mod tests {
         for backend in ["parakeet_mlx_offline", "parakeet_mlx_streaming"] {
             let settings = Settings {
                 backend: backend.to_string(),
-                asr_model: Some("mlx-community/parakeet-tdt-0.6b-v2".to_string()),
+                asr_model: Some("mlx-community/parakeet-tdt-1.1b".to_string()),
                 ..Settings::default()
             };
             let (_python, args) = settings.sidecar_command().unwrap();
-            assert_eq!(args.last().unwrap(), "mlx-community/parakeet-tdt-0.6b-v2");
+            assert_eq!(args.last().unwrap(), "mlx-community/parakeet-tdt-1.1b");
         }
     }
 

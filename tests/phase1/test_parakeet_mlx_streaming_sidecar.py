@@ -214,10 +214,10 @@ class StreamingProtocolTest(unittest.TestCase):
 
 
 class CliTest(unittest.TestCase):
-    def test_defaults_target_v3_streaming(self):
+    def test_defaults_target_v2_streaming(self):
         args = create_parser().parse_args([])
         self.assertEqual(args.model, DEFAULT_MODEL)
-        self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v3")
+        self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v2")
         self.assertEqual(args.precision, "bf16")
         self.assertEqual(args.profile_ms, 560)
         self.assertEqual(args.chunk_ms, 560)
@@ -233,7 +233,7 @@ class CliTest(unittest.TestCase):
         args = create_parser().parse_args(
             [
                 "--model",
-                "mlx-community/parakeet-tdt-0.6b-v2",
+                "mlx-community/parakeet-tdt-1.1b",
                 "--precision",
                 "fp32",
                 "--profile-ms",
@@ -255,7 +255,7 @@ class CliTest(unittest.TestCase):
                 "streaming",
             ]
         )
-        self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v2")
+        self.assertEqual(args.model, "mlx-community/parakeet-tdt-1.1b")
         self.assertEqual(args.precision, "fp32")
         self.assertEqual(args.profile_ms, 80)
         self.assertEqual(args.chunk_ms, 640)

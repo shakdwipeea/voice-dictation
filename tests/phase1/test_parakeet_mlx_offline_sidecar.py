@@ -387,10 +387,10 @@ class OfflineProtocolTest(unittest.TestCase):
 
 
 class CliTest(unittest.TestCase):
-    def test_defaults_target_v3_bf16(self):
+    def test_defaults_target_v2_bf16(self):
         args = create_parser().parse_args([])
         self.assertEqual(args.model, DEFAULT_MODEL)
-        self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v3")
+        self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v2")
         self.assertEqual(args.precision, "bf16")
         self.assertEqual(args.profile_ms, 160)
         self.assertIsNone(args.cache_dir)
@@ -420,7 +420,7 @@ class CliTest(unittest.TestCase):
         args = create_parser().parse_args(
             [
                 "--model",
-                "mlx-community/parakeet-tdt-0.6b-v2",
+                "mlx-community/parakeet-tdt-1.1b",
                 "--precision",
                 "fp32",
                 "--cache-dir",
@@ -431,7 +431,7 @@ class CliTest(unittest.TestCase):
                 "10",
             ]
         )
-        self.assertEqual(args.model, "mlx-community/parakeet-tdt-0.6b-v2")
+        self.assertEqual(args.model, "mlx-community/parakeet-tdt-1.1b")
         self.assertEqual(args.precision, "fp32")
         self.assertEqual(args.cache_dir, "~/hf-cache")
         self.assertEqual(args.chunk_duration, 120)
