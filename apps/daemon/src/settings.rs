@@ -11,8 +11,17 @@ const DEFAULT_PARAKEET_MLX_MODEL: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 /// setup downloads it in place of the 2.5 GB float32 original; the sidecar
 /// casts the original to bf16 on load anyway, so the weights are identical.
 const LOCAL_PARAKEET_MLX_MODEL: &str = "models/parakeet-tdt-0.6b-v2-bf16";
-/// Where the earlier v3 copy lived; setup deletes it (1.25 GB) once v2 is in.
-pub const RETIRED_PARAKEET_MLX_MODELS: &[&str] = &["models/parakeet-tdt-0.6b-v3-bf16"];
+/// Models Sunoto downloaded for v3, relative to its Application Support
+/// folder; setup deletes them once v2 is in. Sunoto's bf16 copy (1.25 GB),
+/// and the original (2.5 GB) in the Hugging Face cache a release install
+/// keeps there (`setup::apply_bundle_environment` points HF_HOME at
+/// `sunoto/hf`). The shared ~/.cache/huggingface is never touched: other
+/// tools may have downloaded the same model.
+pub const RETIRED_PARAKEET_MLX_MODELS: &[&str] = &[
+    "models/parakeet-tdt-0.6b-v3-bf16",
+    "hf/hub/models--mlx-community--parakeet-tdt-0.6b-v3",
+    "hf/hub/.locks/models--mlx-community--parakeet-tdt-0.6b-v3",
+];
 
 /// Default named LLM polish model profile. Resolved (see
 /// `llm_polish_model_relative`) under `models/llm-polish-hf/` relative to

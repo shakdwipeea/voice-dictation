@@ -232,7 +232,9 @@ muted; check System Settings → Sound → Input.
   `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v2-bf16`
   (identical weights, half the download; made with
   `tools/make_model_copy.py`) and falls back to the Hugging Face original
-  when that folder is missing. setup deletes the old v3 copy.
+  when that folder is missing. setup deletes what Sunoto downloaded for v3
+  (its bf16 copy, and on release installs the original in Sunoto's own
+  `sunoto/hf` cache), never the shared ~/.cache/huggingface.
   `parakeet_mlx_offline` is the **default macOS backend** (config init).
   A dictation under 10 s gets one whole-utterance pass on release. A longer
   one is cut at pauses (forced at the quietest moment by 20 s) and each piece
