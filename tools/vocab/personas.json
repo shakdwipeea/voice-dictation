@@ -1,0 +1,116 @@
+{
+ "_about": "Six made-up users for the word-list benchmark (tools/vocab/make_personas.py). Each has the places the daemon can read names from (folders, a project, apps, contacts, recent files, the screen) and sentences with names a speech model is likely to misspell. 'names' are scored; 'ordinary' sentences have none and catch damage.",
+ "developer": {
+  "folders": {"workspace": ["acme-billing-svc", "tailscale-exporter", "pydantic-playground", "zephyr-ui", "kubectl-plugins"], "Documents": ["Onboarding", "Taxes 2026"]},
+  "project": {"path": "workspace/acme-billing-svc", "dirs": ["src/invoicing", "src/stripe_webhooks", "terraform/modules", "helm/charts", "migrations"], "files": ["src/invoicing/prorate.py", "src/stripe_webhooks/idempotency.py", "docker-compose.yml", "pyproject.toml", "alembic.ini"]},
+  "apps": ["Ghostty", "Postman", "TablePlus", "Obsidian", "Linear"],
+  "contacts": ["Priya Raghunathan", "Tomasz Wierzbicki", "Siobhan Keane", "Oluwaseun Adebayo"],
+  "recent_files": ["Q4 roadmap - zephyr.md", "kubectl cheat sheet.pdf", "Raghunathan 1:1 notes.md"],
+  "screen": "PR #412 by Tomasz Wierzbicki: move prorate() into the invoicing module, add an idempotency key to stripe_webhooks, bump pydantic to 2.9. CI: alembic upgrade head failed on migrations/0042. Reviewers: Siobhan Keane, Priya Raghunathan.",
+  "names": [
+   {"say": "Ask Tomasz to rebase the acme billing service branch before lunch.", "names": ["Tomasz"], "in": ["contacts", "screen"]},
+   {"say": "The alembic migration failed again on staging.", "names": ["alembic"], "in": ["project", "screen"]},
+   {"say": "Siobhan said the Zephyr UI tokens are out of date.", "names": ["Siobhan", "Zephyr"], "in": ["contacts", "screen", "folders"]},
+   {"say": "Can Priya Raghunathan review the idempotency change?", "names": ["Raghunathan", "idempotency"], "in": ["contacts", "screen", "project"]},
+   {"say": "Bump pydantic and rerun the test suite.", "names": ["pydantic"], "in": ["folders", "screen"]},
+   {"say": "I added a kubectl plugin for the tailscale exporter.", "names": ["kubectl", "tailscale"], "in": ["folders", "recent_files"]},
+   {"say": "Oluwaseun owns the terraform modules now.", "names": ["Oluwaseun"], "in": ["contacts"]},
+   {"say": "Open TablePlus and check the invoices table.", "names": ["TablePlus"], "in": ["apps"]},
+   {"say": "Move the prorate function into the invoicing module.", "names": ["prorate"], "in": ["project", "screen"]},
+   {"say": "The helm chart needs a new value for the Stripe webhook secret.", "names": ["helm"], "in": ["project"]}
+  ],
+  "ordinary": ["Let's merge this after the standup and deploy tomorrow morning.", "The build is green now, so I'll close the ticket.", "Can you check why the tests are flaky on the main branch?"]
+ },
+ "doctor": {
+  "folders": {"Documents": ["Hartwell Clinic", "CME Credits", "Grand Rounds"], "Desktop": ["Referrals"]},
+  "project": null,
+  "apps": ["Epic Haiku", "UpToDate", "Doximity", "Zoom"],
+  "contacts": ["Dr. Chukwuemeka Okonkwo", "Dr. Agnieszka Szymanski", "Nurse Saoirse Brennan", "Thandiwe Mokoena"],
+  "recent_files": ["empagliflozin dosing.pdf", "sarcoidosis grand rounds.pptx", "Okonkwo referral letter.docx"],
+  "screen": "Patient: Mokoena, Thandiwe. Assessment: hidradenitis suppurativa, stage two. Plan: continue adalimumab, start empagliflozin 10 mg daily for type two diabetes, hold apixaban before biopsy. Referred by Dr. Chukwuemeka Okonkwo. Follow up with Dr. Agnieszka Szymanski in dermatology.",
+  "names": [
+   {"say": "Start empagliflozin ten milligrams once daily.", "names": ["empagliflozin"], "in": ["screen", "recent_files"]},
+   {"say": "Hold the apixaban for forty eight hours before the biopsy.", "names": ["apixaban"], "in": ["screen"]},
+   {"say": "Please send the referral to Doctor Okonkwo at Hartwell Clinic.", "names": ["Okonkwo", "Hartwell"], "in": ["contacts", "screen", "folders", "recent_files"]},
+   {"say": "Doctor Szymanski will see her in dermatology next week.", "names": ["Szymanski"], "in": ["contacts", "screen"]},
+   {"say": "Findings are consistent with hidradenitis suppurativa.", "names": ["hidradenitis", "suppurativa"], "in": ["screen"]},
+   {"say": "Continue adalimumab every other week.", "names": ["adalimumab"], "in": ["screen"]},
+   {"say": "Saoirse will draw labs before the infusion.", "names": ["Saoirse"], "in": ["contacts"]},
+   {"say": "The sarcoidosis case is on the grand rounds list.", "names": ["sarcoidosis"], "in": ["recent_files"]},
+   {"say": "Thandiwe Mokoena is stable and can go home today.", "names": ["Thandiwe", "Mokoena"], "in": ["contacts", "screen"]},
+   {"say": "Consider semaglutide if her weight does not improve.", "names": ["semaglutide"], "in": []}
+  ],
+  "ordinary": ["The patient feels better and the pain is down to a three.", "Please call the pharmacy and confirm the refill.", "Blood pressure was normal at today's visit."]
+ },
+ "lawyer": {
+  "folders": {"Documents": ["Okafor Holdings", "Wexford Appeal", "Templates"], "Desktop": ["Discovery"]},
+  "project": null,
+  "apps": ["Clio", "Westlaw Edge", "iManage", "Microsoft Word"],
+  "contacts": ["Ngozi Okafor", "Fitzgerald Ashworth-Hale", "Mireille Thibodeaux", "Judge Kowalczyk"],
+  "recent_files": ["Wexford v Delacroix appellate brief.docx", "Okafor Holdings share purchase.docx", "Thibodeaux deposition outline.docx"],
+  "screen": "Re: Wexford v. Delacroix, No. 24-1187. Judge Kowalczyk granted leave to amend. Counsel for Delacroix: Fitzgerald Ashworth-Hale. Deposition of Mireille Thibodeaux set for March 3. Client: Okafor Holdings Ltd.",
+  "names": [
+   {"say": "File the reply brief in Wexford versus Delacroix by Friday.", "names": ["Wexford", "Delacroix"], "in": ["screen", "folders", "recent_files"]},
+   {"say": "Judge Kowalczyk granted our motion for leave to amend.", "names": ["Kowalczyk"], "in": ["screen", "contacts"]},
+   {"say": "Send Ngozi Okafor the share purchase agreement.", "names": ["Ngozi", "Okafor"], "in": ["contacts", "folders", "recent_files"]},
+   {"say": "Mireille Thibodeaux's deposition is on March third.", "names": ["Mireille", "Thibodeaux"], "in": ["screen", "contacts", "recent_files"]},
+   {"say": "Opposing counsel is Fitzgerald Ashworth Hale.", "names": ["Ashworth"], "in": ["screen", "contacts"]},
+   {"say": "Log the hours in Clio before the end of the month.", "names": ["Clio"], "in": ["apps"]},
+   {"say": "Pull the latest Westlaw citations for the appellate brief.", "names": ["Westlaw"], "in": ["apps"]},
+   {"say": "Save the draft to iManage under the Okafor matter.", "names": ["iManage", "Okafor"], "in": ["apps", "folders"]}
+  ],
+  "ordinary": ["Please review the contract and send me your comments by Monday.", "The hearing was moved to next Thursday afternoon.", "Let me know if the client agrees to the settlement terms."]
+ },
+ "sales": {
+  "folders": {"Documents": ["Zentrix Account", "Quorvia Renewal", "QBR Decks"], "Desktop": ["Pricing"]},
+  "project": null,
+  "apps": ["Salesforce", "HubSpot", "Gong", "Slack"],
+  "contacts": ["Haruki Nakamura", "Bartholomew Achterberg", "Xiomara Castellanos", "Rajeshwari Iyer"],
+  "recent_files": ["Zentrix MSA redlines.docx", "Quorvia QBR.pptx", "Achterberg pricing proposal.xlsx"],
+  "screen": "Opportunity: Zentrix Logistics, renewal 140k ARR, stage: negotiation. Champion: Haruki Nakamura. Economic buyer: Bartholomew Achterberg. Next step: send redlined MSA. Quorvia QBR with Xiomara Castellanos on Tuesday.",
+  "names": [
+   {"say": "Send Haruki Nakamura the redlined agreement today.", "names": ["Nakamura"], "in": ["screen", "contacts"]},
+   {"say": "Bartholomew Achterberg has to approve the Zentrix budget.", "names": ["Achterberg", "Zentrix"], "in": ["screen", "contacts", "folders", "recent_files"]},
+   {"say": "The Quorvia renewal is at risk this quarter.", "names": ["Quorvia"], "in": ["folders", "screen", "recent_files"]},
+   {"say": "Xiomara Castellanos wants a demo next Tuesday.", "names": ["Xiomara", "Castellanos"], "in": ["contacts", "screen"]},
+   {"say": "Rajeshwari Iyer is the new procurement lead.", "names": ["Rajeshwari"], "in": ["contacts"]},
+   {"say": "Log the call notes in HubSpot and tag the Gong recording.", "names": ["HubSpot", "Gong"], "in": ["apps"]},
+   {"say": "Zentrix wants a three year deal with a ten percent discount.", "names": ["Zentrix"], "in": ["folders", "screen"]}
+  ],
+  "ordinary": ["Thanks for your time today, I'll follow up with pricing tomorrow.", "Can we move our call to Thursday at two?", "The customer is happy with the pilot and wants to expand."]
+ },
+ "student": {
+  "folders": {"Documents": ["Thermodynamics", "Organic Chemistry", "Thesis"], "Desktop": ["Labs"]},
+  "project": null,
+  "apps": ["Notion", "Anki", "Zotero", "Canvas Student"],
+  "contacts": ["Professor Adebayo Ogunleye", "Wojciech Brzezinski", "Anneliese Vanderhoeven", "Kaito Fujimura"],
+  "recent_files": ["Ogunleye lecture 12 entropy.pdf", "Friedel Crafts acylation lab.docx", "thesis outline Vanderhoeven.docx"],
+  "screen": "CHEM 241 Lab 7: Friedel-Crafts acylation of anisole. Group: Wojciech Brzezinski, Kaito Fujimura. TA: Anneliese Vanderhoeven. Due Friday. Read Ogunleye ch. 12 (Clausius inequality, Carnot cycle).",
+  "names": [
+   {"say": "The lab is a Friedel Crafts acylation of anisole.", "names": ["Friedel", "anisole"], "in": ["screen", "recent_files"]},
+   {"say": "Professor Ogunleye moved the midterm to Wednesday.", "names": ["Ogunleye"], "in": ["contacts", "screen", "recent_files"]},
+   {"say": "Wojciech and Kaito are in my lab group.", "names": ["Wojciech", "Kaito"], "in": ["contacts", "screen"]},
+   {"say": "Email Anneliese Vanderhoeven about the thesis outline.", "names": ["Anneliese", "Vanderhoeven"], "in": ["contacts", "screen", "recent_files"]},
+   {"say": "Add the Clausius inequality to my Anki deck.", "names": ["Clausius", "Anki"], "in": ["screen", "apps"]},
+   {"say": "Export the citations from Zotero for the thesis.", "names": ["Zotero"], "in": ["apps"]}
+  ],
+  "ordinary": ["I need to finish the reading before class tomorrow.", "Can we meet at the library after lunch to study?", "The exam covers chapters three through seven."]
+ },
+ "writer": {
+  "folders": {"Documents": ["Veyrmont Trilogy", "Short Stories", "Agent Queries"], "Desktop": ["Edits"]},
+  "project": null,
+  "apps": ["Scrivener", "Ulysses", "ProWritingAid"],
+  "contacts": ["Imogen Fairweather", "Leopold Strassburger", "Ottilie Marchetti"],
+  "recent_files": ["Veyrmont book two chapter 14.scriv", "Aurelian character notes.md", "Fairweather edit letter.docx"],
+  "screen": "Chapter 14. Aurelian crossed the Thessarine bridge at dusk while Ysolde waited in the citadel of Veyrmont. Notes from Imogen Fairweather: tighten the Ysolde scene; keep the Morvane prophecy vague.",
+  "names": [
+   {"say": "Aurelian crosses the Thessarine bridge at dusk.", "names": ["Aurelian", "Thessarine"], "in": ["screen", "recent_files"]},
+   {"say": "Ysolde waits in the citadel of Veyrmont.", "names": ["Ysolde", "Veyrmont"], "in": ["screen", "folders", "recent_files"]},
+   {"say": "Imogen Fairweather wants the prophecy scene tighter.", "names": ["Fairweather"], "in": ["contacts", "screen", "recent_files"]},
+   {"say": "Keep the Morvane prophecy vague until book three.", "names": ["Morvane"], "in": ["screen"]},
+   {"say": "Send the query to Leopold Strassburger next week.", "names": ["Strassburger"], "in": ["contacts"]},
+   {"say": "Compile the draft in Scrivener before sending it to Ottilie.", "names": ["Scrivener", "Ottilie"], "in": ["apps", "contacts"]}
+  ],
+  "ordinary": ["She stood by the window and watched the rain for a long time.", "I want this chapter to feel quieter and slower.", "Let's cut the second paragraph and keep the ending."]
+ }
+}
