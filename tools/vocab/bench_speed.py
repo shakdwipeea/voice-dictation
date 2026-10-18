@@ -46,6 +46,8 @@ def footprint() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", default="parakeet", choices=("parakeet", "qwen3-bf16", "qwen3-8bit"))
+    parser.add_argument("--model", default=None,
+                        help="Parakeet checkpoint (default: the app's local v3 copy), e.g. mlx-community/parakeet-tdt-0.6b-v2")
     parser.add_argument("--clips", type=int, default=60)
     args = parser.parse_args()
     import mlx.core as mx
@@ -65,7 +67,7 @@ def main() -> int:
     if args.engine == "parakeet":
         import parakeet_mlx_offline_sidecar as sidecar
 
-        engine = sidecar.OfflineParakeetMlxEngine(segment_min_s=0, pause_decode=False, model_name=str(LOCAL_MODEL))
+        engine = sidecar.OfflineParakeetMlxEngine(segment_min_s=0, pause_decode=False, model_name=args.model or str(LOCAL_MODEL))
         run = lambda fn, *a: engine._worker.submit(fn, *a).result()  # noqa: E731
 
         def decode(pcm, words, _style):

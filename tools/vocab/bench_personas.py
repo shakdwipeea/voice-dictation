@@ -110,6 +110,8 @@ def main() -> int:
     parser.add_argument("--engine", default="parakeet", choices=("parakeet", "qwen3-bf16", "qwen3-8bit"),
                         help="Qwen3-ASR gets the list as context; screen modes also get a '~text' run "
                         "with the persona's screen text itself in the prompt")
+    parser.add_argument("--model", default=None,
+                        help="Parakeet checkpoint (default: the app's local v3 copy), e.g. mlx-community/parakeet-tdt-0.6b-v2")
     args = parser.parse_args()
     manifest = json.loads(Path(args.manifest).read_text())
     if args.limit:
@@ -139,7 +141,7 @@ def main() -> int:
             import parakeet_mlx_offline_sidecar as sidecar
             import word_boost
 
-            kwargs = {"model_name": str(LOCAL_MODEL)} if LOCAL_MODEL.exists() else {}
+            kwargs = {"model_name": args.model} if args.model else ({"model_name": str(LOCAL_MODEL)} if LOCAL_MODEL.exists() else {})
             engine = sidecar.OfflineParakeetMlxEngine(segment_min_s=0, pause_decode=False, **kwargs)
             run = lambda fn, *a: engine._worker.submit(fn, *a).result()  # noqa: E731
         else:
