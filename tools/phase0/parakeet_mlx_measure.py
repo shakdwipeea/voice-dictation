@@ -52,7 +52,7 @@ from phase0_macos_measure import (  # noqa: E402
     word_error_rate,
 )
 
-DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
 DEFAULT_CACHE_DIR = Path("build/phase0/parakeet-mlx-real-speech")
 
 

@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/shakdwipeea/voice-dictation/master/
 ```
 
 This installs **Sunoto.app** in `~/Applications`, starts it at login, and
-downloads the speech model (1.25 GB, once). A setup panel then asks for two
+downloads the English speech model (1.24 GB, once). A setup panel then asks for two
 permissions: **Accessibility** (to notice the shortcut and paste) and
 **Microphone**. Click **Allow** on each, then **Done**. No `sudo` needed.
 

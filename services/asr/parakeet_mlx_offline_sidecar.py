@@ -36,7 +36,7 @@ with nothing said after the pause, that decode is the last piece and the wake
 up already happened during the pause. If speech resumes, it is discarded.
 
 Important: parakeet-mlx loads MLX-converted Hugging Face repos such as
-``mlx-community/parakeet-tdt-0.6b-v3``. It does not load raw NeMo checkpoints
+``mlx-community/parakeet-tdt-0.6b-v2``. It does not load raw NeMo checkpoints
 such as ``nvidia/parakeet-tdt-0.6b-v2`` directly.
 """
 
@@ -56,7 +56,7 @@ from nemotron_offline_sidecar import SAMPLE_RATE, _OfflineBufferEngine
 from nemotron_sidecar import SidecarServer, log, serve
 
 BACKEND_NAME = "parakeet_mlx_offline"
-DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
 
 DEFAULT_SEGMENT_MIN_S = 10.0
 DEFAULT_SEGMENT_MAX_S = 20.0

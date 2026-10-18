@@ -543,7 +543,7 @@
     <thead><tr><th>Backend</th><th>Model</th><th>Mode</th><th>Device</th><th>Partials</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><code>mock</code></td><td>none</td><td>canned</td><td>–</td><td>optional</td><td>Linux default; tests</td></tr>
-      <tr><td><code>parakeet_mlx_streaming</code></td><td>parakeet-tdt-0.6b-v3</td><td>streaming, final re-decoded from whole buffer</td><td>Metal / MLX</td><td>yes</td><td>macOS default; 560 ms chunks; ~250 ms final</td></tr>
+      <tr><td><code>parakeet_mlx_streaming</code></td><td>parakeet-tdt-0.6b-v2</td><td>streaming, final re-decoded from whole buffer</td><td>Metal / MLX</td><td>yes</td><td>macOS default; 560 ms chunks; ~250 ms final</td></tr>
       <tr><td><code>parakeet_mlx_offline</code></td><td>same</td><td>whole utterance</td><td>Metal</td><td>no</td><td>p50 240 ms, WER 1.18 %</td></tr>
       <tr><td><code>nemotron</code></td><td>nemotron-speech-streaming-en-0.6b</td><td>cache-aware streaming</td><td>CUDA</td><td>yes</td><td>refuses to load under 4500 MiB free VRAM; ~3.6 GiB resident</td></tr>
       <tr><td><code>nemotron_offline</code></td><td>same</td><td>whole utterance</td><td>CPU / MPS</td><td>no</td><td>superseded on macOS</td></tr>

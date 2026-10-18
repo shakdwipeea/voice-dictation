@@ -35,21 +35,22 @@ pub const ROOT_MARKER: &str = "sunoto-root";
 /// packages, and the two venv-shaped symlinks the daemon resolves.
 pub const EMBEDDED_ROOT: &str = "Contents/Resources/root";
 /// Speech model fetched on first run; matches the daemon's default.
-const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 /// Sunoto's bf16 copy of ASR_MODEL_REPO, published as release assets: the
 /// weights the sidecar ends up with after casting the original, at half the
 /// 2.5 GB download. Name, SHA-256 and size of each file.
-const ASR_MODEL_RELEASE: &str = "https://github.com/shakdwipeea/voice-dictation/releases/download/model-parakeet-tdt-0.6b-v3-bf16";
+/// Made with tools/make_model_copy.py.
+const ASR_MODEL_RELEASE: &str = "https://github.com/shakdwipeea/voice-dictation/releases/download/model-parakeet-tdt-0.6b-v2-bf16";
 const ASR_MODEL_FILES: [(&str, &str, u64); 2] = [
     (
         "config.json",
-        "f320f1292511f34ec47f513755fe20fd01dbfc09a925d42730e66059a6e1ef4c",
-        244_093,
+        "9bd323e60afe2615c983a5d9fc3a2c0470df2a03edf90c0f861bd59509d07264",
+        36_176,
     ),
     (
         "model.safetensors",
-        "77f8ac63bc6df3cf31cff8c6a1ea045c8c964de5ccee257fd54152cd9eaa091b",
-        1_254_184_375,
+        "100067972767e538809d73f6c4b5c215ecbbedcd8b5d69e66ef10c1e699d946b",
+        1_235_819_917,
     ),
 ];
 const SIGNING_IDENTITY: &str = "Sunoto Local Code Signing";
@@ -497,8 +498,9 @@ fn preflight_asr_runtime(
 
 /// Fetch the speech model now, with progress, instead of letting the first
 /// daemon start do it silently behind a "loading speech model..." pill.
-/// Prefers Sunoto's 1.25 GB bf16 copy; an install that already has the
-/// float32 original in the Hugging Face cache keeps using it.
+/// Prefers Sunoto's 1.24 GB bf16 copy; an install that already has the
+/// float32 original in the Hugging Face cache keeps using it. Once the model
+/// is in place, the copy of a model the app no longer uses is deleted.
 fn ensure_asr_model(
     python: &str,
     settings: &Settings,
@@ -521,6 +523,7 @@ fn ensure_asr_model(
         .filter(|dir| settings::model_dir_complete(dir))
     {
         ok(&format!("speech model ready: {}", dir.display()));
+        remove_retired_models(dry_run);
         return Ok(());
     }
     let script = format!(
@@ -534,14 +537,15 @@ fn ensure_asr_model(
         .is_ok_and(|status| status.success());
     if cached {
         ok(&format!("{ASR_MODEL_REPO} already cached"));
+        remove_retired_models(dry_run);
         return Ok(());
     }
     if dry_run {
-        note("would download the speech model (about 1.25 GB)");
+        note("would download the speech model (about 1.24 GB)");
         return Ok(());
     }
     if let Some(dir) = &local {
-        note("downloading the speech model (about 1.25 GB, one time)...");
+        note("downloading the speech model (about 1.24 GB, one time)...");
         let fetched = ASR_MODEL_FILES
             .iter()
             .try_for_each(|(name, sha256, bytes)| {
@@ -555,6 +559,7 @@ fn ensure_asr_model(
         match fetched {
             Ok(()) => {
                 ok(&format!("speech model ready: {}", dir.display()));
+                remove_retired_models(dry_run);
                 return Ok(());
             }
             Err(error) => warn(&format!(
@@ -570,7 +575,34 @@ fn ensure_asr_model(
         return Err("speech model download failed; rerun setup to resume".into());
     }
     ok("speech model ready");
+    remove_retired_models(dry_run);
     Ok(())
+}
+
+/// Delete Sunoto's copies of models the app no longer uses (the 1.25 GB v3
+/// copy). Only our own folders under Application Support; the Hugging Face
+/// cache is shared with other tools and left alone.
+fn remove_retired_models(dry_run: bool) {
+    // The model folder is <Application Support>/sunoto/models/<name>.
+    if let Some(base) = settings::local_parakeet_model_dir().and_then(|dir| dir.parent()?.parent().map(Path::to_path_buf)) {
+        remove_retired_models_in(&base, dry_run);
+    }
+}
+
+fn remove_retired_models_in(base: &Path, dry_run: bool) {
+    for retired in settings::RETIRED_PARAKEET_MLX_MODELS {
+        let dir = base.join(retired);
+        if !dir.is_dir() {
+            continue;
+        }
+        if dry_run {
+            note(&format!("would delete the old speech model at {}", dir.display()));
+        } else if let Err(error) = std::fs::remove_dir_all(&dir) {
+            warn(&format!("could not delete the old speech model at {}: {error}", dir.display()));
+        } else {
+            ok(&format!("deleted the old speech model at {}", dir.display()));
+        }
+    }
 }
 
 /// Make sure the polish model exists, downloading it on request. Returns
@@ -1573,5 +1605,21 @@ mod tests {
             Some("B7B77719D4A88C3F509F8539561F6DC096CBB22A")
         );
         assert_eq!(parse_signing_identity("0 valid identities found\n"), None);
+    }
+
+    #[test]
+    fn retired_model_copies_are_deleted_and_others_kept() {
+        let base = std::env::temp_dir().join(format!("sunoto-retired-{}", std::process::id()));
+        let old = base.join(settings::RETIRED_PARAKEET_MLX_MODELS[0]);
+        let current = base.join("models/parakeet-tdt-0.6b-v2-bf16");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(old.join("model.safetensors"), "x").unwrap();
+        remove_retired_models_in(&base, true);
+        assert!(old.exists(), "a dry run deletes nothing");
+        remove_retired_models_in(&base, false);
+        assert!(!old.exists());
+        assert!(current.exists());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

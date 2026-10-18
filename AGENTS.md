@@ -206,9 +206,12 @@ muted; check System Settings → Sound → Input.
 ### ASR latency and the transcribe timeout
 
 - Prefer `backend = "parakeet_mlx_offline"` on macOS. It uses
-  `mlx-community/parakeet-tdt-0.6b-v3` through parakeet-mlx/MLX on Apple GPU
-  (`Device(gpu, 0)` on the M1 Pro benchmark): cached load ~1.35s, warmup
-  ~1.22s, p50 ASR latency ~0.24s on the LibriSpeech sample set. The daemon
+  `mlx-community/parakeet-tdt-0.6b-v2` (English) through parakeet-mlx/MLX on
+  Apple GPU. It replaced the multilingual v3 on 2026-10-18: v2 won every
+  English test (more names without a list, LibriSpeech WER 2.30→1.98% clean,
+  3.77→3.23% other, better in noise) at the same speed and memory, so the app
+  ships only v2 and no model choice. v2 writes numbers as digits ("3").
+  Load ~3 s, decode ~118 ms median per 5.6 s clip on an M1 Pro. The daemon
   sidecar hot path avoids temp WAV + ffmpeg by feeding captured PCM directly
   into `get_logmel()` + `model.generate()`. The older macOS whole-utterance
   Nemotron backend's latency is dominated by
@@ -226,9 +229,10 @@ muted; check System Settings → Sound → Input.
   Nemotron on macOS. Parakeet-MLX backends ignore `asr_device`; leave it unset
   and optionally set `asr_model` to override the default checkpoint. By
   default the app loads setup's bf16 copy from
-  `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v3-bf16`
-  (identical weights, half the download) and falls back to the Hugging Face
-  original when that folder is missing.
+  `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v2-bf16`
+  (identical weights, half the download; made with
+  `tools/make_model_copy.py`) and falls back to the Hugging Face original
+  when that folder is missing. setup deletes the old v3 copy.
   `parakeet_mlx_offline` is the **default macOS backend** (config init).
   A dictation under 10 s gets one whole-utterance pass on release. A longer
   one is cut at pauses (forced at the quietest moment by 20 s) and each piece
