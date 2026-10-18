@@ -77,6 +77,8 @@ def main() -> int:
     parser.add_argument("--model", default=str(LOCAL_MODEL) if LOCAL_MODEL.exists() else None)
     parser.add_argument("--daemon", default=str(REPO / "target/release/sunoto-daemon"),
                         help="sunoto-daemon binary for the near-miss fix (words --fix)")
+    parser.add_argument("--engine", default="parakeet", choices=("parakeet", "qwen3-bf16", "qwen3-8bit"),
+                        help="speech model: the app's Parakeet sidecar, or Qwen3-ASR with the list as context")
     parser.add_argument("--rescore", action="store_true",
                         help="reuse the decodes in --out and only redo the fix and the scores")
     args = parser.parse_args()
@@ -89,13 +91,16 @@ def main() -> int:
         return 0
 
     import mlx.core as mx
-    import parakeet_mlx_offline_sidecar as sidecar
-    import word_boost
 
+    if args.engine == "parakeet":
+        import parakeet_mlx_offline_sidecar as sidecar
+        import word_boost
+    else:
+        import qwen3_engine
     if args.start_share is not None:
         word_boost.START_SHARE = args.start_share
     scales = [float(x) for x in args.sweep.split(",") if x] or [1.0]
-    base_bonus = dict(word_boost.TIER_BONUS)
+    base_bonus = dict(word_boost.TIER_BONUS) if args.engine == "parakeet" else {}
     MODES = ["off"] + [
         f"{mode}@{scale:g}" if args.sweep else mode
         for scale in scales
@@ -106,11 +111,20 @@ def main() -> int:
     if args.limit:
         manifest = manifest[: args.limit]
 
-    kwargs = {"model_name": args.model} if args.model else {}
-    engine = sidecar.OfflineParakeetMlxEngine(segment_min_s=0, pause_decode=False, **kwargs)
-    run = lambda fn, *a: engine._worker.submit(fn, *a).result()  # noqa: E731
+    if args.engine != "parakeet":
+        qwen = qwen3_engine.Qwen3Engine(args.engine)
 
-    def decode(samples, words, scale=1.0):
+        def decode(samples, words, scale=1.0):
+            t0 = time.perf_counter()
+            text = qwen.transcribe(samples, qwen3_engine.context_prompt(words))
+            return text, (time.perf_counter() - t0) * 1000
+
+    else:
+        kwargs = {"model_name": args.model} if args.model else {}
+        engine = sidecar.OfflineParakeetMlxEngine(segment_min_s=0, pause_decode=False, **kwargs)
+        run = lambda fn, *a: engine._worker.submit(fn, *a).result()  # noqa: E731
+
+    def parakeet_decode(samples, words, scale=1.0):
         word_boost.TIER_BONUS.update({tier: value * scale for tier, value in base_bonus.items()})
         run(engine._set_booster, words)
         t0 = time.perf_counter()
@@ -120,6 +134,8 @@ def main() -> int:
             text = engine._booster.respell(text)
         return text, ms
 
+    if args.engine == "parakeet":
+        decode = parakeet_decode
     warm = read_wav(manifest[0]["audio"])
     for words in (None, background):
         decode(warm, words)
