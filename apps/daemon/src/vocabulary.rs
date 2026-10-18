@@ -30,12 +30,28 @@ use crate::events::DaemonEvent;
 const DICTIONARY: &str = "/usr/share/dict/words";
 /// Everyday and tech words newer than that list ("email", "dataset").
 const MODERN_WORDS: &str = include_str!("modern_words.txt");
+/// Folders macOS guards with a permission dialog ("Sunoto would like to
+/// access files in your Documents folder"). Nothing under them is touched,
+/// not even to see whether a path exists, unless the user turned on the
+/// Documents source (`word_list_documents`), which accepts that dialog.
+const PROTECTED: &[&str] = &[
+    "Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Library/Mobile Documents",
+];
+
+/// Whether reading `path` could raise one of macOS's folder dialogs.
+pub fn is_protected(path: &Path, home: &Path) -> bool {
+    path.starts_with("/Volumes") || PROTECTED.iter().any(|folder| path.starts_with(home.join(folder)))
+}
+
 /// Folders under the home folder whose subfolders are the user's projects.
 const PROJECT_ROOTS: &[&str] = &[
     "workspace", "Developer", "Projects", "projects", "code", "Code", "src", "dev", "repos", "git",
     "GitHub", "Documents/GitHub", "Documents/Projects",
 ];
-const APP_FOLDERS: &[&str] = &["/Applications", "~/Applications"];
+const APP_FOLDERS: &[&str] = &["/Applications", "Applications"];
+/// Folders under the home folder whose subfolders name what people work on
+/// outside code: clients, cases, courses, books.
+const DOCUMENT_ROOTS: &[&str] = &["Documents", "Desktop"];
 /// Folders a project walk never enters: build output, dependencies, caches.
 const SKIP_DIRS: &[&str] = &[
     "node_modules", "target", "build", "dist", "out", "vendor", "venv", "env", "__pycache__",
@@ -51,6 +67,8 @@ const PROJECT_WALK_MAX: usize = 4_000;
 /// sound like everyday words too often to be favoured in every dictation.
 const NAME_MIN_LETTERS: usize = 5;
 const SCREEN_MIN_LETTERS: usize = 4;
+/// App and people's names are deliberate, so four letters are enough.
+const PROPER_MIN_LETTERS: usize = 4;
 const MAX_WORD_CHARS: usize = 32;
 /// Folder and project lists are read again after this long.
 const REFRESH: Duration = Duration::from_secs(600);
@@ -104,6 +122,9 @@ pub struct EnglishWords {
     starts: Vec<u32>,
     /// MODERN_WORDS, sorted: everyday words even when the system is asked.
     modern: Vec<String>,
+    /// Treat rare English words ("hidradenitis", "alembic") as unusual too:
+    /// only everyday words (`common`) are left off word lists.
+    pub keep_rare: bool,
     #[cfg(target_os = "macos")]
     system: Option<sunoto_desktop::EnglishVocabulary>,
     /// The system vocabulary's answers so far; it is slower to ask.
@@ -177,6 +198,7 @@ impl EnglishWords {
             blob,
             starts,
             modern: Vec::new(),
+            keep_rare: false,
             #[cfg(target_os = "macos")]
             system: None,
             #[cfg(target_os = "macos")]
@@ -226,6 +248,18 @@ impl EnglishWords {
 
     fn modern(&self, word: &str) -> bool {
         self.modern.binary_search_by(|entry| entry.as_str().cmp(word)).is_ok()
+    }
+
+    /// Whether a word list leaves `word` off: `common` with `keep_rare`,
+    /// else `knows`.
+    pub fn ordinary(&self, word: &str) -> bool {
+        if self.keep_rare { self.common(word) } else { self.knows(word) }
+    }
+
+    /// Whether the old list has exactly this word, no endings tried (it has
+    /// "William" and "Rachel", but "Lytics" only as a plural of "lytic").
+    pub fn listed_exactly(&self, word: &str) -> bool {
+        self.has(&word.to_lowercase())
     }
 
     /// `knows` from the word list alone.
@@ -339,13 +373,13 @@ pub fn is_unusual(word: &str, min_letters: usize, english: &EnglishWords) -> boo
     if digits > 3 {
         return false;
     }
-    if english.knows(word) {
+    if english.ordinary(word) {
         return false;
     }
     word_parts(word).iter().any(|part| {
         part.chars().count() >= 2
             && part.chars().any(char::is_alphabetic)
-            && (is_acronym(part) || !english.knows(part))
+            && (is_acronym(part) || !english.ordinary(part))
     })
 }
 
@@ -356,6 +390,31 @@ pub fn unusual_words(
     max: usize,
     english: &EnglishWords,
 ) -> Vec<String> {
+    ranked_words(texts, max, |word| is_unusual(word, min_letters, english))
+}
+
+/// A brand written as ordinary words run together ("TablePlus",
+/// "iManage"): the model writes "Table Plus", so the list keeps app names
+/// like this, though `is_unusual` passes them by.
+pub fn is_brand(word: &str, english: &EnglishWords) -> bool {
+    let parts = word_parts(word);
+    parts.len() >= 2
+        && word.chars().skip(1).any(char::is_uppercase)
+        && word.chars().any(char::is_lowercase)
+        && !english.ordinary(word)
+}
+
+/// Names of apps and people: unusual words from four letters ("Anki",
+/// "Iyer"), and brands.
+pub fn name_words(texts: &[&str], max: usize, english: &EnglishWords) -> Vec<String> {
+    ranked_words(texts, max, |word| {
+        is_unusual(word, PROPER_MIN_LETTERS, english) || is_brand(word, english)
+    })
+}
+
+/// The words of `texts` that `keep` accepts, most frequent first, once
+/// each whatever their case, at most `max`.
+fn ranked_words(texts: &[&str], max: usize, keep: impl Fn(&str) -> bool) -> Vec<String> {
     let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
     let mut order = 0;
     for text in texts {
@@ -372,7 +431,7 @@ pub fn unusual_words(
     }
     let mut words: Vec<(&str, usize, usize)> = counts
         .into_iter()
-        .filter(|(word, _)| is_unusual(word, min_letters, english))
+        .filter(|(word, _)| keep(word))
         .map(|(word, (count, first))| (word, count, first))
         .collect();
     words.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
@@ -452,27 +511,114 @@ fn written_like(written: &str, heard: &str, sentence_start: bool) -> String {
     written.to_string()
 }
 
+/// How far `fix_near_misses` reaches; the defaults are what the daemon uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct FixOptions {
+    /// Most heard words joined into one listed word ("C G event tap").
+    /// Three or more must spell it exactly.
+    pub max_join: usize,
+    /// Also match an uncommon heard word that sounds like a listed word
+    /// ("Vanny" for "vaani"): same `sound_key`, at most three letters apart.
+    pub phonetic: bool,
+}
+
+impl Default for FixOptions {
+    fn default() -> Self {
+        // Exact joins of three or four words also keep a close pair from
+        // swallowing the end of one ("C G event tap" -> "C G CGEventTap").
+        // Sound matching added 25 of 536 persona names and changed no common
+        // word on LibriSpeech test-clean (tools/vocab, 2026-10-18).
+        Self {
+            max_join: 4,
+            phonetic: true,
+        }
+    }
+}
+
+/// A rough sound of a word: its first letter, then its consonant sounds,
+/// with silent and doubled letters dropped ("vaani" and "Vanny" -> "vn",
+/// "hyprland" and "Hipperland" -> "hprlnd").
+pub fn sound_key(word: &str) -> String {
+    let letters: Vec<char> = letters_of(word).into_iter().filter(char::is_ascii_alphabetic).collect();
+    let mut sounds: Vec<char> = Vec::with_capacity(letters.len());
+    let mut i = 0;
+    while i < letters.len() {
+        let c = letters[i];
+        let next = letters.get(i + 1).copied();
+        let soft = matches!(next, Some('e' | 'i' | 'y'));
+        let sound = match c {
+            'a' | 'e' | 'i' | 'o' | 'u' | 'y' => if i == 0 { Some('a') } else { None },
+            'p' if next == Some('h') => {
+                i += 1;
+                Some('f')
+            }
+            'g' if next == Some('h') => {
+                i += 1;
+                if i == 1 { Some('g') } else { None }
+            }
+            'k' if i == 0 && next == Some('n') => None,
+            'w' if i == 0 && next == Some('r') => None,
+            'w' | 'h' => if i == 0 { Some(c) } else { None },
+            'c' if next == Some('k') => {
+                i += 1;
+                Some('k')
+            }
+            'c' | 's' | 'z' if c != 'c' || soft => Some('s'),
+            'c' | 'q' => Some('k'),
+            'x' => Some('k'),
+            'g' if soft => Some('j'),
+            'd' | 't' => Some('t'),
+            'b' | 'p' => Some('p'),
+            'f' | 'v' => Some('f'),
+            other => Some(other),
+        };
+        if let Some(sound) = sound
+            && sounds.last() != Some(&sound)
+        {
+            sounds.push(sound);
+        }
+        i += 1;
+    }
+    sounds.into_iter().collect()
+}
+
 /// Swap words the model got one letter off ("Ghosty", "Tsunoto"), or two
 /// for long words ("Dun Lytics" for "daanlytics"), for the listed word. Only
 /// words the English list does not know are touched, so "code" never turns
 /// into "Xcode".
 pub fn fix_near_misses(text: &str, words: &SessionWords, english: &EnglishWords) -> String {
+    fix_near_misses_with(text, words, english, FixOptions::default())
+}
+
+/// `fix_near_misses` with explicit options (benchmarks compare them).
+pub fn fix_near_misses_with(
+    text: &str,
+    words: &SessionWords,
+    english: &EnglishWords,
+    options: FixOptions,
+) -> String {
     // One entry per spelling; the strongest source's casing wins ("sunoto"
     // in the project over "Sunoto" the app), so the two never tie.
     let mut seen = std::collections::HashSet::new();
-    let targets: Vec<(Vec<char>, &str)> = words
+    let targets: Vec<(Vec<char>, &str, String)> = words
         .all()
-        .map(|word| (letters_of(word), word.as_str()))
-        .filter(|(letters, _)| allowed_edits(letters.len()) > 0 && seen.insert(letters.clone()))
+        .map(|word| (letters_of(word), word.as_str(), sound_key(word)))
+        .filter(|(letters, ..)| allowed_edits(letters.len()) > 0 && seen.insert(letters.clone()))
         .collect();
     if targets.is_empty() {
         return text.to_string();
     }
-    // (start, end) byte ranges of the words in `text`.
+    // (start, end) byte ranges of the words in `text`; an apostrophe
+    // between letters stays inside the word ("Priya's", "it's").
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut spans = Vec::new();
     let mut start = None;
-    for (index, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
-        match (c.is_alphanumeric(), start) {
+    for (k, &(index, c)) in chars.iter().enumerate() {
+        let inner_apostrophe = matches!(c, '\'' | '\u{2019}')
+            && start.is_some()
+            && chars.get(k + 1).is_some_and(|&(_, next)| next.is_alphanumeric());
+        match (c.is_alphanumeric() || inner_apostrophe, start) {
             (true, None) => start = Some(index),
             (false, Some(begin)) => {
                 spans.push((begin, index));
@@ -481,15 +627,47 @@ pub fn fix_near_misses(text: &str, words: &SessionWords, english: &EnglishWords)
             _ => {}
         }
     }
+    if let Some(begin) = start {
+        spans.push((begin, text.len()));
+    }
+    // A possessive ending is kept off the match and put back after it.
+    let possessive = |span: (usize, usize)| -> usize {
+        let word = &text[span.0..span.1];
+        let lower = word.to_lowercase();
+        if lower.ends_with("'s") || lower.ends_with("\u{2019}s") {
+            word.char_indices().rev().nth(1).map_or(0, |(at, _)| span.1 - (span.0 + at))
+        } else {
+            0
+        }
+    };
     // The closest listed word and its distance; 0 means the letters match.
-    let best_target = |heard: &[char]| -> Option<(&str, usize)> {
+    let best_target = |heard: &[char], phonetic: bool| -> Option<(&str, usize)> {
         let mut found: Option<(usize, &str)> = None;
         let mut tie = false;
-        for (letters, written) in &targets {
+        let heard_key: String = if phonetic { sound_key(&heard.iter().collect::<String>()) } else { String::new() };
+        for (letters, written, key) in &targets {
             if letters.as_slice() == heard {
                 return Some((written, 0));
             }
-            if let Some(edits) = distance(heard, letters, allowed_edits(letters.len())) {
+            let limit = allowed_edits(letters.len());
+            // Sounding the same allows up to three letters' difference; a
+            // long name that sounds one sound off, up to four.
+            let sounds_alike = phonetic && key.len() >= 2 && heard.len() >= 5 && *key == heard_key;
+            let key_chars: Vec<char> = key.chars().collect();
+            let heard_key_chars: Vec<char> = heard_key.chars().collect();
+            let sounds_close = phonetic
+                && !sounds_alike
+                && key_chars.len() >= 6
+                && letters.len() >= 9
+                && distance(&heard_key_chars, &key_chars, 1).is_some();
+            let limit = if sounds_alike {
+                limit.max(3)
+            } else if sounds_close {
+                limit.max(4)
+            } else {
+                limit
+            };
+            if let Some(edits) = distance(heard, letters, limit) {
                 match found {
                     Some((best, _)) if edits > best => {}
                     Some((best, _)) if edits == best => tie = true,
@@ -502,46 +680,79 @@ pub fn fix_near_misses(text: &str, words: &SessionWords, english: &EnglishWords)
         }
         found.filter(|_| !tie).map(|(edits, written)| (written, edits))
     };
+    // An uncommon word, and not a name or word the old list has exactly
+    // ("William", "Rachel"): those are spelled right as heard. A contraction
+    // ("haven't", "won't") is never a misheard name.
     let unknown = |span: (usize, usize)| {
-        let word = &text[span.0..span.1];
-        !word.chars().any(|c| c.is_ascii_digit()) && !english.common(word)
+        let word = &text[span.0..span.1 - possessive(span)];
+        !word.chars().any(|c| c.is_ascii_digit() || matches!(c, '\'' | '\u{2019}'))
+            && !english.common(word)
+            && !english.listed_exactly(word)
     };
+    // Little words never join into a name ("Ruth a" is not "Rutha").
+    const LITTLE: &[&str] = &["a", "an", "the", "of", "to", "and", "or", "in", "on", "at", "is", "it", "i", "for", "as", "by"];
+    let little = |span: (usize, usize)| LITTLE.contains(&text[span.0..span.1].to_lowercase().as_str());
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     let mut i = 0;
-    while i < spans.len() {
+    'words: while i < spans.len() {
         let first = spans[i];
-        // Two heard words for one listed word: "Dun Lytics", "mini sign".
-        // Spelled exactly it is the word; merely close, one of the two must
-        // be an uncommon word, so "work action" never becomes "workation".
-        if let Some(&second) = spans.get(i + 1) {
-            let gap = &text[first.1..second.0];
-            if gap == " " || gap == "-" {
-                let heard: Vec<char> = letters_of(&text[first.0..second.1]);
-                if heard.len() >= 6
-                    && let Some((written, edits)) = best_target(&heard)
-                    && (edits == 0 || unknown(first) || unknown(second))
-                {
-                    out.push_str(&text[copied..first.0]);
-                    let start = starts_sentence(text, first.0);
-                    out.push_str(&written_like(written, &text[first.0..first.1], start));
-                    copied = second.1;
-                    i += 2;
-                    continue;
-                }
+        // Several heard words for one listed word: "Dun Lytics", "mini
+        // sign", "C G event tap". Two that are merely close need an uncommon
+        // word among them, so "work action" never becomes "workation";
+        // three or more must spell it exactly.
+        for count in (2..=options.max_join.max(1)).rev() {
+            let Some(&last) = spans.get(i + count - 1) else {
+                continue;
+            };
+            let joined = &spans[i..i + count];
+            if joined
+                .windows(2)
+                .any(|pair| !matches!(&text[pair[0].1..pair[1].0], " " | "-"))
+                || joined.iter().any(|&span| little(span))
+            {
+                continue;
+            }
+            let ending = possessive(last);
+            let heard: Vec<char> = letters_of(&text[first.0..last.1 - ending]);
+            if heard.len() < 5 {
+                continue;
+            }
+            // Joins match by letters only: sounding alike across two words
+            // changed common words on LibriSpeech (1.21% -> 1.29% U-WER).
+            let Some((written, edits)) = best_target(&heard, false) else {
+                continue;
+            };
+            let close_enough = edits == 0
+                || (count == 2 && heard.len() >= 6 && joined.iter().any(|&span| unknown(span)))
+                || (count >= 3 && edits == 1 && heard.len() >= 9 && joined.iter().any(|&span| unknown(span)));
+            if close_enough {
+                out.push_str(&text[copied..first.0]);
+                let start = starts_sentence(text, first.0);
+                out.push_str(&written_like(written, &text[first.0..first.1], start));
+                copied = last.1 - ending;
+                i += count;
+                continue 'words;
             }
         }
-        if unknown(first) {
-            let heard = letters_of(&text[first.0..first.1]);
-            // Right letters already: the sidecar wrote it as listed.
+        // Right letters already, with or without the possessive: the
+        // sidecar wrote it as listed.
+        let whole = letters_of(&text[first.0..first.1]);
+        let exact = targets.iter().any(|(letters, ..)| *letters == whole);
+        if !exact && unknown(first) {
+            let ending = possessive(first);
+            let heard = letters_of(&text[first.0..first.1 - ending]);
+            // Sounding alike is looser, so the word must be unknown to the
+            // old list in every form ("indians" is not "undines").
+            let phonetic = options.phonetic && !english.knows(&text[first.0..first.1 - ending]);
             if heard.len() >= 4
-                && let Some((written, edits)) = best_target(&heard)
+                && let Some((written, edits)) = best_target(&heard, phonetic)
                 && edits > 0
             {
                 out.push_str(&text[copied..first.0]);
                 let start = starts_sentence(text, first.0);
                 out.push_str(&written_like(written, &text[first.0..first.1], start));
-                copied = first.1;
+                copied = first.1 - ending;
             }
         }
         i += 1;
@@ -554,13 +765,6 @@ pub fn fix_near_misses(text: &str, words: &SessionWords, english: &EnglishWords)
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
-}
-
-fn expand(path: &str) -> Option<PathBuf> {
-    match path.strip_prefix("~/") {
-        Some(rest) => home().map(|home| home.join(rest)),
-        None => Some(PathBuf::from(path)),
-    }
 }
 
 fn is_hidden(name: &str) -> bool {
@@ -581,10 +785,14 @@ fn child_dirs(dir: &Path) -> Vec<PathBuf> {
 
 /// The user's projects (folder name -> path) under the project roots: each
 /// subfolder, and the repos inside a subfolder that only groups repos.
-pub fn find_projects(home: &Path) -> HashMap<String, PathBuf> {
+pub fn find_projects(home: &Path, allow_protected: bool) -> HashMap<String, PathBuf> {
     let mut projects = HashMap::new();
     for root in PROJECT_ROOTS {
-        for dir in child_dirs(&home.join(root)) {
+        let root = home.join(root);
+        if !allow_protected && is_protected(&root, home) {
+            continue;
+        }
+        for dir in child_dirs(&root) {
             let grouped: Vec<PathBuf> = if dir.join(".git").exists() {
                 Vec::new()
             } else {
@@ -608,10 +816,10 @@ pub fn find_projects(home: &Path) -> HashMap<String, PathBuf> {
     projects
 }
 
-fn app_names() -> Vec<String> {
+fn app_names(home: &Path) -> Vec<String> {
     APP_FOLDERS
         .iter()
-        .filter_map(|folder| expand(folder))
+        .map(|folder| home.join(folder))
         .filter_map(|folder| std::fs::read_dir(folder).ok())
         .flat_map(|entries| entries.flatten())
         .filter_map(|entry| {
@@ -706,6 +914,8 @@ pub struct Focus {
     pub window_title: Option<String>,
     pub document: Option<String>,
     pub text: Option<String>,
+    /// The rest of the window's visible text, when it was read.
+    pub window_text: Option<String>,
 }
 
 /// The project the focused window is in: the folder of its document (a
@@ -715,14 +925,16 @@ pub fn detect_project(
     focus: &Focus,
     projects: &HashMap<String, PathBuf>,
     home: &Path,
+    allow_protected: bool,
 ) -> Option<PathBuf> {
+    let allowed = |path: &Path| allow_protected || !is_protected(path, home);
     if let Some(path) = focus
         .document
         .as_deref()
         .and_then(|document| document.strip_prefix("file://"))
         .map(decode_percent)
         .map(PathBuf::from)
-        .filter(|path| path.exists())
+        .filter(|path| allowed(path) && path.exists())
     {
         return project_root(&path, home);
     }
@@ -733,7 +945,7 @@ pub fn detect_project(
             None if word.starts_with('/') => PathBuf::from(word),
             None => continue,
         };
-        if path.exists() {
+        if allowed(&path) && path.exists() {
             return project_root(&path, home);
         }
     }
@@ -755,41 +967,126 @@ pub fn detect_project(
 
 /// The focused window now, or with `pid` that app's focused window.
 #[cfg(target_os = "macos")]
-fn read_focus(pid: Option<i32>) -> Option<Focus> {
+fn read_focus(pid: Option<i32>, sources: &Sources) -> Option<Focus> {
+    let options = sunoto_desktop::SnapshotOptions {
+        max_chars: SCREEN_CHARS,
+        walk_window: sources.walk_window,
+        wake_electron: sources.wake_electron,
+    };
     let snapshot = match pid {
-        Some(pid) => sunoto_desktop::app_snapshot(pid, SCREEN_CHARS),
-        None => sunoto_desktop::focus_snapshot(SCREEN_CHARS),
+        Some(pid) => sunoto_desktop::app_snapshot(pid, options),
+        None => sunoto_desktop::focus_snapshot(options),
     }?;
     Some(Focus {
         window_title: snapshot.window_title,
         document: snapshot.document,
         text: snapshot.text,
+        window_text: snapshot.window_text,
     })
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_focus(_pid: Option<i32>) -> Option<Focus> {
+fn read_focus(_pid: Option<i32>, _sources: &Sources) -> Option<Focus> {
     None
+}
+
+/// Where the everywhere list looks besides project folders and apps.
+#[derive(Debug, Clone, Default)]
+pub struct Sources {
+    /// Subfolders of Documents and Desktop ("Okafor Holdings").
+    pub documents: bool,
+    /// Names of documents opened in the last two weeks (Spotlight).
+    pub recent_files: bool,
+    /// Recent file names given directly, instead of asking Spotlight.
+    pub recent: Vec<String>,
+    /// People's names (from Contacts, or given directly).
+    pub contacts: Vec<String>,
+    /// Keep rare English words on the lists (see `EnglishWords::keep_rare`).
+    pub keep_rare: bool,
+    /// Also read the rest of the window when the focused box is nearly empty.
+    pub walk_window: bool,
+    /// Turn on Electron apps' accessibility so they share their text.
+    pub wake_electron: bool,
+    /// Read people's names from Contacts, when access was already granted.
+    pub system_contacts: bool,
+}
+
+/// Turning the source on is the user's yes to macOS's Contacts dialog.
+#[cfg(target_os = "macos")]
+fn system_contact_names() -> Vec<String> {
+    sunoto_desktop::contact_names(5_000, true).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_contact_names() -> Vec<String> {
+    Vec::new()
+}
+
+/// Names of documents used in the last two weeks, from Spotlight. Slow
+/// (about 2 s), so it runs on its own thread and the list catches up.
+fn spotlight_recent(home: &Path) -> Vec<String> {
+    let output = std::process::Command::new("/usr/bin/mdfind")
+        .arg("-onlyin")
+        .arg(home)
+        .arg("kMDItemLastUsedDate >= $time.today(-14) && kMDItemContentTypeTree == \"public.content\"")
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.contains("/Library/") && !line.contains("/."))
+        .filter_map(|line| Path::new(line).file_stem().map(|stem| stem.to_string_lossy().into_owned()))
+        .take(400)
+        .collect()
 }
 
 /// Builds word lists and keeps the slow parts (folders, projects) cached.
 pub struct Collector {
     pub english: Arc<EnglishWords>,
     extra: Vec<String>,
+    sources: Sources,
     home: PathBuf,
     everywhere: Option<(Instant, Vec<String>, HashMap<String, PathBuf>)>,
     project_cache: HashMap<PathBuf, (Instant, Vec<String>)>,
+    /// Spotlight's latest answer, filled by its own thread.
+    spotlight: Arc<std::sync::Mutex<Vec<String>>>,
+    spotlight_asked: Option<Instant>,
 }
 
 impl Collector {
-    pub fn new(extra: Vec<String>) -> Self {
+    pub fn new(extra: Vec<String>, sources: Sources) -> Self {
+        Self::with_home(extra, sources, home().unwrap_or_default())
+    }
+
+    pub fn with_home(extra: Vec<String>, sources: Sources, home: PathBuf) -> Self {
+        let mut english = EnglishWords::load();
+        english.keep_rare = sources.keep_rare;
         Self {
-            english: Arc::new(EnglishWords::load()),
+            english: Arc::new(english),
             extra,
-            home: home().unwrap_or_default(),
+            sources,
+            home,
             everywhere: None,
             project_cache: HashMap::new(),
+            spotlight: Arc::default(),
+            spotlight_asked: None,
         }
+    }
+
+    /// Ask Spotlight again in the background when its answer is old.
+    fn refresh_spotlight(&mut self) {
+        if !self.sources.recent_files
+            || self.spotlight_asked.is_some_and(|at| at.elapsed() <= REFRESH)
+        {
+            return;
+        }
+        self.spotlight_asked = Some(Instant::now());
+        let (home, answer) = (self.home.clone(), Arc::clone(&self.spotlight));
+        std::thread::spawn(move || {
+            let found = spotlight_recent(&home);
+            *answer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = found;
+        });
     }
 
     /// Read the folder and app names again when they are older than REFRESH.
@@ -798,13 +1095,43 @@ impl Collector {
             .everywhere
             .as_ref()
             .is_none_or(|(at, ..)| at.elapsed() > REFRESH);
+        self.refresh_spotlight();
         if stale {
-            let projects = find_projects(&self.home);
-            let mut names: Vec<String> = projects.keys().cloned().collect();
-            names.sort();
-            names.extend(app_names());
+            let projects = find_projects(&self.home, self.sources.documents);
+            // People and apps first: a busy Mac has more names than the
+            // list keeps. Their names count from four letters, and brands.
+            let mut people: Vec<String> = self.sources.contacts.clone();
+            if self.sources.system_contacts {
+                people.extend(system_contact_names());
+            }
+            people.extend(app_names(&self.home));
+            let refs: Vec<&str> = people.iter().map(String::as_str).collect();
+            let mut words = name_words(&refs, EVERYWHERE_MAX, &self.english);
+            let mut names: Vec<String> = Vec::new();
+            names.extend(self.sources.recent.iter().cloned());
+            names.extend(self.spotlight.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().cloned());
+            let mut folders: Vec<String> = projects.keys().cloned().collect();
+            if self.sources.documents {
+                for root in DOCUMENT_ROOTS {
+                    folders.extend(
+                        child_dirs(&self.home.join(root))
+                            .iter()
+                            .filter_map(|dir| dir.file_name())
+                            .map(|name| name.to_string_lossy().into_owned()),
+                    );
+                }
+            }
+            folders.sort();
+            names.extend(folders);
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let words = unusual_words(&refs, NAME_MIN_LETTERS, EVERYWHERE_MAX, &self.english);
+            let room = EVERYWHERE_MAX.saturating_sub(words.len());
+            let seen: std::collections::HashSet<String> = words.iter().map(|word| word.to_lowercase()).collect();
+            words.extend(
+                unusual_words(&refs, NAME_MIN_LETTERS, EVERYWHERE_MAX, &self.english)
+                    .into_iter()
+                    .filter(|word| !seen.contains(&word.to_lowercase()))
+                    .take(room),
+            );
             self.everywhere = Some((Instant::now(), words, projects));
         }
     }
@@ -832,7 +1159,7 @@ impl Collector {
         self.refresh_everywhere();
         let (everywhere, project_dir) = match &self.everywhere {
             Some((_, words, projects)) => {
-                (words.clone(), detect_project(&focus, projects, &self.home))
+                (words.clone(), detect_project(&focus, projects, &self.home, self.sources.documents))
             }
             None => (Vec::new(), None),
         };
@@ -848,6 +1175,7 @@ impl Collector {
             focus.text.as_deref(),
             focus.window_title.as_deref(),
             document_path.as_deref(),
+            focus.window_text.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -865,7 +1193,7 @@ impl Collector {
     }
 
     pub fn collect_now(&mut self) -> SessionWords {
-        let focus = read_focus(None);
+        let focus = read_focus(None, &self.sources);
         self.collect(focus)
     }
 }
@@ -917,12 +1245,12 @@ pub struct WordWorker {
 }
 
 impl WordWorker {
-    pub fn spawn(extra: Vec<String>, events: Sender<DaemonEvent>) -> Self {
+    pub fn spawn(extra: Vec<String>, sources: Sources, events: Sender<DaemonEvent>) -> Self {
         let (jobs, inbox): (Sender<Job>, Receiver<Job>) = mpsc::channel();
         std::thread::Builder::new()
             .name("word-list".into())
             .spawn(move || {
-                let mut collector = Collector::new(extra);
+                let mut collector = Collector::new(extra, sources);
                 // Warm the folder list so the first dictation does not wait.
                 collector.refresh_everywhere();
                 while let Ok(Job::Collect { session_id }) = inbox.recv() {
@@ -954,13 +1282,18 @@ impl WordWorker {
 struct FixItem {
     text: String,
     words: SessionWords,
+    #[serde(default)]
+    options: FixOptions,
 }
 
 /// `sunoto-daemon words`: print the word list for the focused window now
-/// (`--delay S` waits first, `--pid N` reads that app instead, `--text FILE`
-/// stands in for the focused text, `--json` for machine output), or with `--fix
-/// FILE` apply `fix_near_misses` to `[{"text", "words"}]` and print the
-/// fixed texts as JSON (for tools/vocab/bench_words.py).
+/// (`--delay S` waits first, `--pid N` reads that app instead, `--json` for
+/// machine output). For benchmarks: `--home DIR` reads another home folder,
+/// `--text FILE` and `--document URL` stand in for the focused window,
+/// `--documents`, `--spotlight`, `--recent FILE` and `--contacts FILE` turn
+/// on those sources. With `--fix FILE` it applies `fix_near_misses` to
+/// `[{"text", "words", "options"}]` and prints the fixed texts as JSON (for
+/// tools/vocab/bench_words.py).
 pub fn run_cli(args: &[String]) -> Result<(), String> {
     let value_of = |flag: &str| {
         args.iter()
@@ -976,7 +1309,7 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         let started = Instant::now();
         let fixed: Vec<String> = items
             .iter()
-            .map(|item| fix_near_misses(&item.text, &item.words, &english))
+            .map(|item| fix_near_misses_with(&item.text, &item.words, &english, item.options))
             .collect();
         let took = started.elapsed();
         eprintln!(
@@ -988,12 +1321,49 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         println!("{}", serde_json::to_string(&fixed).map_err(|error| error.to_string())?);
         return Ok(());
     }
+    // `--filter FILE`: JSON array of word lists -> the words a list keeps.
+    if let Some(path) = value_of("--filter") {
+        let lists: Vec<Vec<String>> = serde_json::from_str(
+            &std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?,
+        )
+        .map_err(|error| format!("{path}: {error}"))?;
+        let mut english = EnglishWords::load();
+        english.keep_rare = args.iter().any(|arg| arg == "--keep-rare");
+        let kept: Vec<Vec<&String>> = lists
+            .iter()
+            .map(|list| list.iter().filter(|word| is_unusual(word, SCREEN_MIN_LETTERS, &english)).collect())
+            .collect();
+        println!("{}", serde_json::to_string(&kept).map_err(|error| error.to_string())?);
+        return Ok(());
+    }
     if let Some(delay) = value_of("--delay") {
         let seconds: f64 = delay.parse().map_err(|_| format!("bad --delay {delay}"))?;
         std::thread::sleep(Duration::from_secs_f64(seconds));
     }
+    let lines_of = |flag: &str| -> Result<Vec<String>, String> {
+        match value_of(flag) {
+            Some(path) => Ok(std::fs::read_to_string(path)
+                .map_err(|error| format!("{path}: {error}"))?
+                .lines()
+                .map(str::to_string)
+                .filter(|line| !line.trim().is_empty())
+                .collect()),
+            None => Ok(Vec::new()),
+        }
+    };
+    let sources = Sources {
+        documents: args.iter().any(|arg| arg == "--documents"),
+        recent_files: args.iter().any(|arg| arg == "--spotlight"),
+        recent: lines_of("--recent")?,
+        contacts: lines_of("--contacts")?,
+        keep_rare: args.iter().any(|arg| arg == "--keep-rare"),
+        walk_window: args.iter().any(|arg| arg == "--walk"),
+        wake_electron: args.iter().any(|arg| arg == "--wake"),
+        system_contacts: args.iter().any(|arg| arg == "--system-contacts"),
+    };
+    let home_dir = value_of("--home").map(PathBuf::from).or_else(home).unwrap_or_default();
     let started = Instant::now();
-    let mut collector = Collector::new(Vec::new());
+    let mut collector = Collector::with_home(Vec::new(), sources.clone(), home_dir);
     let loaded = started.elapsed();
     collector.refresh_everywhere();
     let cold = started.elapsed() - loaded;
@@ -1002,8 +1372,14 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         None => None,
     };
     let read_started = Instant::now();
-    let mut focus = read_focus(pid);
+    let mut focus = read_focus(pid, &sources);
     // `--text FILE` stands in for the focused text (benchmarks, tests).
+    if value_of("--home").is_some() {
+        focus = None; // a pretend home has no windows
+    }
+    if let Some(document) = value_of("--document") {
+        focus.get_or_insert_with(Focus::default).document = Some(document.clone());
+    }
     if let Some(path) = value_of("--text") {
         let text = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
         focus.get_or_insert_with(Focus::default).text = Some(text);
@@ -1028,10 +1404,11 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
     println!("Folders and apps: read in {} ms (then cached for 10 minutes)", cold.as_millis());
     match &focus {
         Some(focus) => println!(
-            "Focused window: title {:?}, document {:?}, {} characters of text; read in {} ms",
+            "Focused window: title {:?}, document {:?}, {} characters of text, {} more in the window; read in {} ms",
             focus.window_title,
             focus.document,
             focus.text.as_deref().map_or(0, |text| text.chars().count()),
+            focus.window_text.as_deref().map_or(0, |text| text.chars().count()),
             read.as_millis()
         ),
         None => println!("Focused window: nothing readable (Accessibility permission?)"),
@@ -1145,6 +1522,60 @@ mod tests {
     }
 
     #[test]
+    fn sound_keys_match_names_heard_differently() {
+        for (heard, listed) in [
+            ("Vanny", "vaani"),
+            ("Vonnie", "vaani"),
+            ("Hipperland", "Hyprland"),
+            ("Gosti", "Ghostty"),
+            ("Fone", "phone"),
+        ] {
+            assert_eq!(sound_key(heard), sound_key(listed), "{heard} / {listed}");
+        }
+        assert_ne!(sound_key("Bonnie"), sound_key("vaani"));
+    }
+
+    #[test]
+    fn longer_joins_and_sound_matching_by_default() {
+        let words = english();
+        let listed = list(&["vaani", "pbcopy", "CGEventTap", "weif"]);
+        let text = "Ask Vanny to use P B copy after the C G event tap.";
+        let letters_only = FixOptions {
+            phonetic: false,
+            ..FixOptions::default()
+        };
+        assert_eq!(
+            fix_near_misses_with(text, &listed, &words, letters_only),
+            "Ask Vanny to use pbcopy after the CGEventTap."
+        );
+        let options = FixOptions::default();
+        assert_eq!(
+            fix_near_misses_with(text, &listed, &words, options),
+            "Ask vaani to use pbcopy after the CGEventTap."
+        );
+        // Sounding alike never touches a common word.
+        let text = "Push it to the weave repo.";
+        assert_eq!(fix_near_misses_with(text, &listed, &words, options), text);
+    }
+
+    #[test]
+    fn possessives_and_contractions_stay_whole() {
+        let words = english();
+        let listed = list(&["Ghostty", "anne's", "goliath", "Gilliam"]);
+        assert_eq!(
+            fix_near_misses("Ghosty's window. Anne's book, it's goliath.", &listed, &words),
+            "Ghostty's window. Anne's book, it's goliath."
+        );
+        // A name the old list has is spelled right as heard, and so are
+        // contractions and joins through little words.
+        let words = EnglishWords::from_words(["william", "ruth"].into_iter());
+        assert_eq!(fix_near_misses("Ask William.", &listed, &words), "Ask William.");
+        let listed = list(&["woant", "rutha"]);
+        let text = "I won't ask Ruth a thing.";
+        assert_eq!(fix_near_misses(text, &listed, &words), text);
+    }
+
+    #[test]
     fn near_misses_never_touch_english_words_or_short_names() {
         let words = english();
         let listed = list(&["Xcode", "weif", "analytix"]);
@@ -1202,22 +1633,32 @@ mod tests {
             document: Some(format!("file://{}/src/deep/", repo.display())),
             ..Focus::default()
         };
-        assert_eq!(detect_project(&by_document, &projects, &base), Some(repo.clone()));
+        assert_eq!(detect_project(&by_document, &projects, &base, false), Some(repo.clone()));
         let by_title_path = Focus {
             window_title: Some("zsh ~/workspace/huskyAI/src".into()),
             ..Focus::default()
         };
-        assert_eq!(detect_project(&by_title_path, &projects, &base), Some(repo.clone()));
+        assert_eq!(detect_project(&by_title_path, &projects, &base, false), Some(repo.clone()));
         let by_name = Focus {
             window_title: Some("main.rs — huskyAI".into()),
             ..Focus::default()
         };
-        assert_eq!(detect_project(&by_name, &projects, &base), Some(repo.clone()));
+        assert_eq!(detect_project(&by_name, &projects, &base, false), Some(repo.clone()));
         let elsewhere = Focus {
             window_title: Some("Untitled".into()),
             ..Focus::default()
         };
-        assert_eq!(detect_project(&elsewhere, &projects, &base), None);
+        assert_eq!(detect_project(&elsewhere, &projects, &base, false), None);
+        // A file in Documents is left alone unless the Documents source is on.
+        let letters = base.join("Documents/Okafor Holdings");
+        std::fs::create_dir_all(&letters).unwrap();
+        std::fs::write(letters.join("brief.docx"), "").unwrap();
+        let in_documents = Focus {
+            document: Some(format!("file://{}/brief.docx", letters.display())),
+            ..Focus::default()
+        };
+        assert_eq!(detect_project(&in_documents, &projects, &base, false), None);
+        assert_eq!(detect_project(&in_documents, &projects, &base, true), Some(letters));
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -1236,13 +1677,59 @@ mod tests {
     }
 
     #[test]
+    fn more_sources_add_documents_folders_recent_files_and_contacts() {
+        let home = std::env::temp_dir().join(format!("sunoto-sources-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("Documents/Okafor Holdings")).unwrap();
+        std::fs::create_dir_all(home.join("Desktop/Wexford Appeal")).unwrap();
+        let collect = |sources: Sources| {
+            let mut collector = Collector {
+                english: Arc::new(english()),
+                extra: Vec::new(),
+                sources,
+                home: home.clone(),
+                everywhere: None,
+                project_cache: HashMap::new(),
+                spotlight: Arc::default(),
+                spotlight_asked: None,
+            };
+            collector.collect(None).everywhere
+        };
+        let plain = collect(Sources::default());
+        assert!(!plain.iter().any(|word| word == "Okafor"));
+        let more = collect(Sources {
+            documents: true,
+            recent: vec!["Thibodeaux deposition outline".into()],
+            contacts: vec!["Ngozi Okafor".into()],
+            ..Sources::default()
+        });
+        for word in ["Okafor", "Wexford", "Thibodeaux", "Ngozi"] {
+            assert!(more.iter().any(|listed| listed == word), "{word} in {more:?}");
+        }
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn keep_rare_lists_rare_english_words_too() {
+        let mut words = english();
+        words.modern = vec!["the".into()];
+        assert!(!is_unusual("analytics", 5, &words));
+        words.keep_rare = true;
+        // Without the system vocabulary, `common` falls back to `knows`, so
+        // only the macOS build can tell rare English from everyday English.
+        assert_eq!(is_unusual("analytics", 5, &words), words.has_system_vocabulary());
+    }
+
+    #[test]
     fn collect_puts_screen_words_first_and_extra_words_on_screen() {
         let mut collector = Collector {
             english: Arc::new(english()),
             extra: vec!["Kubernetes".into()],
+            sources: Sources::default(),
             home: std::env::temp_dir().join("sunoto-no-home"),
             everywhere: None,
             project_cache: HashMap::new(),
+            spotlight: Arc::default(),
+            spotlight_asked: None,
         };
         let words = collector.collect(Some(Focus {
             window_title: Some("sunoto — notes".into()),

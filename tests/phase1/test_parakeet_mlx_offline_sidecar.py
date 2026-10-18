@@ -446,3 +446,39 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpecialTokenGuardTest(unittest.TestCase):
+    """A run of <unk> (a GPU glitch under load) never reaches the user."""
+
+    class _Tok:
+        def __init__(self, id, text):
+            self.id, self.text, self.start, self.duration, self.end, self.confidence = id, text, 0.0, 0.1, 0.1, 1.0
+
+    class _Result:
+        def __init__(self, tokens):
+            self.tokens = tokens
+            self.text = "".join(t.text for t in tokens)
+
+    def _engine(self, retries):
+        engine = _FakeDirectParakeetEngine()
+
+        class Model:
+            vocabulary = ["<unk>", "\u2581hi", "\u2581there"]
+
+            def generate(self, mel):
+                return [retries.pop(0)]
+
+        engine.model = Model()
+        return engine
+
+    def test_a_glitched_decode_is_decoded_again(self):
+        good = self._Result([self._Tok(1, " hi"), self._Tok(2, " there")])
+        bad = self._Result([self._Tok(0, "<unk>")] * 5)
+        engine = self._engine([good])
+        self.assertIs(engine._without_special_tokens(bad, mel=None), good)
+
+    def test_a_clean_decode_is_kept_without_a_retry(self):
+        good = self._Result([self._Tok(1, " hi")])
+        engine = self._engine([])
+        self.assertIs(engine._without_special_tokens(good, mel=None), good)

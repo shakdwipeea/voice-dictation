@@ -15,6 +15,9 @@ use std::os::raw::{c_char, c_void};
 #[link(name = "NaturalLanguage", kind = "framework")]
 unsafe extern "C" {}
 
+#[link(name = "Contacts", kind = "framework")]
+unsafe extern "C" {}
+
 #[link(name = "AppKit", kind = "framework")]
 #[link(name = "objc")]
 unsafe extern "C" {
@@ -274,6 +277,82 @@ impl EnglishVocabulary {
     }
 }
 
+/// People's and companies' names from Contacts. With `ask` false this never
+/// raises the permission dialog: `None` unless access was already granted.
+/// With `ask` true and no answer yet, the read itself makes macOS ask (the
+/// names arrive on a later call, once the user allows it).
+pub fn contact_names(max: usize, ask: bool) -> Option<Vec<String>> {
+    const CN_ENTITY_TYPE_CONTACTS: usize = 0;
+    const CN_NOT_DETERMINED: usize = 0;
+    const CN_AUTHORIZED: usize = 3;
+    const CN_LIMITED: usize = 4;
+    let pool = Pool::new()?;
+    // SAFETY: documented CNContactStore / CNContact selectors; the store is
+    // released before returning, everything else is autoreleased.
+    let names = unsafe {
+        let store_class = objc_class("CNContactStore")?;
+        let status = send_usize_usize(store_class, sel("authorizationStatusForEntityType:")?, CN_ENTITY_TYPE_CONTACTS);
+        let asking = ask && status == CN_NOT_DETERMINED;
+        if status != CN_AUTHORIZED && status != CN_LIMITED && !asking {
+            return None;
+        }
+        let store = send_id(send_id(store_class, sel("alloc")?), sel("init")?);
+        if store.is_null() {
+            return None;
+        }
+        let keys = ["givenName", "familyName", "organizationName", "nickname"]
+            .iter()
+            .filter_map(|key| ns_string(key))
+            .collect::<Vec<_>>();
+        let key_array = send_id_ptr_usize(
+            objc_class("NSArray")?,
+            sel("arrayWithObjects:count:")?,
+            keys.as_ptr() as *const c_void,
+            keys.len(),
+        );
+        let container = send_id(store, sel("defaultContainerIdentifier")?);
+        let predicate = send_id_id(
+            objc_class("CNContact")?,
+            sel("predicateForContactsInContainerWithIdentifier:")?,
+            container,
+        );
+        let function: unsafe extern "C" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+        let mut error: *mut c_void = std::ptr::null_mut();
+        let contacts = function(
+            store,
+            sel("unifiedContactsMatchingPredicate:keysToFetch:error:")?,
+            predicate,
+            key_array,
+            &mut error,
+        );
+        let mut names = Vec::new();
+        if !contacts.is_null() {
+            let count = send_usize(contacts, sel("count")?).min(max);
+            for index in 0..count {
+                let contact = send_id_usize(contacts, sel("objectAtIndex:")?, index);
+                let parts: Vec<String> = ["givenName", "familyName", "organizationName", "nickname"]
+                    .iter()
+                    .filter_map(|key| sel(key).and_then(|key| ns_string_to_rust(send_id(contact, key))))
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                if !parts.is_empty() {
+                    names.push(parts.join(" "));
+                }
+            }
+        }
+        send_id(store, sel("release")?);
+        names
+    };
+    drop(pool);
+    Some(names)
+}
+
 /// Process id of the frontmost application.
 pub fn frontmost_pid() -> Option<i32> {
     let pool = Pool::new()?;
@@ -509,6 +588,12 @@ unsafe fn send_usize(receiver: *mut c_void, selector: *mut c_void) -> usize {
     let function: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector) }
+}
+
+unsafe fn send_usize_usize(receiver: *mut c_void, selector: *mut c_void, argument: usize) -> usize {
+    let function: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> usize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector, argument) }
 }
 
 unsafe fn send_i32(receiver: *mut c_void, selector: *mut c_void) -> i32 {

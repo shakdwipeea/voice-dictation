@@ -16,6 +16,7 @@ With no words, callers use the stock parakeet-mlx decoder, so nothing changes.
 
 from __future__ import annotations
 
+import math
 import re
 
 SPACE = "▁"  # SentencePiece's word-start marker
@@ -32,8 +33,10 @@ TIERS = tuple(TIER_BONUS)  # strongest first; a word keeps its strongest tier
 SCREEN_FULL_WORDS = 30
 # A word's first piece is a candidate at every word start, so it gets only
 # part of the bonus, and less still when it is short and starts many words.
-# One-letter starts ("A", "s") get none: they tipped "Uh" into "A".
-START_SHARE = 0.5
+# One-letter starts ("A", "s") get none: they tipped "Uh" into "A". A quarter
+# kept every name the half did (persona benchmark: 391 vs 388 of 536) and
+# turned fewer background voices into listed words (2 vs 5 of 54 at 3 dB).
+START_SHARE = 0.25
 START_FULL_LETTERS = 4
 START_MIN_LETTERS = 2
 MIN_LETTERS = 3
@@ -77,7 +80,7 @@ class TokenIndex:
 
 
 class Target:
-    __slots__ = ("written", "letters", "boundaries", "bonus", "_pattern")
+    __slots__ = ("written", "letters", "boundaries", "bonus")
 
     def __init__(self, written: str, parts: list[str], bonus: float) -> None:
         self.written = written
@@ -88,14 +91,11 @@ class Target:
             offset += len(part)
             self.boundaries.add(offset)
         self.bonus = bonus
-        self._pattern = None
 
-    def pattern(self):
-        if self._pattern is None:
-            parts = word_parts(self.written)
-            body = r"[ \-]?".join(re.escape(part) for part in parts)
-            self._pattern = re.compile(rf"(?<!\w){body}(?!\w)", re.IGNORECASE)
-        return self._pattern
+    def body(self) -> str:
+        """This word in a search pattern: its parts, a space or hyphen
+        allowed between them ("husky AI" for huskyAI)."""
+        return r"[ \-]?".join(re.escape(part) for part in word_parts(self.written))
 
 
 class WordBooster:
@@ -136,21 +136,16 @@ class WordBooster:
                     self.start_bonus[token_id] = value
         self._next: dict[tuple[int, int], dict[int, int]] = {}
         self._start_vector = None
-        # Compiled now, while the user is still talking, so respelling after
-        # the tap is only the search. Plain lowercase words share one pattern.
-        self._respell = [
-            (target.pattern(), target.written)
-            for target in self.targets
-            if target.boundaries or not target.written.islower()
-        ]
-        plain = {t.written.lower(): t.written for t in self.targets if not t.boundaries and t.written.islower()}
-        self._plain = plain
-        self._plain_pattern = (
-            re.compile(
-                r"(?<!\w)(?:" + "|".join(map(re.escape, sorted(plain, key=len, reverse=True))) + r")(?!\w)",
-                re.IGNORECASE,
-            )
-            if plain
+        # One pattern for every word, compiled now while the user is still
+        # talking, so respelling after the tap is a single search. A match is
+        # looked up by its letters ("Husky AI" -> "huskyai").
+        self._written = {target.letters: target.written for target in self.targets}
+        bodies = sorted(
+            {target.body() for target in self.targets}, key=len, reverse=True
+        )
+        self._pattern = (
+            re.compile(r"(?<!\w)(?:" + "|".join(bodies) + r")(?!\w)", re.IGNORECASE)
+            if bodies
             else None
         )
 
@@ -222,18 +217,16 @@ class WordBooster:
         the model gave its first letter (a sentence start, a brand such as
         "Airbnb"), and nothing else."""
 
-        def replace(match, written=None):
+        def replace(match):
             found = match.group(0)
-            written = written or self._plain[found.lower()]
+            written = self._written.get("".join(word_parts(found)).lower())
+            if written is None:
+                return found
             if written.islower() and found[:1].isupper():
                 return written[:1].upper() + written[1:]
             return written
 
-        for pattern, written in self._respell:
-            text = pattern.sub(lambda match, written=written: replace(match, written), text)
-        if self._plain_pattern is not None:
-            text = self._plain_pattern.sub(replace, text)
-        return text
+        return self._pattern.sub(replace, text) if self._pattern is not None else text
 
 
 def decode_greedy(model, mx, features, length: int, booster: WordBooster):
@@ -269,6 +262,10 @@ def decode_greedy(model, mx, features, length: int, booster: WordBooster):
         boosted = logp + start_vector
         best = mx.argmax(boosted, keepdims=True)
         plain = mx.argmax(logp)
+        # One non-finite logit turns the log-probabilities into NaN, which
+        # the stock argmax over raw logits survives. Checking only the chosen
+        # score costs one element, not a pass over the whole vocabulary.
+        chosen = mx.take(boosted, best)
         bonus = booster.candidates(states)
         if bonus:
             ids = list(bonus)
@@ -280,10 +277,14 @@ def decode_greedy(model, mx, features, length: int, booster: WordBooster):
             scores = scores.tolist()
             pick = max(range(len(scores)), key=scores.__getitem__)
             pred_token = int(best.item()) if pick == 0 else ids[pick - 1]
+            finite = math.isfinite(scores[0])
         else:
-            mx.eval(best, plain)
+            mx.eval(best, plain, chosen)
             pred_token = int(best.item())
+            finite = math.isfinite(chosen.item())
         wanted = int(plain.item())
+        if not finite:
+            pred_token = wanted = int(mx.argmax(token_logits))
         if (
             pred_token != wanted
             and pred_token not in bonus
@@ -334,4 +335,11 @@ def generate(model, mx, mel, booster: WordBooster):
     features, lengths = model.encoder(mel)
     mx.eval(features, lengths)
     tokens = decode_greedy(model, mx, features, int(lengths[0]), booster)
+    if any(model.vocabulary[token.id].startswith("<") for token in tokens):
+        # A special token (<unk>, <|...|>) never belongs in a dictation; the
+        # stock decoder never emits one here, so decode again without words.
+        from nemotron_sidecar import log  # noqa: delayed; avoids a cycle
+
+        log("word list: decode emitted a special token; decoding again without the list")
+        return model.generate(mel)[0]
     return sentences_to_result(tokens_to_sentences(tokens))

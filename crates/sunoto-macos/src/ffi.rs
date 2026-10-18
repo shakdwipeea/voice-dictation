@@ -181,6 +181,12 @@ unsafe extern "C" {
         value: *mut CFTypeRef,
     ) -> AXError;
     pub fn AXUIElementCreateApplication(pid: c_int) -> AXUIElementRef;
+    pub fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> AXError;
+    pub fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> AXError;
     pub fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeoutInSeconds: f32) -> AXError;
     pub fn AXValueGetValue(value: AXValueRef, theType: u32, valuePtr: *mut c_void) -> bool;
 
@@ -219,6 +225,7 @@ unsafe extern "C" {
         encoding: CFStringEncoding,
     ) -> c_int;
     pub fn CFRelease(cf: *const c_void);
+    pub fn CFRetain(cf: *const c_void) -> *const c_void;
     pub fn CFArrayGetCount(theArray: CFArrayRef) -> CFIndex;
     pub fn CFArrayGetValueAtIndex(theArray: CFArrayRef, idx: CFIndex) -> *const c_void;
     pub fn CFDictionaryGetValue(theDict: *const c_void, key: *const c_void) -> *const c_void;

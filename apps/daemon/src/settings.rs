@@ -270,6 +270,14 @@ pub struct Settings {
     /// Your own words to favour in every dictation, spelled as you want them
     /// written ("Kubernetes", "Priya").
     pub word_list: Vec<String>,
+    /// Also take names from your documents: the subfolders of Documents and
+    /// Desktop (clients, cases, courses, books) and documents opened in the
+    /// last two weeks. Off by default: macOS asks once before an app may
+    /// read Documents and Desktop.
+    pub word_list_documents: bool,
+    /// Also take people's names from Contacts. Off by default: macOS asks
+    /// once, the first time the list is built with this on.
+    pub word_list_contacts: bool,
     pub polish: PolishConfig,
 }
 
@@ -320,12 +328,32 @@ impl Default for Settings {
             llm_polish_stream_insert: false,
             word_list_enabled: true,
             word_list: Vec::new(),
+            word_list_documents: false,
+            word_list_contacts: false,
             polish: PolishConfig::default(),
         }
     }
 }
 
 impl Settings {
+    /// Where the word list looks, from the word_list_* settings.
+    pub fn word_sources(&self) -> crate::vocabulary::Sources {
+        // Rare English words ("hidradenitis") stay on the lists: they cut
+        // LibriSpeech rare-word errors further and no common word changed.
+        // The rest of the window is read when the focused box is nearly
+        // empty (a chat, a reply), within 150 ms on the word-list thread.
+        // Waking Electron apps' accessibility stays off: its cost to those
+        // apps while in use was not measured.
+        crate::vocabulary::Sources {
+            documents: self.word_list_documents,
+            recent_files: self.word_list_documents,
+            system_contacts: self.word_list_contacts,
+            keep_rare: true,
+            walk_window: true,
+            ..Default::default()
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read_to_string(path) {
             Ok(contents) => serde_json::from_str(&contents)
