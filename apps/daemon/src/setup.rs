@@ -579,9 +579,10 @@ fn ensure_asr_model(
     Ok(())
 }
 
-/// Delete Sunoto's copies of models the app no longer uses (the 1.25 GB v3
-/// copy). Only our own folders under Application Support; the Hugging Face
-/// cache is shared with other tools and left alone.
+/// Delete the models Sunoto downloaded and no longer uses (v3: its bf16
+/// copy and, on release installs, the original in Sunoto's own Hugging Face
+/// cache). Only folders under Sunoto's Application Support folder; the
+/// shared ~/.cache/huggingface is left alone.
 fn remove_retired_models(dry_run: bool) {
     // The model folder is <Application Support>/sunoto/models/<name>.
     if let Some(base) = settings::local_parakeet_model_dir().and_then(|dir| dir.parent()?.parent().map(Path::to_path_buf)) {
@@ -1610,16 +1611,19 @@ mod tests {
     #[test]
     fn retired_model_copies_are_deleted_and_others_kept() {
         let base = std::env::temp_dir().join(format!("sunoto-retired-{}", std::process::id()));
-        let old = base.join(settings::RETIRED_PARAKEET_MLX_MODELS[0]);
+        let old_copy = base.join("models/parakeet-tdt-0.6b-v3-bf16");
+        let old_hub = base.join("hf/hub/models--mlx-community--parakeet-tdt-0.6b-v3");
         let current = base.join("models/parakeet-tdt-0.6b-v2-bf16");
-        std::fs::create_dir_all(&old).unwrap();
-        std::fs::create_dir_all(&current).unwrap();
-        std::fs::write(old.join("model.safetensors"), "x").unwrap();
+        let other_hub = base.join("hf/hub/models--mlx-community--parakeet-tdt-0.6b-v2");
+        for dir in [&old_copy, &old_hub, &current, &other_hub] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("model.safetensors"), "x").unwrap();
+        }
         remove_retired_models_in(&base, true);
-        assert!(old.exists(), "a dry run deletes nothing");
+        assert!(old_copy.exists() && old_hub.exists(), "a dry run deletes nothing");
         remove_retired_models_in(&base, false);
-        assert!(!old.exists());
-        assert!(current.exists());
+        assert!(!old_copy.exists() && !old_hub.exists());
+        assert!(current.exists() && other_hub.exists());
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

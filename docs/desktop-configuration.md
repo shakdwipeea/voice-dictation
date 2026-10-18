@@ -405,7 +405,10 @@ Sunoto's bf16 copy of `mlx-community/parakeet-tdt-0.6b-v2` (1.24 GB instead
 of 2.5 GB, from the `model-parakeet-tdt-0.6b-v2-bf16` GitHub release,
 checksums verified) into
 `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v2-bf16`, and
-deletes the copy of the earlier v3 model. parakeet-mlx casts the float32
+deletes what it downloaded for the earlier v3 model: its bf16 copy and, on
+release installs, the original in Sunoto's own Hugging Face cache
+(`~/Library/Application Support/sunoto/hf`). The shared
+`~/.cache/huggingface` is never touched. parakeet-mlx casts the float32
 original to bf16 on load, so the weights are identical. The app uses that
 folder when it is there and the Hugging Face original otherwise; an install
 that already has the original keeps it. `asr_model` overrides both (for
