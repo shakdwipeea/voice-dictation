@@ -163,6 +163,11 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
             println!("Sunoto {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        // `sunoto` with no arguments runs this (see setup's command script).
+        "--help" | "-h" | "help" => {
+            print!("{USAGE}");
+            Ok(())
+        }
         "check" => check(rest),
         "selftest" if rest.first().is_some_and(|arg| arg == "hotkey") => {
             selftest_hotkey(&rest[1..])

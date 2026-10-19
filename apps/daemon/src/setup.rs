@@ -13,8 +13,10 @@
 //! delivery, microphone capture, model load), and setup prints them.
 
 use std::error::Error;
+use std::ffi::{CString, c_char, c_int};
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -388,6 +390,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         register_login_item(&installed)?;
         ok(&format!("{APP_NAME} registered in Login Items"));
     }
+    // On updates too: that is how installs from before the command get it.
+    install_command(&home);
     fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
     // An update keeps the log, so the old version's lines about it stay.
     if !args.update {
@@ -852,7 +856,8 @@ pub fn follow_log() -> Result<(), Box<dyn Error>> {
 }
 
 /// `sunoto-daemon uninstall`: stop the app, drop the Login Item, remove the
-/// bundle. Config, logs, and downloaded models stay unless `--purge`.
+/// bundle and the `sunoto` command. Config, logs, and downloaded models stay
+/// unless `--purge`.
 const UNINSTALL_USAGE: &str = "usage: sunoto-daemon uninstall [--purge]
 
   --purge   also remove settings, logs, and downloaded models
@@ -896,6 +901,9 @@ end tell"#
         ok(&format!("removed {}", installed.display()));
     } else {
         note(&format!("{} was not installed", installed.display()));
+    }
+    for command in remove_own_commands(&command_dirs(&home)) {
+        ok(&format!("removed {}", command.display()));
     }
     ok("Login Item removed");
     if purge {
@@ -1357,6 +1365,247 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The `sunoto` command: a script that runs the installed app's daemon, so
+/// `sunoto status` works in a new terminal. A script, not a symlink, so the
+/// daemon still runs from the bundle path that `app_bundle_root` and the
+/// updater read. It finds the app through `$HOME`, so updates keep it working.
+const COMMAND_NAME: &str = "sunoto";
+/// Marks the `sunoto` setup wrote: setup replaces and uninstall removes only
+/// a file carrying it. Never change it; other versions look for it.
+const COMMAND_MARKER: &str = "# sunoto command, installed by Sunoto setup";
+
+fn command_script() -> String {
+    format!(
+        r#"#!/bin/sh
+{COMMAND_MARKER}; `sunoto uninstall` removes it.
+app="$HOME/Applications/{APP_NAME}.app/Contents/MacOS/sunoto-daemon"
+if [ ! -x "$app" ]; then
+    echo "sunoto: {APP_NAME} is not installed in ~/Applications" >&2
+    exit 1
+fi
+# With no arguments the daemon would start as the app: show the help instead.
+[ "$#" -gt 0 ] || set -- --help
+exec "$app" "$@"
+"#
+    )
+}
+
+/// Where setup may put the command, best first. Homebrew's folder and
+/// /usr/local/bin are on a terminal's PATH and need no sudo when the user
+/// owns them; ~/.local/bin, the last, is the fallback and is created if
+/// missing.
+fn command_dirs(home: &Path) -> [PathBuf; 3] {
+    [
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        home.join(".local/bin"),
+    ]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Existing {
+    Absent,
+    Ours,
+    Foreign,
+}
+
+/// What `dir/sunoto` is. A symlink or anything without the marker belongs
+/// to someone else, as does a file that cannot be read. Nothing that cannot
+/// even be looked up (a PATH entry that is a file or a folder closed to
+/// this user) can be run or replaced, so it counts as absent.
+fn existing_command(dir: &Path) -> Existing {
+    let path = dir.join(COMMAND_NAME);
+    match fs::symlink_metadata(&path) {
+        Err(_) => Existing::Absent,
+        Ok(meta)
+            if meta.is_file()
+                && fs::read(&path).is_ok_and(|bytes| {
+                    String::from_utf8_lossy(&bytes).contains(COMMAND_MARKER)
+                }) =>
+        {
+            Existing::Ours
+        }
+        _ => Existing::Foreign,
+    }
+}
+
+unsafe extern "C" {
+    fn access(path: *const c_char, mode: c_int) -> c_int;
+}
+
+fn writable_dir(dir: &Path) -> bool {
+    const W_OK: c_int = 2;
+    let Ok(path) = CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a valid NUL-terminated string for the call.
+    dir.is_dir() && unsafe { access(path.as_ptr(), W_OK) } == 0
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CommandPlan {
+    /// Write the command in this folder, or refresh it there.
+    Install(PathBuf),
+    /// Someone else's `sunoto` is here, first on PATH or in the only place
+    /// left: leave it, and install nothing.
+    Taken(PathBuf),
+}
+
+/// Where the command goes, given the PATH folders in order and `dirs`
+/// (`command_dirs`). The first `sunoto` on PATH decides when there is one:
+/// ours is refreshed in place, and beside anyone else's ours would either
+/// never run or hide theirs. Otherwise the first of `dirs` that is on PATH
+/// and writable; otherwise wherever ours already is; otherwise the fallback.
+fn plan_command(
+    path: &[PathBuf],
+    dirs: &[PathBuf],
+    existing: impl Fn(&Path) -> Existing,
+    writable: impl Fn(&Path) -> bool,
+) -> CommandPlan {
+    for dir in path {
+        match existing(dir) {
+            Existing::Ours => return CommandPlan::Install(dir.clone()),
+            Existing::Foreign => return CommandPlan::Taken(dir.clone()),
+            Existing::Absent => {}
+        }
+    }
+    if let Some(dir) = dirs.iter().find(|dir| path.contains(dir) && writable(dir)) {
+        return CommandPlan::Install(dir.clone());
+    }
+    if let Some(dir) = dirs.iter().find(|dir| existing(dir) == Existing::Ours) {
+        return CommandPlan::Install(dir.clone());
+    }
+    let fallback = dirs.last().expect("at least one folder");
+    match existing(fallback) {
+        Existing::Foreign => CommandPlan::Taken(fallback.clone()),
+        _ => CommandPlan::Install(fallback.clone()),
+    }
+}
+
+/// The PATH a new terminal gets, from the user's shell. Asked only with no
+/// terminal attached, as in an update the app started: launchd's short PATH
+/// lacks Homebrew. Interactive as well as login, because PATH is often set
+/// in ~/.zshrc; with a terminal, an interactive shell could take it over.
+fn shell_path() -> Vec<PathBuf> {
+    const MARK: &str = "__SUNOTO_PATH__";
+    if fs::File::open("/dev/tty").is_ok() {
+        return Vec::new();
+    }
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|shell| shell.starts_with('/'))
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    let Ok(mut child) = Command::new(shell)
+        .args(["-i", "-l", "-c"])
+        .arg(format!("printf '\\n{MARK}%s\\n' \"$PATH\""))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Vec::new();
+    }
+    let mut output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut output);
+    }
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(MARK))
+        .map(|value| std::env::split_paths(value).collect())
+        .unwrap_or_default()
+}
+
+/// Install or refresh the `sunoto` command. Never fails setup: the app
+/// works without it, and a failed update would be rolled back.
+fn install_command(home: &Path) {
+    let dirs = command_dirs(home);
+    let mut path: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    path.retain(|dir| dir.is_absolute());
+    let mut plan = plan_command(&path, &dirs, existing_command, writable_dir);
+    if matches!(&plan, CommandPlan::Install(dir) if !path.contains(dir)) {
+        path.extend(shell_path().into_iter().filter(|dir| dir.is_absolute()));
+        plan = plan_command(&path, &dirs, existing_command, writable_dir);
+    }
+    let dir = match plan {
+        CommandPlan::Install(dir) => dir,
+        CommandPlan::Taken(dir) => {
+            warn(&format!(
+                "{} was not installed by Sunoto, so it was left alone and no sunoto command was added; Sunoto's commands run as {}/Applications/{APP_NAME}.app/Contents/MacOS/sunoto-daemon",
+                dir.join(COMMAND_NAME).display(),
+                home.display()
+            ));
+            return;
+        }
+    };
+    if let Err(error) = write_command(&dir) {
+        warn(&format!(
+            "could not install the sunoto command in {}: {error}",
+            dir.display()
+        ));
+        return;
+    }
+    remove_own_commands(dirs.iter().filter(|other| **other != dir));
+    ok(&format!(
+        "command: sunoto ({})",
+        dir.join(COMMAND_NAME).display()
+    ));
+    if !path.contains(&dir) {
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        let profile = match Path::new(&shell).file_name().and_then(|name| name.to_str()) {
+            Some("bash") => "~/.bash_profile",
+            _ => "~/.zshrc",
+        };
+        let entry = dir.strip_prefix(home).map_or_else(
+            |_| dir.display().to_string(),
+            |rest| format!("$HOME/{}", rest.display()),
+        );
+        warn(&format!(
+            "{} is not on your PATH. To use `sunoto`, run this once, then open a new terminal: echo 'export PATH=\"{entry}:$PATH\"' >> {profile}",
+            dir.display()
+        ));
+    }
+}
+
+/// Write the command into `dir` (created if missing) in one rename, so a
+/// terminal never runs half a script.
+fn write_command(dir: &Path) -> std::io::Result<()> {
+    let target = dir.join(COMMAND_NAME);
+    let script = command_script();
+    if fs::read_to_string(&target).is_ok_and(|current| current == script) {
+        return Ok(());
+    }
+    fs::create_dir_all(dir)?;
+    let partial = dir.join(format!(".{COMMAND_NAME}.{}", std::process::id()));
+    fs::write(&partial, &script)?;
+    fs::set_permissions(&partial, fs::Permissions::from_mode(0o755))
+        .and_then(|()| fs::rename(&partial, &target))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&partial);
+        })
+}
+
+/// Delete the `sunoto` setup wrote in each of `dirs`, never anyone else's.
+/// Returns what was removed.
+fn remove_own_commands<'a>(dirs: impl IntoIterator<Item = &'a PathBuf>) -> Vec<PathBuf> {
+    dirs.into_iter()
+        .filter(|dir| existing_command(dir) == Existing::Ours)
+        .map(|dir| dir.join(COMMAND_NAME))
+        .filter(|command| fs::remove_file(command).is_ok())
+        .collect()
+}
+
 /// Ask the running daemon for its health once. `None` while the socket is
 /// not there yet or the daemon is not answering.
 pub fn query_status() -> Option<serde_json::Value> {
@@ -1670,6 +1919,170 @@ mod tests {
             Some("B7B77719D4A88C3F509F8539561F6DC096CBB22A")
         );
         assert_eq!(parse_signing_identity("0 valid identities found\n"), None);
+    }
+
+    /// `plan_command` over made-up folders: which hold a `sunoto` (ours or
+    /// not) and which are writable.
+    fn plan(path: &[&str], commands: &[(&str, Existing)], writable: &[&str]) -> CommandPlan {
+        let path: Vec<PathBuf> = path.iter().map(PathBuf::from).collect();
+        let dirs = command_dirs(Path::new("/Users/u"));
+        let existing = |dir: &Path| {
+            commands
+                .iter()
+                .find(|(at, _)| Path::new(at) == dir)
+                .map_or(Existing::Absent, |(_, existing)| *existing)
+        };
+        plan_command(&path, &dirs, existing, |dir: &Path| {
+            writable.iter().any(|at| Path::new(at) == dir)
+        })
+    }
+
+    fn install(dir: &str) -> CommandPlan {
+        CommandPlan::Install(PathBuf::from(dir))
+    }
+
+    #[test]
+    fn the_command_goes_to_the_first_writable_folder_on_path() {
+        let brew = "/opt/homebrew/bin";
+        let local = "/usr/local/bin";
+        let home = "/Users/u/.local/bin";
+        let system = ["/usr/bin", "/bin"];
+        // Homebrew's folder first, then /usr/local/bin, when on PATH and ours.
+        assert_eq!(
+            plan(&[local, brew, system[0]], &[], &[brew, local]),
+            install(brew)
+        );
+        assert_eq!(plan(&[local, brew], &[], &[local]), install(local));
+        // Writable but not on PATH does not count.
+        assert_eq!(plan(&[local], &[], &[brew]), install(home));
+        // ~/.local/bin when it is on PATH and nothing better is.
+        assert_eq!(plan(&[home, local], &[], &[home]), install(home));
+        // Nothing usable: the fallback, which the caller reports off PATH.
+        assert_eq!(plan(&system, &[], &[]), install(home));
+    }
+
+    #[test]
+    fn the_command_stays_where_setup_put_it() {
+        let brew = "/opt/homebrew/bin";
+        let local = "/usr/local/bin";
+        let home = "/Users/u/.local/bin";
+        // Ours first on PATH is refreshed in place, even before Homebrew's.
+        assert_eq!(
+            plan(&[home, brew], &[(home, Existing::Ours)], &[brew, home]),
+            install(home)
+        );
+        // Ours off PATH stays put rather than moving to the fallback, as
+        // in an update run with launchd's PATH that the shell could not fix.
+        assert_eq!(
+            plan(&["/usr/bin"], &[(local, Existing::Ours)], &[]),
+            install(local)
+        );
+        // A better folder on PATH wins over ours off PATH; the caller then
+        // removes the old one.
+        assert_eq!(
+            plan(&[brew], &[(home, Existing::Ours)], &[brew, home]),
+            install(brew)
+        );
+    }
+
+    #[test]
+    fn someone_elses_sunoto_is_never_replaced() {
+        let brew = "/opt/homebrew/bin";
+        let local = "/usr/local/bin";
+        let home = "/Users/u/.local/bin";
+        // First on PATH: ours would never run, or would hide it.
+        assert_eq!(
+            plan(&[brew, local], &[(brew, Existing::Foreign)], &[brew, local]),
+            CommandPlan::Taken(PathBuf::from(brew))
+        );
+        assert_eq!(
+            plan(
+                &["/Users/u/bin", brew],
+                &[("/Users/u/bin", Existing::Foreign)],
+                &[brew]
+            ),
+            CommandPlan::Taken(PathBuf::from("/Users/u/bin"))
+        );
+        // Off PATH it is skipped like any folder off PATH.
+        assert_eq!(
+            plan(&[local], &[(brew, Existing::Foreign)], &[brew, local]),
+            install(local)
+        );
+        // In the fallback, with nothing else left: nothing is installed.
+        assert_eq!(
+            plan(&["/usr/bin"], &[(home, Existing::Foreign)], &[home]),
+            CommandPlan::Taken(PathBuf::from(home))
+        );
+    }
+
+    #[test]
+    fn only_setups_own_command_is_recognised_and_removed() {
+        let root = std::env::temp_dir().join(format!("sunoto-command-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (ours, theirs, linked, missing) = (
+            root.join("ours"),
+            root.join("theirs"),
+            root.join("linked"),
+            root.join("missing/bin"),
+        );
+        for dir in [&ours, &theirs, &linked] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        write_command(&ours).unwrap();
+        write_command(&missing).unwrap();
+        fs::write(
+            theirs.join(COMMAND_NAME),
+            "#!/bin/sh\necho another sunoto\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(ours.join(COMMAND_NAME), linked.join(COMMAND_NAME)).unwrap();
+
+        let script = ours.join(COMMAND_NAME);
+        assert_eq!(fs::read_to_string(&script).unwrap(), command_script());
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(existing_command(&ours), Existing::Ours);
+        assert_eq!(existing_command(&missing), Existing::Ours);
+        assert_eq!(existing_command(&theirs), Existing::Foreign);
+        assert_eq!(existing_command(&linked), Existing::Foreign);
+        assert_eq!(existing_command(&root), Existing::Absent);
+        // A PATH entry that is a file holds no command.
+        assert_eq!(
+            existing_command(&theirs.join(COMMAND_NAME)),
+            Existing::Absent
+        );
+
+        let dirs = [
+            ours.clone(),
+            theirs.clone(),
+            linked.clone(),
+            missing.clone(),
+            root.clone(),
+        ];
+        let removed = remove_own_commands(&dirs);
+        assert_eq!(
+            removed,
+            vec![ours.join(COMMAND_NAME), missing.join(COMMAND_NAME)]
+        );
+        assert_eq!(existing_command(&ours), Existing::Absent);
+        assert_eq!(
+            fs::read_to_string(theirs.join(COMMAND_NAME)).unwrap(),
+            "#!/bin/sh\necho another sunoto\n"
+        );
+        assert!(fs::symlink_metadata(linked.join(COMMAND_NAME)).is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_command_runs_the_installed_app_and_never_starts_it_bare() {
+        let script = command_script();
+        assert!(script.starts_with("#!/bin/sh\n"));
+        assert!(script.contains(COMMAND_MARKER));
+        assert!(script.contains(r#""$HOME/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon""#));
+        assert!(script.contains(r#"[ "$#" -gt 0 ] || set -- --help"#));
+        assert!(script.trim_end().ends_with(r#"exec "$app" "$@""#));
     }
 
     #[test]
