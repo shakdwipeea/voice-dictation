@@ -1,6 +1,7 @@
 // Draw Sunoto's app icon (a white voice wave on a warm-to-violet rounded
 // square, on the macOS icon grid) at every size macOS asks for, and pack it
-// into an .icns with iconutil. Run from the repository root:
+// into an .icns with iconutil. Also writes the README's copy,
+// docs/assets/sunoto-icon.png. Run from the repository root:
 //
 //   swift tools/ui/make-app-icon.swift [packaging/macos/AppIcon.icns]
 //
@@ -80,3 +81,8 @@ guard iconutil.terminationStatus == 0 else {
     exit(1)
 }
 print("wrote \(output.path)")
+
+// GitHub cannot show an .icns; the README shows this at 128 points.
+let readmeIcon = URL(fileURLWithPath: "docs/assets/sunoto-icon.png")
+try png(pixels: 256).write(to: readmeIcon)
+print("wrote \(readmeIcon.path)")

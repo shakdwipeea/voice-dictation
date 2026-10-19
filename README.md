@@ -1,8 +1,14 @@
-# Sunoto
+<p align="center">
+  <img src="docs/assets/sunoto-icon.png" width="128" height="128" alt="Sunoto app icon: a white voice wave on a warm-to-violet rounded square">
+</p>
 
-Local voice dictation for macOS and Linux. Tap **Right Option**, speak, and
-tap it again: your words are pasted wherever the cursor is. Speech
-recognition runs on your machine, with no cloud service or account.
+<h1 align="center">Sunoto</h1>
+
+<p align="center">Local voice dictation for macOS and Linux.</p>
+
+Tap **Right Option**, speak, and tap it again: your words are pasted wherever
+the cursor is. Speech recognition runs on your machine, with no cloud service
+or account.
 
 ## Install (macOS, Apple silicon)
 
