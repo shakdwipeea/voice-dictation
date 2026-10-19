@@ -9,6 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use sunoto_ipc::RecentDictation;
 
 use crate::history::{dictations_dir, format_utc, history_dir, parse_day_file};
 use crate::settings::{self, Settings};
@@ -265,7 +266,36 @@ fn forget(dir: &Path, id: &str) -> io::Result<bool> {
 }
 
 /// Delete every day file; returns how many.
-fn clear(dir: &Path) -> io::Result<usize> {
+/// The newest `count` dictations that kept their pasted text, newest first.
+/// Reads day files from the newest back and stops once it has enough.
+pub(crate) fn recent_dictations(dir: &Path, count: usize) -> io::Result<Vec<RecentDictation>> {
+    let mut recent = Vec::new();
+    for file in day_files(dir)?.iter().rev() {
+        for line in fs::read_to_string(file)?.lines().rev() {
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let text = value
+                .pointer("/text/inserted")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
+            let at_ms = value.get("ts").and_then(Value::as_u64);
+            if let (true, Some(text), Some(at_ms)) = (is_dictation(&value), text, at_ms) {
+                recent.push(RecentDictation {
+                    text: text.to_string(),
+                    at_ms,
+                });
+                if recent.len() == count {
+                    return Ok(recent);
+                }
+            }
+        }
+    }
+    Ok(recent)
+}
+
+pub(crate) fn clear(dir: &Path) -> io::Result<usize> {
     let files = day_files(dir)?;
     for file in &files {
         fs::remove_file(file)?;
@@ -297,6 +327,49 @@ mod tests {
             "timing_ms": {"release_to_insertion": 284},
         })
         .to_string()
+    }
+
+    #[test]
+    fn recent_dictations_are_newest_first_and_skip_those_without_text() {
+        let dir = temp_dir("recent");
+        let redacted = r#"{"v":1,"type":"dictation","id":"r","ts":5,"status":"secure_field","redacted":true,"text":{}}"#;
+        let note = r#"{"type":"correction","id":"b","text":"fixed"}"#;
+        fs::write(
+            dir.join("2026-10-15.jsonl"),
+            format!("{}\n{}\n", line("a", 1, "first"), line("b", 2, "second")),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("2026-10-16.jsonl"),
+            format!(
+                "{}\n{redacted}\n{note}\n{}\npartial line",
+                line("c", 3, "third"),
+                line("d", 4, "  ")
+            ),
+        )
+        .unwrap();
+        let texts = |count| {
+            recent_dictations(&dir, count)
+                .unwrap()
+                .into_iter()
+                .map(|entry| (entry.text, entry.at_ms))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            texts(10),
+            vec![
+                ("third".into(), 3),
+                ("second".into(), 2),
+                ("first".into(), 1)
+            ]
+        );
+        assert_eq!(texts(2), vec![("third".into(), 3), ("second".into(), 2)]);
+        assert!(
+            recent_dictations(&dir.join("missing"), 10)
+                .unwrap()
+                .is_empty()
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

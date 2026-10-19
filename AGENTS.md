@@ -322,6 +322,15 @@ muted; check System Settings → Sound → Input.
   a start hint that fades once you start talking (3 s at most). After the
   second tap it shows words only if the wait passes 1.5 s, and a check mark
   confirms the paste.
+- The menu bar item (`MenuBarController` in the overlay, a waveform
+  template image) builds its menu from the daemon's `menu` message
+  (`apps/daemon/src/menu_bar.rs`, sent only when its content changes):
+  status, Recent Dictations (the last 10 kept in history; a click copies;
+  Clear History…), Check for Updates… (`update::spawn_check_now`, answered
+  with an `alert`) and Install Updates Automatically (writes `auto_update`,
+  applied live through `update::ModeSwitch`). The overlay never logs or
+  stores the dictation text it is sent. The app icon comes from
+  `tools/ui/make-app-icon.swift` → `packaging/macos/AppIcon.icns`.
 - On a Mac with a notch the pill is an island grown out of the notch
   (`IslandView`, `overlay_style: "auto"`, the default; design A of
   `docs/notch-island-designs.html`): the notch grows a short pill under the

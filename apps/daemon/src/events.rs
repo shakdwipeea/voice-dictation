@@ -47,6 +47,9 @@ pub enum DaemonEvent {
     },
     /// A newer release, verified and unpacked, waiting for an idle moment.
     UpdateReady(crate::update::Staged),
+    /// The answer to Check for Updates in the menu bar: a newer release,
+    /// downloaded and verified, or None when this is the newest.
+    UpdateChecked(Result<Option<crate::update::Staged>, String>),
     /// The background fetch of the speech model's copy ended.
     SpeechModelFetched(Result<(), String>),
     Fatal(String),

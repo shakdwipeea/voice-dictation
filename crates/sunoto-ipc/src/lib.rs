@@ -8,7 +8,10 @@ use std::thread::JoinHandle;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SidecarRequest {
     Health,
-    StartSession { session_id: u64, profile_ms: u16 },
+    StartSession {
+        session_id: u64,
+        profile_ms: u16,
+    },
     /// Words to favour in this dictation, strongest source first (see the
     /// daemon's `vocabulary` module). Sent once, soon after StartSession;
     /// backends without word boosting ignore it.
@@ -18,9 +21,16 @@ pub enum SidecarRequest {
         project: Vec<String>,
         everywhere: Vec<String>,
     },
-    AudioChunk { session_id: u64, samples: Vec<i16> },
-    FinishSession { session_id: u64 },
-    CancelSession { session_id: u64 },
+    AudioChunk {
+        session_id: u64,
+        samples: Vec<i16>,
+    },
+    FinishSession {
+        session_id: u64,
+    },
+    CancelSession {
+        session_id: u64,
+    },
 }
 
 fn is_false(value: &bool) -> bool {
@@ -83,7 +93,52 @@ pub enum OverlayRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shortcut: Option<String>,
     },
+    /// What the menu bar item shows (macOS overlay only). Sent when the
+    /// overlay comes up and whenever any of it changes; the menu is built
+    /// from the latest one when it opens.
+    Menu {
+        /// "Sunoto is ready", or what it is waiting for.
+        status: String,
+        /// The status is ready: a tap dictates.
+        ready: bool,
+        /// How to dictate: "Tap Right Option to dictate".
+        hint: String,
+        version: String,
+        /// Updates install by themselves (`auto_update` is "install").
+        auto_update: bool,
+        /// Why this copy cannot update itself, whatever the switch says (a
+        /// build from source). The switch is greyed out while set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_blocked: Option<String>,
+        /// A line under Check for Updates: a downloaded update waiting for
+        /// an idle moment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_note: Option<String>,
+        /// Check for Updates is running.
+        #[serde(default, skip_serializing_if = "is_false")]
+        checking: bool,
+        history_enabled: bool,
+        /// The newest dictations kept in history, newest first.
+        recent: Vec<RecentDictation>,
+    },
+    /// A message box from the menu bar item, such as the answer to Check
+    /// for Updates. With `offer_install`, its buttons are Install Now and
+    /// Later; Install Now answers `install_update`.
+    Alert {
+        title: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        offer_install: bool,
+    },
     Shutdown,
+}
+
+/// One dictation in the menu bar's Recent Dictations: the text that was
+/// pasted, and when (milliseconds since the Unix epoch).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentDictation {
+    pub text: String,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +190,16 @@ pub enum SidecarEvent {
     },
     /// The user confirmed every onboarding row is granted.
     OnboardingDone,
+    /// Menu bar: Check for Updates.
+    CheckUpdates,
+    /// Menu bar: Install Now, in the alert offering a downloaded update.
+    InstallUpdate,
+    /// Menu bar: the Install Updates Automatically switch.
+    SetAutoUpdate {
+        on: bool,
+    },
+    /// Menu bar: Clear History, after the user confirmed it.
+    ClearHistory,
 }
 
 /// Everything the reader thread can deliver. The sidecar streams events on its
@@ -428,6 +493,54 @@ mod tests {
             serde_json::to_string(&SidecarEvent::OnboardingDone).unwrap(),
             r#"{"type":"onboarding_done"}"#
         );
+    }
+
+    #[test]
+    fn menu_bar_protocol_is_typed_json() {
+        let menu = OverlayRequest::Menu {
+            status: "Sunoto is ready".into(),
+            ready: true,
+            hint: "Tap Right Option to dictate".into(),
+            version: "0.1.12".into(),
+            auto_update: true,
+            update_blocked: None,
+            update_note: None,
+            checking: false,
+            history_enabled: true,
+            recent: vec![RecentDictation {
+                text: "hello".into(),
+                at_ms: 1_760_000_000_000,
+            }],
+        };
+        let encoded = serde_json::to_string(&menu).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"menu","status":"Sunoto is ready","ready":true,"hint":"Tap Right Option to dictate","version":"0.1.12","auto_update":true,"history_enabled":true,"recent":[{"text":"hello","at_ms":1760000000000}]}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
+            menu
+        );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::Alert {
+                title: "Sunoto 0.1.13 is ready to install".into(),
+                text: "Sunoto restarts in a few seconds.".into(),
+                offer_install: true,
+            })
+            .unwrap(),
+            r#"{"type":"alert","title":"Sunoto 0.1.13 is ready to install","text":"Sunoto restarts in a few seconds.","offer_install":true}"#
+        );
+        for (line, event) in [
+            (r#"{"type":"check_updates"}"#, SidecarEvent::CheckUpdates),
+            (r#"{"type":"install_update"}"#, SidecarEvent::InstallUpdate),
+            (
+                r#"{"type":"set_auto_update","on":false}"#,
+                SidecarEvent::SetAutoUpdate { on: false },
+            ),
+            (r#"{"type":"clear_history"}"#, SidecarEvent::ClearHistory),
+        ] {
+            assert_eq!(serde_json::from_str::<SidecarEvent>(line).unwrap(), event);
+        }
     }
 
     #[test]

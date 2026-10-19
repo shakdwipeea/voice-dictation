@@ -17,7 +17,10 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::Sender;
+use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 use minisign_verify::{PublicKey, Signature};
@@ -87,6 +90,44 @@ impl Mode {
             _ => Self::Install,
         }
     }
+
+    pub fn setting(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Notify => "notify",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// The `auto_update` setting as the running app holds it, shared with the
+/// checker thread so the menu bar switch applies without a restart.
+#[derive(Clone)]
+pub struct ModeSwitch(Arc<AtomicU8>);
+
+impl ModeSwitch {
+    pub fn new(mode: Mode) -> Self {
+        let switch = Self(Arc::new(AtomicU8::new(0)));
+        switch.set(mode);
+        switch
+    }
+
+    pub fn get(&self) -> Mode {
+        match self.0.load(Ordering::SeqCst) {
+            0 => Mode::Install,
+            1 => Mode::Notify,
+            _ => Mode::Off,
+        }
+    }
+
+    pub fn set(&self, mode: Mode) {
+        let value = match mode {
+            Mode::Install => 0,
+            Mode::Notify => 1,
+            Mode::Off => 2,
+        };
+        self.0.store(value, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -135,24 +176,33 @@ pub fn idle_before_install() -> Duration {
 
 /// Why this daemon will not update itself, or None when it will.
 pub fn blocker(mode: Mode) -> Option<String> {
+    match install_blocker() {
+        Some(reason) => Some(format!("off ({reason})")),
+        None => {
+            (mode == Mode::Off).then(|| "off (auto_update is \"off\" in the config)".to_string())
+        }
+    }
+}
+
+/// Why this copy of the app cannot update itself whatever the setting, in
+/// words the menu bar can show, or None when it can.
+pub fn install_blocker() -> Option<String> {
     if !cfg!(target_os = "macos") {
         return Some("automatic updates are macOS-only".to_string());
     }
-    if mode == Mode::Off {
-        return Some("off (auto_update is \"off\" in the config)".to_string());
-    }
     let Some(bundle) = setup::app_bundle_root() else {
-        return Some("off (not running from Sunoto.app)".to_string());
+        return Some("this copy of Sunoto is not running from Sunoto.app".to_string());
     };
     if !setup::bundle_is_prebuilt(&bundle) {
         return Some(
-            "off (built from a checkout; update with git pull and install-macos.sh)".to_string(),
+            "this copy of Sunoto was built from source; update it with git pull and install-macos.sh"
+                .to_string(),
         );
     }
     let installed = installed_app().ok()?;
     if bundle.canonicalize().ok() != installed.canonicalize().ok() {
         return Some(format!(
-            "off (only {} updates itself, not {})",
+            "only {} updates itself, not {}",
             installed.display(),
             bundle.display()
         ));
@@ -373,29 +423,63 @@ fn record_outcome(version: &str, installed: bool) {
     save_state(&state);
 }
 
-/// Look for a newer release a minute after launch and then daily. In install
-/// mode a verified, unpacked release goes to the daemon loop as
-/// `DaemonEvent::UpdateReady`; in notify mode it is only logged.
-pub fn spawn_checker(mode: Mode, events: Sender<DaemonEvent>) {
+/// Look for a newer release a minute after launch and then daily, as the
+/// switch says at each check. In install mode a verified, unpacked release
+/// goes to the daemon loop as `DaemonEvent::UpdateReady`; in notify mode it
+/// is only logged; off skips the check. Unparking the returned thread checks
+/// right away (the menu bar switch turned on).
+pub fn spawn_checker(mode: ModeSwitch, events: Sender<DaemonEvent>) -> Option<Thread> {
     let spawned = std::thread::Builder::new()
         .name("sunoto-update".to_string())
         .spawn(move || {
-            std::thread::sleep(FIRST_CHECK_AFTER);
+            std::thread::park_timeout(FIRST_CHECK_AFTER);
             loop {
-                match check(mode) {
-                    Ok(Some(staged)) => {
-                        let _ = events.send(DaemonEvent::UpdateReady(staged));
-                        return;
+                let current = mode.get();
+                if current != Mode::Off {
+                    match check(current) {
+                        Ok(Some(staged)) => {
+                            let _ = events.send(DaemonEvent::UpdateReady(staged));
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(error) => logging::warn(&format!("update check failed: {error}")),
                     }
-                    Ok(None) => {}
-                    Err(error) => logging::warn(&format!("update check failed: {error}")),
                 }
-                std::thread::sleep(CHECK_EVERY);
+                std::thread::park_timeout(CHECK_EVERY);
             }
         });
-    if let Err(error) = spawned {
-        logging::warn(&format!("could not start the update checker: {error}"));
+    match spawned {
+        Ok(handle) => Some(handle.thread().clone()),
+        Err(error) => {
+            logging::warn(&format!("could not start the update checker: {error}"));
+            None
+        }
     }
+}
+
+/// Check for Updates in the menu bar: look now, on a thread, and report to
+/// the loop as `DaemonEvent::UpdateChecked`. Like `sunoto update`, a version
+/// that failed to install before is offered again.
+pub fn spawn_check_now(events: Sender<DaemonEvent>) {
+    let spawned = std::thread::Builder::new()
+        .name("sunoto-update-now".to_string())
+        .spawn(move || {
+            let result = check_now().map_err(|error| error.to_string());
+            let _ = events.send(DaemonEvent::UpdateChecked(result));
+        });
+    if let Err(error) = spawned {
+        logging::warn(&format!("could not start the update check: {error}"));
+    }
+}
+
+fn check_now() -> Result<Option<Staged>, Box<dyn Error>> {
+    let release = latest_release()?;
+    if release.version <= Version::current() {
+        return Ok(None);
+    }
+    setup::require_installed_identity(&home()?)?;
+    logging::info(&format!("downloading Sunoto {}", release.version));
+    Ok(Some(prepare(&release, false)?))
 }
 
 fn check(mode: Mode) -> Result<Option<Staged>, Box<dyn Error>> {
@@ -643,6 +727,20 @@ GZjnGLtH1u9O3CeHnq8sQ0Huk70gmAHBZyMayPbD627h684+JYCSggCGC9JtsB6Dq/1k8ynfVE+U79zQ
         assert_eq!(Mode::from_setting("notify"), Mode::Notify);
         assert_eq!(Mode::from_setting("off"), Mode::Off);
         assert!(blocker(Mode::Off).is_some());
+        for mode in [Mode::Install, Mode::Notify, Mode::Off] {
+            assert_eq!(Mode::from_setting(mode.setting()), mode);
+        }
+    }
+
+    #[test]
+    fn the_switch_is_shared_with_the_checker() {
+        let switch = ModeSwitch::new(Mode::Off);
+        let checker_view = switch.clone();
+        assert_eq!(checker_view.get(), Mode::Off);
+        switch.set(Mode::Install);
+        assert_eq!(checker_view.get(), Mode::Install);
+        switch.set(Mode::Notify);
+        assert_eq!(checker_view.get(), Mode::Notify);
     }
 
     #[test]

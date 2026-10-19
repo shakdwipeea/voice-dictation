@@ -10,6 +10,7 @@ mod insertion;
 mod llm_polish;
 mod llm_report;
 mod logging;
+mod menu_bar;
 mod overlay;
 mod session;
 mod settings;

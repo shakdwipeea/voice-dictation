@@ -7,6 +7,7 @@
 //! record to a writer thread with `try_send`, so saving never delays a
 //! paste; when the writer falls behind, the record is dropped instead.
 
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -15,6 +16,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use sunoto_ipc::RecentDictation;
 use sunoto_polish::{StageTrace, StyleProfile};
 
 use crate::logging;
@@ -23,6 +25,8 @@ use crate::settings::Settings;
 
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 const CHANNEL_CAPACITY: usize = 16;
+/// Dictations in the menu bar's Recent Dictations.
+pub(crate) const RECENT_COUNT: usize = 10;
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
@@ -298,6 +302,10 @@ pub(crate) struct HistoryRecorder {
     asr: Asr,
     draft: Option<Draft>,
     dropped: u64,
+    /// The newest dictations that kept their text, newest first, for the
+    /// menu bar.
+    recent: VecDeque<RecentDictation>,
+    recent_changed: bool,
 }
 
 impl HistoryRecorder {
@@ -318,6 +326,12 @@ impl HistoryRecorder {
                     dictations_dir(&root).display()
                 ));
                 recorder.writer = Some(writer);
+                match crate::history_cli::recent_dictations(&dictations_dir(&root), RECENT_COUNT) {
+                    Ok(recent) => recorder.recent = recent.into(),
+                    Err(error) => logging::warn(&format!(
+                        "dictation history: cannot read recent dictations: {error}"
+                    )),
+                }
             }
             Err(error) => logging::warn(&format!(
                 "dictation history disabled: cannot use {}: {error}",
@@ -348,11 +362,31 @@ impl HistoryRecorder {
             },
             draft: None,
             dropped: 0,
+            recent: VecDeque::new(),
+            recent_changed: false,
         }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
         self.writer.is_some()
+    }
+
+    /// The newest dictations kept with their text, newest first.
+    pub(crate) fn recent(&self) -> Vec<RecentDictation> {
+        self.recent.iter().cloned().collect()
+    }
+
+    /// Whether `recent` changed since the last call.
+    pub(crate) fn take_recent_changed(&mut self) -> bool {
+        std::mem::take(&mut self.recent_changed)
+    }
+
+    /// Delete every saved dictation, as `sunoto history clear --yes` does.
+    /// Returns the number of day files removed.
+    pub(crate) fn clear(&mut self) -> io::Result<usize> {
+        self.recent.clear();
+        self.recent_changed = true;
+        crate::history_cli::clear(&dictations_dir(&history_dir()))
     }
 
     /// A dictation started. System mode is never recorded, so the loop calls
@@ -505,8 +539,15 @@ impl HistoryRecorder {
         let Some(writer) = self.writer.as_ref() else {
             return;
         };
+        let recent = recent_entry(&record);
         match writer.try_send(Box::new(record)) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Some(entry) = recent {
+                    self.recent.push_front(entry);
+                    self.recent.truncate(RECENT_COUNT);
+                    self.recent_changed = true;
+                }
+            }
             Err(TrySendError::Full(_)) => {
                 self.dropped += 1;
                 logging::warn(&format!(
@@ -521,6 +562,16 @@ impl HistoryRecorder {
             }
         }
     }
+}
+
+/// What Recent Dictations shows for a record: the pasted text, unless it
+/// was left out (a password field or an excluded app) or empty.
+fn recent_entry(record: &Record) -> Option<RecentDictation> {
+    let text = record.text.inserted.as_deref()?.trim();
+    (!record.redacted && !text.is_empty()).then(|| RecentDictation {
+        text: text.to_string(),
+        at_ms: record.ts,
+    })
 }
 
 /// Create `root/dictations` (mode 0700) and start the writer thread, which
@@ -758,6 +809,44 @@ mod tests {
                 .unwrap()
                 .contains("ault words")
         );
+    }
+
+    #[test]
+    fn recent_dictations_follow_what_was_saved_with_text() {
+        let settings = Settings::default();
+        let (mut history, rx) = recorder(&settings);
+        assert!(history.recent().is_empty());
+        assert!(!history.take_recent_changed());
+
+        history.begin(1);
+        history.transcript(1, "hello there", None);
+        history.inserted(1, "Hello there.", false);
+        history.finish(1, Status::Inserted, None, None, None);
+        history.begin(2);
+        history.transcript(2, "my secret", None);
+        history.inserted(2, "My secret.", false);
+        history.finish(2, Status::SecureField, None, None, None);
+        history.begin(3);
+        history.finish(3, Status::Cancelled, None, None, None);
+
+        let texts: Vec<String> = history
+            .recent()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(texts, vec!["Hello there.".to_string()]);
+        assert!(history.take_recent_changed());
+        assert!(!history.take_recent_changed());
+
+        for session in 10..10 + RECENT_COUNT as u64 + 2 {
+            history.begin(session);
+            history.inserted(session, &format!("text {session}"), false);
+            history.finish(session, Status::Inserted, None, None, None);
+            let _ = rx.try_recv();
+        }
+        let recent = history.recent();
+        assert_eq!(recent.len(), RECENT_COUNT);
+        assert_eq!(recent[0].text, format!("text {}", 10 + RECENT_COUNT + 1));
     }
 
     #[test]
