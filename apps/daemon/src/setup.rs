@@ -86,6 +86,21 @@ pub fn reexec_outside_bundle(command: &str, args: &[String]) -> Result<(), Box<d
     Err(format!("could not re-exec the installer outside the bundle: {error}").into())
 }
 
+/// What `apply_bundle_environment` and `reexec_outside_bundle` set. `open`
+/// hands the caller's environment to the app it starts, so every launch of
+/// the app removes them and the app derives its own. Before 0.1.13 an
+/// update's setup, which runs from a download that is deleted once it
+/// succeeds, started the installed app with that download's SUNOTO_ROOT, and
+/// its speech engine died with the folder.
+pub(crate) const BUNDLE_ENV: [&str; 3] = ["SUNOTO_ROOT", "HF_HOME", SETUP_BUNDLE_ENV];
+
+pub(crate) fn without_bundle_env(command: &mut Command) -> &mut Command {
+    for key in BUNDLE_ENV {
+        command.env_remove(key);
+    }
+    command
+}
+
 /// The prebuilt bundle this installer works on: the one it was detached
 /// from, or the one it runs inside.
 fn setup_bundle() -> Option<PathBuf> {
@@ -116,22 +131,16 @@ pub fn bundle_is_prebuilt(bundle: &Path) -> bool {
         .is_file()
 }
 
-/// Point the daemon at the bundle's runtime. A marker file wins (developer
-/// install from a checkout); otherwise the embedded root. A prebuilt bundle
-/// also keeps the Hugging Face cache under Application Support so the
-/// speech model lives next to the polish model and uninstall --purge
-/// removes both.
+/// Point the daemon at the bundle's runtime: the root its marker file names
+/// (developer install from a checkout), else its embedded root. That beats a
+/// SUNOTO_ROOT in the environment, which may name another bundle (see
+/// `BUNDLE_ENV`). A prebuilt bundle also keeps the Hugging Face cache under
+/// Application Support so the speech model lives next to the polish model
+/// and uninstall --purge removes both.
 pub fn apply_bundle_environment(bundle: &Path) {
-    let resources = bundle.join("Contents/Resources");
-    if std::env::var_os("SUNOTO_ROOT").is_none() {
-        let root = fs::read_to_string(resources.join(ROOT_MARKER))
-            .ok()
-            .map(|marker| PathBuf::from(marker.trim()))
-            .or_else(|| bundle_is_prebuilt(bundle).then(|| bundle.join(EMBEDDED_ROOT)));
-        if let Some(root) = root {
-            // SAFETY: called from main before any thread exists.
-            unsafe { std::env::set_var("SUNOTO_ROOT", root) };
-        }
+    if let Some(root) = bundle_runtime_root(bundle) {
+        // SAFETY: called from main before any thread exists.
+        unsafe { std::env::set_var("SUNOTO_ROOT", root) };
     }
     if bundle_is_prebuilt(bundle)
         && std::env::var_os("HF_HOME").is_none()
@@ -141,6 +150,13 @@ pub fn apply_bundle_environment(bundle: &Path) {
         // SAFETY: as above.
         unsafe { std::env::set_var("HF_HOME", hf_home) };
     }
+}
+
+fn bundle_runtime_root(bundle: &Path) -> Option<PathBuf> {
+    fs::read_to_string(bundle.join("Contents/Resources").join(ROOT_MARKER))
+        .ok()
+        .map(|marker| PathBuf::from(marker.trim()))
+        .or_else(|| bundle_is_prebuilt(bundle).then(|| bundle.join(EMBEDDED_ROOT)))
 }
 
 const USAGE: &str = "usage: sunoto-daemon setup [--dry-run] [--no-login-item] [--with-llm|--without-llm] [--timeout-secs N] [--update]
@@ -1202,7 +1218,7 @@ pub(crate) fn stop_running_daemons() {
 pub(crate) fn launch_app(app: &Path) -> Result<(), Box<dyn Error>> {
     // Callers stop every daemon and overlay first, so `-n` (a new instance
     // regardless of what Launch Services believes) is always right here.
-    let status = Command::new("open").arg("-n").arg(app).status()?;
+    let status = without_bundle_env(Command::new("open").arg("-n").arg(app)).status()?;
     if !status.success() {
         return Err(format!("open {} failed ({status})", app.display()).into());
     }
@@ -1262,7 +1278,7 @@ pub fn relaunch_self_if_bundled() -> bool {
         "while pgrep -f '[S]unoto.app/Contents/MacOS/sunoto-(daemon|overlay)$' >/dev/null; do sleep 0.2; done; open -n '{}'",
         bundle.display()
     );
-    Command::new("sh")
+    without_bundle_env(&mut Command::new("sh"))
         .args(["-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1670,6 +1686,46 @@ mod tests {
             Some("B7B77719D4A88C3F509F8539561F6DC096CBB22A")
         );
         assert_eq!(parse_signing_identity("0 valid identities found\n"), None);
+    }
+
+    #[test]
+    fn launching_the_app_never_passes_on_a_bundle_path() {
+        let mut open = Command::new("open");
+        without_bundle_env(&mut open);
+        let removed: Vec<_> = open
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for key in BUNDLE_ENV {
+            assert!(removed.iter().any(|k| k == key), "{key} is passed on");
+        }
+    }
+
+    #[test]
+    fn a_bundle_uses_its_own_runtime() {
+        let base = std::env::temp_dir().join(format!("sunoto-bundle-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let prebuilt = base.join("updates/0.1.12/Sunoto.app");
+        fs::create_dir_all(prebuilt.join(EMBEDDED_ROOT).join("python/bin")).unwrap();
+        fs::write(prebuilt.join(EMBEDDED_ROOT).join("python/bin/python3"), "").unwrap();
+        assert_eq!(
+            bundle_runtime_root(&prebuilt),
+            Some(prebuilt.join(EMBEDDED_ROOT))
+        );
+        let checkout = base.join("Sunoto.app");
+        fs::create_dir_all(checkout.join("Contents/Resources")).unwrap();
+        fs::write(
+            checkout.join("Contents/Resources").join(ROOT_MARKER),
+            "/src/voice-dictation\n",
+        )
+        .unwrap();
+        assert_eq!(
+            bundle_runtime_root(&checkout),
+            Some(PathBuf::from("/src/voice-dictation"))
+        );
+        assert_eq!(bundle_runtime_root(&base.join("Empty.app")), None);
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

@@ -1884,9 +1884,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             let idle_for = last_activity.elapsed();
             // Restarting for an update must never cut into use: only when
             // nothing happened for a while and no panel is waiting on the user.
+            // A speech engine that never comes up counts as idle too: nothing
+            // can be dictated, and the update may be the fix.
             if pending_update.is_some()
                 && idle_for >= crate::update::idle_before_install()
-                && health.current().is_ready()
+                && (health.current().is_ready() || health.current() == DaemonHealth::LoadingAsr)
                 && !onboarding_in_progress
                 && pending_system.is_none()
             {

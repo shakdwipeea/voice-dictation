@@ -125,6 +125,13 @@ comes up. The quick facts:
   `SUNOTO_UPDATE_KEY` (a test public key file), `SUNOTO_UPDATE_IDLE_SECS`.
   Restart the app, and `launchctl unsetenv` them afterwards. Progress goes to
   `~/Library/Logs/sunoto/update.log`.
+- Every launch of the app strips `SUNOTO_ROOT`, `HF_HOME` and
+  `SUNOTO_SETUP_BUNDLE` (`setup::without_bundle_env`), and a bundled app
+  always uses its own runtime root. `open` hands the caller's environment to
+  the app it starts. In 0.1.12 an update's setup, running from the download
+  in `updates/<version>/`, started the installed app with that download's
+  `SUNOTO_ROOT`. The updater then deleted the download, and the speech engine
+  restarted forever on the system `python3` ("ASR backend lost").
 - An update never downloads the speech model: the updater gives the new
   version 240 s to start. `setup --update` leaves an install on the model it
   has (v3 before 0.1.12, `Settings::stopgap_parakeet_model`). The app then
