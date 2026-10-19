@@ -88,13 +88,12 @@ pub fn reexec_outside_bundle(command: &str, args: &[String]) -> Result<(), Box<d
     Err(format!("could not re-exec the installer outside the bundle: {error}").into())
 }
 
-/// The prebuilt bundle this installer works on: the one it was detached
+/// The bundle this installer was started from: the one it was detached
 /// from, or the one it runs inside.
 fn setup_bundle() -> Option<PathBuf> {
     std::env::var_os(SETUP_BUNDLE_ENV)
         .map(PathBuf::from)
         .or_else(app_bundle_root)
-        .filter(|bundle| bundle_is_prebuilt(bundle))
 }
 
 /// `.../Sunoto.app` when this executable lives in an app bundle.
@@ -227,8 +226,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let log_path = home.join("Library/Logs/sunoto/daemon.log");
     // Prebuilt: a release bundle with its runtime inside. Nothing to
     // build; install the bundle as it is.
-    let prebuilt = setup_bundle();
-    let daemon = match &prebuilt {
+    let bundle = setup_bundle();
+    let prebuilt = bundle.clone().filter(|bundle| bundle_is_prebuilt(bundle));
+    // From a checkout build's app (`sunoto setup`), reassemble the bundle
+    // from its own binaries: this process is a lone copy outside it.
+    let daemon = match &bundle {
         Some(bundle) => bundle.join("Contents/MacOS/sunoto-daemon"),
         None => std::env::current_exe()?.canonicalize()?,
     };
