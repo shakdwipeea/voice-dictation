@@ -32,6 +32,7 @@ use crate::insertion::{DesktopBackend, UiCommand, UiOptions, desktop_backend, ui
 use crate::llm_polish;
 use crate::llm_report::{format_llm_diagnostics, format_llm_warmup_summary};
 use crate::logging;
+use crate::menu_bar::{MenuBar, MenuInputs};
 use crate::overlay::{ERROR_BUBBLE_VISIBLE, UiFront, show_error, spawn_overlay};
 use crate::session::{SAMPLES_PER_MS, SessionAudioStats, SessionTiming, frame_levels, mode_label};
 use crate::settings::{Settings, sanitize_for_insertion, transcript_for_log};
@@ -327,12 +328,24 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut keepalive_active = false;
     let mut active_system_resolution: Option<u64> = None;
     let mut pending_system: Option<PendingSystemSelection> = None;
-    let update_mode = crate::update::Mode::from_setting(&settings.auto_update);
-    let update_blocker = crate::update::blocker(update_mode);
-    match &update_blocker {
-        None => crate::update::spawn_checker(update_mode, events_tx.clone()),
-        Some(reason) => logging::info(&format!("automatic updates: {reason}")),
-    }
+    // The auto_update setting, which the menu bar switch can change while
+    // the app runs. The checker runs whenever only the setting stops it.
+    let update_switch =
+        crate::update::ModeSwitch::new(crate::update::Mode::from_setting(&settings.auto_update));
+    let update_install_blocker = crate::update::install_blocker();
+    let update_checker = match &update_install_blocker {
+        None => {
+            if let Some(reason) = crate::update::blocker(update_switch.get()) {
+                logging::info(&format!("automatic updates: {reason}"));
+            }
+            crate::update::spawn_checker(update_switch.clone(), events_tx.clone())
+        }
+        Some(reason) => {
+            logging::info(&format!("automatic updates: off ({reason})"));
+            None
+        }
+    };
+    let mut menu = MenuBar::new(&settings);
     if settings.capture_idle_stop_secs > 0 {
         logging::info(&format!(
             "the microphone stays on for {}s after each dictation (capture_idle_stop_secs in the config)",
@@ -1193,7 +1206,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 SidecarEvent::SystemSelection { .. }
                 | SidecarEvent::SystemCancelled { .. }
                 | SidecarEvent::PermissionAction { .. }
-                | SidecarEvent::OnboardingDone => {
+                | SidecarEvent::OnboardingDone
+                | SidecarEvent::CheckUpdates
+                | SidecarEvent::InstallUpdate
+                | SidecarEvent::SetAutoUpdate { .. }
+                | SidecarEvent::ClearHistory => {
                     logging::warn("unexpected UI event from ASR sidecar");
                 }
             },
@@ -1239,6 +1256,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 // A fresh overlay has no onboarding panel; re-publish the
                 // permission state on the next poll.
                 last_onboarding = None;
+                menu.changed();
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SystemSelection {
                 session_id,
@@ -1358,6 +1376,94 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     logging::warn("ignored onboarding Done before every permission was granted");
                     last_onboarding = None;
                 }
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::CheckUpdates))) => {
+                if let Some(reason) = &update_install_blocker {
+                    menu.alert(
+                        &ui,
+                        "Updates aren't available here".into(),
+                        crate::menu_bar::sentence(reason),
+                        false,
+                    );
+                } else if let Some(staged) = &pending_update {
+                    menu.alert(
+                        &ui,
+                        update_ready_title(staged),
+                        UPDATE_READY_TEXT.into(),
+                        true,
+                    );
+                } else if !menu.checking {
+                    logging::info("checking for updates (menu bar)");
+                    menu.checking = true;
+                    menu.changed();
+                    crate::update::spawn_check_now(events_tx.clone());
+                }
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::InstallUpdate))) => {
+                if let Some(staged) = pending_update.take() {
+                    if install_update(&staged) {
+                        STOP_REQUESTED.store(true, Ordering::SeqCst);
+                    } else {
+                        menu.alert(
+                            &ui,
+                            "Couldn't install the update".into(),
+                            "The update log has the details: ~/Library/Logs/sunoto/update.log."
+                                .into(),
+                            false,
+                        );
+                    }
+                }
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SetAutoUpdate { on }))) => {
+                let mode = if on {
+                    crate::update::Mode::Install
+                } else {
+                    crate::update::Mode::Off
+                };
+                match crate::setup::set_config_value(
+                    &crate::settings::config_path(),
+                    "auto_update",
+                    mode.setting().into(),
+                ) {
+                    Ok(()) => {
+                        update_switch.set(mode);
+                        logging::info(&format!(
+                            "automatic updates turned {} from the menu bar",
+                            if on { "on" } else { "off" }
+                        ));
+                        // Check now rather than tomorrow.
+                        if on && let Some(checker) = &update_checker {
+                            checker.unpark();
+                        }
+                    }
+                    Err(error) => {
+                        logging::warn(&format!("could not save auto_update: {error}"));
+                        menu.alert(
+                            &ui,
+                            "Couldn't change the setting".into(),
+                            crate::menu_bar::sentence(&error.to_string()),
+                            false,
+                        );
+                    }
+                }
+                menu.changed();
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ClearHistory))) => {
+                match history.clear() {
+                    Ok(files) => logging::info(&format!(
+                        "dictation history cleared from the menu bar ({files} day files)"
+                    )),
+                    Err(error) => {
+                        logging::warn(&format!("could not clear the dictation history: {error}"));
+                        menu.alert(
+                            &ui,
+                            "Couldn't clear the history".into(),
+                            crate::menu_bar::sentence(&error.to_string()),
+                            false,
+                        );
+                    }
+                }
+                menu.changed();
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(event))) => {
                 logging::warn(&format!("unexpected overlay event: {event:?}"));
@@ -1736,14 +1842,19 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         SessionState::Transcribing { .. } => "transcribing",
                     },
                     "shortcut": settings.shortcut,
-                    "updates": match (&update_blocker, &pending_update) {
-                        (Some(reason), _) => reason.clone(),
+                    "updates": match (
+                        crate::update::blocker(update_switch.get()),
+                        &pending_update,
+                    ) {
+                        (Some(reason), _) => reason,
                         (None, Some(staged)) => format!(
                             "Sunoto {} downloaded; installs after {} without dictation",
                             staged.version,
                             crate::update::idle_wait_label()
                         ),
-                        (None, None) => format!("{} (checked daily)", settings.auto_update),
+                        (None, None) => {
+                            format!("{} (checked daily)", update_switch.get().setting())
+                        }
                     },
                     "version": env!("CARGO_PKG_VERSION"),
                     "pid": std::process::id(),
@@ -1786,6 +1897,44 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             }
             Ok(DaemonEvent::UpdateReady(staged)) => {
                 pending_update = Some(staged);
+                menu.changed();
+            }
+            Ok(DaemonEvent::UpdateChecked(result)) => {
+                menu.checking = false;
+                menu.changed();
+                match result {
+                    Ok(None) => menu.alert(
+                        &ui,
+                        "Sunoto is up to date".into(),
+                        format!(
+                            "You have Sunoto {}, the newest version.",
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                        false,
+                    ),
+                    Ok(Some(staged)) => {
+                        logging::info(&format!(
+                            "Sunoto {} is downloaded and verified (Check for Updates)",
+                            staged.version
+                        ));
+                        menu.alert(
+                            &ui,
+                            update_ready_title(&staged),
+                            UPDATE_READY_TEXT.into(),
+                            true,
+                        );
+                        pending_update = Some(staged);
+                    }
+                    Err(error) => {
+                        logging::warn(&format!("update check failed: {error}"));
+                        menu.alert(
+                            &ui,
+                            "Couldn't check for updates".into(),
+                            crate::menu_bar::sentence(&error),
+                            false,
+                        );
+                    }
+                }
             }
             Ok(DaemonEvent::SpeechModelFetched(Ok(()))) => {
                 model_switch_due = true;
@@ -1887,24 +2036,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             // A speech engine that never comes up counts as idle too: nothing
             // can be dictated, and the update may be the fix.
             if pending_update.is_some()
+                && update_switch.get() == crate::update::Mode::Install
                 && idle_for >= crate::update::idle_before_install()
                 && (health.current().is_ready() || health.current() == DaemonHealth::LoadingAsr)
                 && !onboarding_in_progress
                 && pending_system.is_none()
             {
                 let staged = pending_update.take().expect("checked above");
-                match crate::update::start_install(&staged) {
-                    Ok(()) => {
-                        logging::info(&format!(
-                            "installing Sunoto {}; this app restarts as the new version (log: ~/Library/Logs/sunoto/update.log)",
-                            staged.version
-                        ));
-                        STOP_REQUESTED.store(true, Ordering::SeqCst);
-                    }
-                    Err(error) => logging::error(&format!(
-                        "could not start the update to Sunoto {}: {error}",
-                        staged.version
-                    )),
+                if install_update(&staged) {
+                    STOP_REQUESTED.store(true, Ordering::SeqCst);
                 }
             }
             // The same rule moves the sidecar to a freshly fetched model:
@@ -1959,6 +2099,17 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         )) {
             publish_health(next, &mut ui, &settings);
         }
+        menu.refresh(
+            &ui,
+            &mut history,
+            MenuInputs {
+                health: health.current(),
+                settings: &settings,
+                auto_update: update_switch.get(),
+                update_blocked: update_install_blocker.as_deref(),
+                pending_update: pending_update.as_ref(),
+            },
+        );
         if let Some(mode) =
             gestures.expire(recording_mode(&machine), RECORDING_LIMIT, Instant::now())
         {
@@ -2058,6 +2209,34 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     match exit_error {
         Some(message) => Err(message.into()),
         None => Ok(()),
+    }
+}
+
+const UPDATE_READY_TEXT: &str =
+    "Sunoto restarts in a few seconds. Your settings and permissions are kept.";
+
+fn update_ready_title(staged: &crate::update::Staged) -> String {
+    format!("Sunoto {} is ready to install", staged.version)
+}
+
+/// Start the installer for `staged`. True when this app should now quit so
+/// the installer can replace it.
+fn install_update(staged: &crate::update::Staged) -> bool {
+    match crate::update::start_install(staged) {
+        Ok(()) => {
+            logging::info(&format!(
+                "installing Sunoto {}; this app restarts as the new version (log: ~/Library/Logs/sunoto/update.log)",
+                staged.version
+            ));
+            true
+        }
+        Err(error) => {
+            logging::error(&format!(
+                "could not start the update to Sunoto {}: {error}",
+                staged.version
+            ));
+            false
+        }
     }
 }
 

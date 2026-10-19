@@ -2196,6 +2196,227 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
     }
 }
 
+// MARK: Menu bar
+
+/// The menu bar item: a waveform whose menu shows Sunoto's status, the
+/// recent dictations (a click copies one), Check for Updates and the
+/// automatic updates switch. The daemon sends the contents as `menu`
+/// messages and the answers to Check for Updates as `alert`; picks go back
+/// through `emit`.
+private final class MenuBarController: NSObject, NSMenuDelegate {
+    private var item: NSStatusItem?
+    private let menu = NSMenu()
+    private var state: [String: Any] = [:]
+    private var alertOpen = false
+    private let emit: ([String: Any]) -> Void
+    private let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    init(emit: @escaping ([String: Any]) -> Void) {
+        self.emit = emit
+        super.init()
+        menu.delegate = self
+        menu.autoenablesItems = false
+    }
+
+    /// Put the icon in the menu bar, once the app has launched.
+    func install() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = MenuBarController.glyph()
+        item.button?.toolTip = "Sunoto"
+        item.button?.setAccessibilityLabel("Sunoto")
+        item.menu = menu
+        self.item = item
+    }
+
+    func update(_ message: [String: Any]) {
+        state = message
+    }
+
+    /// Five rounded bars, a template image that macOS tints for a light or
+    /// dark menu bar.
+    static func glyph() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            NSColor.black.setFill()
+            var x: CGFloat = 2.5
+            for height: CGFloat in [5, 10, 14, 9, 5] {
+                let bar = NSRect(x: x, y: 9 - height / 2, width: 2, height: height)
+                NSBezierPath(roundedRect: bar, xRadius: 1, yRadius: 1).fill()
+                x += 3.25
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let status = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        status.attributedTitle = NSAttributedString(
+            string: state["status"] as? String ?? "Sunoto is starting…",
+            attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
+        )
+        status.image = MenuBarController.dot(
+            (state["ready"] as? Bool ?? false) ? .systemGreen : .systemOrange
+        )
+        status.isEnabled = false
+        menu.addItem(status)
+        if let hint = state["hint"] as? String {
+            menu.addItem(note(hint))
+        }
+        menu.addItem(.separator())
+
+        let recent = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")
+        recent.submenu = recentMenu()
+        menu.addItem(recent)
+        menu.addItem(.separator())
+
+        let checking = state["checking"] as? Bool ?? false
+        let check = action(checking ? "Checking for Updates…" : "Check for Updates…", #selector(checkForUpdates))
+        check.isEnabled = !checking
+        menu.addItem(check)
+        if let line = state["update_note"] as? String {
+            menu.addItem(note(line))
+        }
+        let blocked = state["update_blocked"] as? String
+        let automatic = action("Install Updates Automatically", #selector(toggleAutomaticUpdates))
+        automatic.state = (state["auto_update"] as? Bool ?? false) && blocked == nil ? .on : .off
+        automatic.isEnabled = blocked == nil && !state.isEmpty
+        automatic.toolTip = blocked
+        menu.addItem(automatic)
+        menu.addItem(.separator())
+        let version = (state["version"] as? String).map { "Sunoto \($0)" } ?? "Sunoto"
+        menu.addItem(note(version))
+    }
+
+    private func recentMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let rows = (state["recent"] as? [[String: Any]]) ?? []
+        guard state["history_enabled"] as? Bool ?? false else {
+            submenu.addItem(note("History is off"))
+            return submenu
+        }
+        guard !rows.isEmpty else {
+            submenu.addItem(note("No dictations yet"))
+            return submenu
+        }
+        let now = Date()
+        for row in rows {
+            guard let text = row["text"] as? String else { continue }
+            let item = action(MenuBarController.preview(text), #selector(copyDictation(_:)))
+            item.representedObject = text
+            item.toolTip = "Click to copy"
+            if let ms = (row["at_ms"] as? NSNumber)?.doubleValue {
+                let when = relative.localizedString(for: Date(timeIntervalSince1970: ms / 1000), relativeTo: now)
+                let title = NSMutableAttributedString(
+                    string: item.title,
+                    attributes: [.font: NSFont.menuFont(ofSize: 0)]
+                )
+                title.append(NSAttributedString(
+                    string: "   \(when)",
+                    attributes: [
+                        .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                        .foregroundColor: NSColor.secondaryLabelColor,
+                    ]
+                ))
+                item.attributedTitle = title
+            }
+            submenu.addItem(item)
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(action("Clear History…", #selector(clearHistory)))
+        return submenu
+    }
+
+    /// One line, at most 48 characters.
+    static func preview(_ text: String) -> String {
+        let line = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return line.count > 48 ? String(line.prefix(47)) + "…" : line
+    }
+
+    private static func dot(_ color: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: 8, height: 8), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            return true
+        }
+    }
+
+    private func note(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func copyDictation(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func checkForUpdates() {
+        state["checking"] = true
+        emit(["type": "check_updates"])
+    }
+
+    @objc private func toggleAutomaticUpdates() {
+        let on = !(state["auto_update"] as? Bool ?? false)
+        state["auto_update"] = on
+        emit(["type": "set_auto_update", "on": on])
+    }
+
+    @objc private func clearHistory() {
+        let alert = NSAlert()
+        alert.messageText = "Delete all dictation history?"
+        alert.informativeText = "This removes every dictation Sunoto kept on this Mac. It can't be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        if present(alert) == .alertFirstButtonReturn {
+            state["recent"] = []
+            emit(["type": "clear_history"])
+        }
+    }
+
+    /// A message from the daemon, such as the answer to Check for Updates.
+    func showAlert(_ message: [String: Any]) {
+        let alert = NSAlert()
+        alert.messageText = message["title"] as? String ?? "Sunoto"
+        alert.informativeText = message["text"] as? String ?? ""
+        let offerInstall = message["offer_install"] as? Bool ?? false
+        if offerInstall {
+            alert.addButton(withTitle: "Install Now")
+            alert.addButton(withTitle: "Later")
+        } else {
+            alert.addButton(withTitle: "OK")
+        }
+        if present(alert) == .alertFirstButtonReturn, offerInstall {
+            emit(["type": "install_update"])
+        }
+    }
+
+    /// Run one alert in front of the other apps; a second one while it is
+    /// open is dropped.
+    private func present(_ alert: NSAlert) -> NSApplication.ModalResponse? {
+        guard !alertOpen else { return nil }
+        alertOpen = true
+        defer { alertOpen = false }
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal()
+    }
+}
+
 private final class OverlayApp: NSObject, NSApplicationDelegate {
     private let model = PillModel()
     private var panel = OverlayApp.makePillPanel()
@@ -2212,6 +2433,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     private var loggedIslandFrame: NSRect?
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
+    private var menuBar: MenuBarController!
     private var visible = false
     private var displayClock: Timer?
     /// A close waiting for the check mark to be seen.
@@ -2240,6 +2462,9 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                 self?.emit(["type": "onboarding_done"])
             }
         )
+        menuBar = MenuBarController(emit: { [weak self] message in
+            self?.emit(message)
+        })
         pill.autoresizingMask = [.width, .height]
         panel.contentView = pill
     }
@@ -2298,6 +2523,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         hide(animated: false)
+        menuBar.install()
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -2381,6 +2607,12 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             if let sessionID = uint64(message["session_id"]) {
                 palette.dismiss(sessionID: sessionID)
             }
+        case "menu":
+            menuBar.update(message)
+            return
+        case "alert":
+            menuBar.showAlert(message)
+            return
         case "segment", "clear":
             break
         case "shutdown":

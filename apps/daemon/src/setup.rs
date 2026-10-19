@@ -417,13 +417,23 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 /// Change one key in the config file and leave the rest as written, so
-/// settings the user never chose keep following the defaults.
-fn set_config_value(
+/// settings the user never chose keep following the defaults. A missing
+/// file is created with just that key.
+pub(crate) fn set_config_value(
     path: &Path,
     key: &str,
     value: serde_json::Value,
 ) -> Result<(), Box<dyn Error>> {
-    let mut config: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+    let mut config: serde_json::Value = match fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            serde_json::json!({})
+        }
+        Err(error) => return Err(error.into()),
+    };
     config
         .as_object_mut()
         .ok_or_else(|| format!("{} is not a JSON object", path.display()))?
@@ -947,6 +957,18 @@ fn assemble_bundle(
     fs::copy(daemon, macos_dir.join("sunoto-daemon"))?;
     fs::copy(overlay, macos_dir.join("sunoto-overlay"))?;
     fs::write(resources.join(ROOT_MARKER), format!("{}\n", root.display()))?;
+    // The checkout the daemon was built from, when the root is another one.
+    let built_from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    match [root, built_from.as_path()]
+        .iter()
+        .map(|checkout| checkout.join(APP_ICON))
+        .find(|icon| icon.is_file())
+    {
+        Some(icon) => {
+            fs::copy(icon, resources.join("AppIcon.icns"))?;
+        }
+        None => warn(&format!("{APP_ICON} not found; the app has no icon")),
+    }
     fs::write(staging.join("Contents/Info.plist"), info_plist())?;
     let lint = Command::new("plutil")
         .args(["-lint", "Contents/Info.plist"])
@@ -959,6 +981,9 @@ fn assemble_bundle(
     Ok(())
 }
 
+/// The app icon, relative to the repository (tools/ui/make-app-icon.swift).
+const APP_ICON: &str = "packaging/macos/AppIcon.icns";
+
 pub fn info_plist() -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -969,6 +994,7 @@ pub fn info_plist() -> String {
     <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
     <key>CFBundleName</key><string>{APP_NAME}</string>
     <key>CFBundleDisplayName</key><string>{APP_NAME}</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>{version}</string>
     <key>CFBundleVersion</key><string>{version}</string>
@@ -1579,6 +1605,7 @@ mod tests {
         assert!(plist.contains("<key>CFBundleExecutable</key><string>sunoto-daemon</string>"));
         assert!(plist.contains(BUNDLE_ID));
         assert!(plist.contains("<key>LSUIElement</key><true/>"));
+        assert!(plist.contains("<key>CFBundleIconFile</key><string>AppIcon</string>"));
         assert!(plist.contains("NSMicrophoneUsageDescription"));
     }
 
@@ -1598,6 +1625,18 @@ mod tests {
             written,
             serde_json::json!({"shortcut": "RightOption", "backend": "parakeet_mlx_streaming"})
         );
+    }
+
+    #[test]
+    fn set_config_value_creates_a_missing_config() {
+        let dir = std::env::temp_dir().join(format!("sunoto-config-new-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("config.json");
+        set_config_value(&path, "auto_update", "off".into()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(written, serde_json::json!({"auto_update": "off"}));
     }
 
     #[test]

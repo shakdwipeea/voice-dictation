@@ -29,6 +29,11 @@ above.
 The microphone is on only while you dictate, and a recording stops on its
 own after 5 minutes.
 
+On macOS, Sunoto's waveform sits in the menu bar. Its menu shows whether
+Sunoto is ready and lists your recent dictations: click one to copy it
+again. It also has **Check for Updates…** and **Install Updates
+Automatically**.
+
 ## Manage
 
 ```bash
@@ -53,8 +58,9 @@ Sunoto updates itself. Once a day it checks for a new release, downloads it,
 and checks its signature. It installs the update after 10 minutes without
 dictation, and restarts in a few seconds with your settings and permissions
 kept. If the new version does not start, the old one comes back.
-`"auto_update": "notify"` in the settings only logs that an update is out,
-and `"off"` stops the checks. The update log is
+Unticking **Install Updates Automatically** in the menu bar stops the
+checks; `"auto_update": "notify"` in the settings only logs that an update
+is out. The update log is
 `~/Library/Logs/sunoto/update.log`.
 
 Settings live in `~/Library/Application Support/sunoto/config.json`; for

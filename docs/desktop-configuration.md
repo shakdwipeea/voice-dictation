@@ -146,7 +146,10 @@ Updates (macOS release installs):
   report ready. Versions that failed are not retried automatically.
   `"notify"` only logs that a release is out; `"off"` never checks.
   `sunoto update` installs the newest release on request (`--check` only
-  reports). Builds from a checkout never update themselves.
+  reports). The menu bar's **Install Updates Automatically** switches the
+  setting between `"install"` and `"off"` and takes effect at once (turning
+  it on checks right away); **Check for Updates…** looks now and offers
+  Install Now. Builds from a checkout never update themselves.
   Progress goes to `~/Library/Logs/sunoto/update.log`.
 - `llm_polish_keepalive_secs`: GPU ping interval while a dictation session
   is in flight (press until 20 s after the polish result). `0` disables.

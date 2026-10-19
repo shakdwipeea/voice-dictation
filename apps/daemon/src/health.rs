@@ -79,6 +79,18 @@ impl DaemonHealth {
         }
     }
 
+    /// The status line at the top of the menu bar's menu.
+    pub fn menu_status(self) -> &'static str {
+        match self {
+            Self::HotkeyBlocked => "Shortcut blocked: check permissions",
+            Self::MicUnavailable => "Microphone unavailable",
+            Self::LoadingAsr => "Loading the speech model…",
+            Self::WarmingPolish => "Warming up AI polish…",
+            Self::MicStarting => "Waiting for microphone access",
+            Self::Ready => "Sunoto is ready",
+        }
+    }
+
     pub fn is_ready(self) -> bool {
         self == Self::Ready
     }
