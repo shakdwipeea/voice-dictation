@@ -607,15 +607,13 @@ pub fn apply(app: &Path, version: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_new_setup(app: &Path) -> Result<(), Box<dyn Error>> {
-    let mut child = Command::new(app.join("Contents/MacOS/sunoto-daemon"))
-        .args(["setup", "--update", "--timeout-secs", SETUP_READY_SECS])
-        // These name the old app, which has just moved away; the new setup
-        // derives them from its own bundle.
-        .env_remove(setup::SETUP_BUNDLE_ENV)
-        .env_remove("SUNOTO_ROOT")
-        .env_remove("HF_HOME")
-        .stdin(Stdio::null())
-        .spawn()?;
+    // The bundle paths in this environment name the old app, which has just
+    // moved away; the new setup derives them from its own bundle.
+    let mut child =
+        setup::without_bundle_env(&mut Command::new(app.join("Contents/MacOS/sunoto-daemon")))
+            .args(["setup", "--update", "--timeout-secs", SETUP_READY_SECS])
+            .stdin(Stdio::null())
+            .spawn()?;
     let deadline = Instant::now() + SETUP_DEADLINE;
     loop {
         if let Some(status) = child.try_wait()? {
