@@ -31,8 +31,10 @@ own after 5 minutes.
 
 ## Manage
 
+The installer adds a `sunoto` command for the terminal. Open a new terminal
+window after installing, then:
+
 ```bash
-alias sunoto="$HOME/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon"
 sunoto --version
 sunoto status              # shortcut, microphone, speech model
 sunoto restart
@@ -42,6 +44,13 @@ sunoto update              # install the newest release now (--check only looks)
 sunoto uninstall           # --purge also removes settings, models and history
 sunoto history list        # recent dictations, if history is on
 ```
+
+The command goes in `/opt/homebrew/bin` or `/usr/local/bin` when you can
+write there, and otherwise in `~/.local/bin`. If that folder is not on your
+`PATH`, the installer prints the one line that adds it; it never edits your
+shell files itself. A `sunoto` from somewhere else is left alone. The full
+path always works:
+`~/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon status`.
 
 Sunoto keeps a history of your dictations: the text and timings of each
 one, never audio, in `~/Library/Application Support/sunoto/history/` on

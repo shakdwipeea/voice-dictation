@@ -500,6 +500,18 @@ once. Later rebuilds and reinstalls retain the grants because the signing
 identity is stable. If identity creation fails, setup warns and uses an ad-hoc
 signature rather than aborting the install.
 
+Setup (including `setup --update`) also installs the `sunoto` command: a
+small `/bin/sh` script that runs
+`$HOME/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon` with its
+arguments (with none, it prints the help instead of starting the app). It
+goes in the first of `/opt/homebrew/bin` and `/usr/local/bin` that is on
+`PATH` and writable, and otherwise in `~/.local/bin`; for the update run that
+the app starts itself, which has launchd's short `PATH`, setup asks your
+shell for its `PATH`. When `~/.local/bin` is not on `PATH`, setup prints the
+line that adds it and edits no shell file. A marker comment identifies
+Sunoto's script: a `sunoto` without it is never replaced, and if one comes
+first on `PATH` setup adds none. `sunoto uninstall` removes the script.
+
 For manual development, run the daemon from a terminal:
 
 ```bash

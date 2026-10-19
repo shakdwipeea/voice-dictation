@@ -120,6 +120,12 @@ comes up. The quick facts:
   10 idle minutes. The installer is a copy of the old binary: it runs the new
   bundle's `setup --update` and puts the old app back on failure. Keep
   `setup --update` working; older installs call newer setups with it.
+- Every setup run, `--update` included, installs the `sunoto` command
+  (`setup::install_command`): a `/bin/sh` script that execs
+  `$HOME/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon`, in
+  `/opt/homebrew/bin`, `/usr/local/bin` or `~/.local/bin`. It must never fail
+  setup (that would roll an update back). Never change `COMMAND_MARKER`:
+  setup and uninstall touch only a `sunoto` that carries it.
 - Test without publishing: `launchctl setenv SUNOTO_UPDATE_FEED
   file://.../latest.json` (GitHub's latest-release JSON shape),
   `SUNOTO_UPDATE_KEY` (a test public key file), `SUNOTO_UPDATE_IDLE_SECS`.
