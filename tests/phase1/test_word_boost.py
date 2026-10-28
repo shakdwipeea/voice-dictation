@@ -181,12 +181,15 @@ class DecodeLoopTest(unittest.TestCase):
         booster = WordBooster(TokenIndex(VOCAB), words)
         features = mx.zeros((1, len(rows), 2))
         tokens = word_boost.decode_greedy(model, mx, features, len(rows), booster)
+        self.changed = booster.changed
         return "".join(token.text for token in tokens)
 
     def test_bonus_carries_a_started_word_through(self):
         rows = [{f"{S}sun": -0.1}, {"y": -0.1, "o": -2.0}, {"to": -0.1}]
         self.assertEqual(self.decode(rows, {"everywhere": ["zzzzz"]}), " suny" + "to")
+        self.assertEqual(self.changed, 0)
         self.assertEqual(self.decode(rows, {"screen": ["sunoto"]}), " sunoto")
+        self.assertEqual(self.changed, 1)  # "o" over "y"
 
     def test_a_non_finite_step_falls_back_to_the_stock_choice(self):
         rows = [{f"{S}so": float("inf"), f"{S}sun": -0.1}, {"blank": -0.1}]

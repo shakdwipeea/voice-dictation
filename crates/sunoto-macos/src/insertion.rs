@@ -384,7 +384,7 @@ fn owner_name_for_window(window: u32) -> Option<String> {
 }
 
 /// Read a CFNumber-typed value from a window-info dictionary as i64.
-fn number_value(dict: *const std::os::raw::c_void, key: &str) -> Option<i64> {
+pub(crate) fn number_value(dict: *const std::os::raw::c_void, key: &str) -> Option<i64> {
     let key_cf = cf_string(key)?;
     // SAFETY: dict is a CFDictionary; key_cf is a CFString we release below.
     let value = unsafe { ffi::CFDictionaryGetValue(dict, key_cf as *const _) };

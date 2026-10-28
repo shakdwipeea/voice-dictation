@@ -282,7 +282,9 @@ pub(crate) fn recent_dictations(dir: &Path, count: usize) -> io::Result<Vec<Rece
                 .filter(|text| !text.is_empty());
             let at_ms = value.get("ts").and_then(Value::as_u64);
             if let (true, Some(text), Some(at_ms)) = (is_dictation(&value), text, at_ms) {
+                let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
                 recent.push(RecentDictation {
+                    id: id.to_string(),
                     text: text.to_string(),
                     at_ms,
                 });
@@ -293,6 +295,27 @@ pub(crate) fn recent_dictations(dir: &Path, count: usize) -> io::Result<Vec<Rece
         }
     }
     Ok(recent)
+}
+
+/// The saved record with this id. The id starts with the record's
+/// timestamp in hex, which names its day file.
+pub(crate) fn find_record(dir: &Path, id: &str) -> io::Result<Option<Value>> {
+    let Some(ts) = id
+        .split_once('-')
+        .and_then(|(ts, _)| u64::from_str_radix(ts, 16).ok())
+    else {
+        return Ok(None);
+    };
+    let path = dir.join(crate::history::day_file_name(ts));
+    let lines = match fs::read_to_string(&path) {
+        Ok(lines) => lines,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(lines
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|value| value.get("id").and_then(Value::as_str) == Some(id)))
 }
 
 pub(crate) fn clear(dir: &Path) -> io::Result<usize> {
@@ -327,6 +350,21 @@ mod tests {
             "timing_ms": {"release_to_insertion": 284},
         })
         .to_string()
+    }
+
+    #[test]
+    fn a_record_is_found_by_its_id_in_its_day_file() {
+        let dir = temp_dir("find");
+        let ts = 1_793_000_000_000u64;
+        let id = format!("{ts:x}-2");
+        let lines = [line(&format!("{ts:x}-1"), ts, "first"), line(&id, ts, "second")];
+        fs::write(dir.join(crate::history::day_file_name(ts)), lines.join("\n")).unwrap();
+        let found = find_record(&dir, &id).unwrap().unwrap();
+        assert_eq!(found["text"]["raw"], "second");
+        assert!(find_record(&dir, &format!("{ts:x}-9")).unwrap().is_none());
+        assert!(find_record(&dir, "not-an-id").unwrap().is_none());
+        assert!(find_record(&dir, &format!("{:x}-1", ts + 86_400_000)).unwrap().is_none());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

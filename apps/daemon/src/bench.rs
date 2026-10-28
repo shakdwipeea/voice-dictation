@@ -540,6 +540,7 @@ fn wait_for_final(
             SidecarMessage::Event(SidecarEvent::Final {
                 session_id: event_session,
                 text,
+                ..
             }) if event_session == session_id => return Ok(text),
             SidecarMessage::Event(SidecarEvent::Error { message, .. }) => {
                 return Err(format!("sidecar error: {message}").into());

@@ -107,6 +107,85 @@ impl std::error::Error for AudioError {
     }
 }
 
+/// The kind of microphone, for the accuracy record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicKind {
+    BuiltIn,
+    Usb,
+    Bluetooth,
+    Other,
+}
+
+impl MicKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MicKind::BuiltIn => "built_in",
+            MicKind::Usb => "usb",
+            MicKind::Bluetooth => "bluetooth",
+            MicKind::Other => "other",
+        }
+    }
+}
+
+/// What the capture device is, read once per dictation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputInfo {
+    pub kind: MicKind,
+    /// The device's own rate; Bluetooth headsets drop to 16 or 24 kHz in a
+    /// call.
+    pub sample_rate: u32,
+    /// Other processes recording from an input now; `None` where the
+    /// system cannot tell.
+    pub other_apps: Option<u32>,
+}
+
+/// Mic type and rate of `device` (as `AudioEvent::Started` names it).
+/// macOS only; `None` elsewhere.
+pub fn input_info(device: &str) -> Option<InputInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::input_info(device)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = device;
+        None
+    }
+}
+
+/// Input lost to late capture callbacks since the process started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputGaps {
+    pub count: u64,
+    pub lost_us: u64,
+}
+
+impl InputGaps {
+    /// The gaps between an earlier reading and this one.
+    pub fn since(self, earlier: InputGaps) -> InputGaps {
+        InputGaps {
+            count: self.count.saturating_sub(earlier.count),
+            lost_us: self.lost_us.saturating_sub(earlier.lost_us),
+        }
+    }
+}
+
+/// Running totals of input gaps (macOS CoreAudio timestamps; always zero
+/// elsewhere).
+pub fn input_gaps() -> InputGaps {
+    #[cfg(target_os = "macos")]
+    {
+        InputGaps {
+            count: macos::GAP_COUNT.load(Ordering::Relaxed),
+            lost_us: macos::GAP_LOST_US.load(Ordering::Relaxed),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        InputGaps::default()
+    }
+}
+
 /// Pick a physical (non-monitor) PulseAudio source, preferring the default.
 pub fn resolve_source(pactl_program: &[String]) -> Result<String, AudioError> {
     let default = run_pactl(pactl_program, &["get-default-source"])?;

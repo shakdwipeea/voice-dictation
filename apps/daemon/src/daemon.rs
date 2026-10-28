@@ -16,7 +16,8 @@ use sunoto_desktop::{
     hotkey_block_reason, keep_process_responsive, microphone_authorized, request_accessibility,
 };
 use sunoto_ipc::{
-    OverlayRequest, OverlaySuggestion, PermissionKind, SidecarEvent, SidecarMessage, SidecarRequest,
+    ModelDownload, OverlayRequest, OverlaySuggestion, PermissionKind, SidecarEvent, SidecarMessage,
+    SidecarRequest,
 };
 use sunoto_polish::{polish, resolve_style};
 use sunoto_system::{
@@ -59,12 +60,41 @@ const RECORDING_LIMIT: Duration = Duration::from_secs(5 * 60);
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-fn onboarding_request(state: (bool, bool), shortcut: &str) -> OverlayRequest {
+/// The first try at the speech model download of a first start is retried
+/// after this, doubling up to the cap: a Mac set up before it is online.
+const MODEL_RETRY_START: Duration = Duration::from_secs(10);
+const MODEL_RETRY_CAP: Duration = Duration::from_secs(120);
+
+fn onboarding_request(
+    state: (bool, bool),
+    shortcut: &str,
+    model_download: Option<ModelDownload>,
+) -> OverlayRequest {
     OverlayRequest::Onboarding {
         accessibility: state.0,
         microphone: state.1,
         shortcut: Some(crate::settings::shortcut_label(shortcut)),
+        model_download,
     }
+}
+
+/// What the pill says while a first start downloads the speech model. All
+/// of it is in while its checksum is checked, which takes a few seconds.
+fn download_caption(download: ModelDownload) -> String {
+    if download.retrying {
+        "download paused; retrying".to_string()
+    } else if download.total_bytes > 0 && download.done_bytes >= download.total_bytes {
+        "checking speech model...".to_string()
+    } else {
+        format!("downloading speech model {}%", download_percent(download))
+    }
+}
+
+fn download_percent(download: ModelDownload) -> u64 {
+    (download.done_bytes * 100)
+        .checked_div(download.total_bytes)
+        .unwrap_or(0)
+        .min(100)
 }
 
 /// Shortcut edges that go through the hold/tap gesture router.
@@ -214,6 +244,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         overlay: None,
         overlay_ready: false,
         attention: None,
+        loading_detail: None,
     };
     let mut overlay_ever_ready = false;
     let mut overlay_respawn_at: Option<Instant> = None;
@@ -225,18 +256,34 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let mut sidecar = Some(spawn_sidecar(&settings, events_tx.clone())?);
+    // A first start with no speech model at all (an app opened from a disk
+    // image) downloads Sunoto's copy before the sidecar starts; the panel,
+    // the pill and the menu show how far it is.
+    let mut awaiting_model = settings.needs_model_download();
+    let mut model_download: Option<ModelDownload> = None;
+    let mut model_retry_at: Option<Instant> = None;
+    let mut model_retry_backoff = MODEL_RETRY_START;
+    let mut sidecar = if awaiting_model {
+        None
+    } else {
+        Some(spawn_sidecar(&settings, events_tx.clone())?)
+    };
     // An install updated from a version on another model runs that model
     // until the copy of this one is fetched in the background; the sidecar
     // then moves to it at an idle moment, and the old model is deleted once
     // the new one is ready.
     let on_stopgap = settings.on_stopgap_model();
     let model_fetch_stop = Arc::new(AtomicBool::new(false));
-    let model_fetch = if on_stopgap {
+    let mut model_fetch = if on_stopgap {
         logging::info(&format!(
             "speech model: running {} while the new one (1.24 GB) downloads in the background",
             settings.parakeet_model()
         ));
+        spawn_model_fetch(events_tx.clone(), Arc::clone(&model_fetch_stop))
+    } else if awaiting_model {
+        logging::info(
+            "speech model: none on this Mac yet; downloading it (1.24 GB) before the speech engine starts",
+        );
         spawn_model_fetch(events_tx.clone(), Arc::clone(&model_fetch_stop))
     } else {
         None
@@ -287,6 +334,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let mut timing: Option<SessionTiming> = None;
     let mut last_pressed_at: Option<Instant> = None;
     let mut audio_stats: Option<SessionAudioStats> = None;
+    // The capture device as `AudioEvent::Started` named it, and the input
+    // gap totals at the press, for the dictation's accuracy counts.
+    let mut mic_device: Option<String> = None;
+    let mut gaps_at_press = sunoto_audio::input_gaps();
     let mut sidecar_ready = false;
     let mut transcribe_deadline: Option<Instant> = None;
     let mut bubble_hide_at: Option<Instant> = None;
@@ -317,7 +368,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     // Onboarding panel state, edge-triggered: the last (accessibility,
     // microphone) pair sent to the overlay. `None` re-sends on the next
     // poll, which is how a respawned overlay learns the state.
-    let mut last_onboarding: Option<(bool, bool)> = None;
+    let mut last_onboarding: Option<((bool, bool), Option<ModelDownload>)> = None;
     let mut last_onboarding_poll = Instant::now();
     let mut onboarding_in_progress = coordinated_onboarding;
     let mut onboarding_accessibility_granted = accessibility_at_start;
@@ -501,7 +552,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     let blocker = health.current();
                     if blocker != DaemonHealth::WarmingPolish || mode == SessionMode::Dictation {
                         logging::warn(&format!("push-to-talk ignored: {blocker}"));
-                        show_error(&ui, blocker.caption(), &mut bubble_hide_at);
+                        show_error(&ui, &ui.caption(blocker), &mut bubble_hide_at);
                         continue;
                     }
                 }
@@ -510,6 +561,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         system_worker.activate_session(session_id);
                     } else {
                         history.begin(session_id);
+                        gaps_at_press = sunoto_audio::input_gaps();
+                        crate::diag::spawn_snapshot(
+                            session_id,
+                            mic_device.clone(),
+                            events_tx.clone(),
+                        );
                     }
                     last_pressed_at = Some(Instant::now());
                     last_activity = Instant::now();
@@ -624,6 +681,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     let deadline_ms = settings.final_timeout_ms
                         + (recorded_ms as f64 * settings.final_timeout_rtf) as u64;
                     transcribe_deadline = Some(released_at + Duration::from_millis(deadline_ms));
+                    if let Some(diag) = history.diag(session_id) {
+                        diag.gaps(sunoto_audio::input_gaps().since(gaps_at_press));
+                    }
                     if let Some(stats) = audio_stats.as_ref() {
                         logging::info(&format!(
                             "session {session_id}: sent to ASR: {}{}, timeout {deadline_ms}ms",
@@ -720,6 +780,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 logging::info(&format!(
                     "microphone capture started: {description} (source: {device}){after_request}"
                 ));
+                mic_device = Some(device);
                 mic = MicState::Capturing;
                 microphone_verified = true;
             }
@@ -733,6 +794,12 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 microphone_verified = false;
                 if matches!(machine.state(), SessionState::Recording { .. }) {
                     logging::warn("microphone lost mid-dictation; the session keeps running");
+                    if let Some(diag) = machine
+                        .current_session()
+                        .and_then(|session_id| history.diag(session_id))
+                    {
+                        diag.audio.mic_changes += 1;
+                    }
                 }
             }
             Ok(DaemonEvent::Sidecar(SidecarMessage::Event(event))) => match event {
@@ -785,7 +852,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     // hears you.
                     let _ = machine.partial(session_id, text);
                 }
-                SidecarEvent::Final { session_id, text } => {
+                SidecarEvent::Final {
+                    session_id,
+                    text,
+                    diag: asr_diag,
+                } => {
+                    if let Some(diag) = history.diag(session_id) {
+                        diag.asr = asr_diag;
+                    }
                     if let SessionAction::Finalized {
                         session_id,
                         mode,
@@ -949,6 +1023,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 if words_session == session_id =>
                             {
                                 let fixed = fix_near_misses(&text, &words, &english);
+                                if let Some(words) = history
+                                    .diag(session_id)
+                                    .and_then(|diag| diag.words.as_mut())
+                                {
+                                    words.near_miss_fixes =
+                                        crate::diag::changed_words(&text, &fixed);
+                                }
                                 if fixed != text {
                                     logging::info(&format!(
                                         "session {session_id}: word list: {} -> {}",
@@ -1210,7 +1291,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 | SidecarEvent::CheckUpdates
                 | SidecarEvent::InstallUpdate
                 | SidecarEvent::SetAutoUpdate { .. }
-                | SidecarEvent::ClearHistory => {
+                | SidecarEvent::ClearHistory
+                | SidecarEvent::FlagDictation { .. }
+                | SidecarEvent::SendReport { .. } => {
                     logging::warn("unexpected UI event from ASR sidecar");
                 }
             },
@@ -1464,6 +1547,88 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                 }
                 menu.changed();
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::FlagDictation { id }))) => {
+                match crate::history_cli::find_record(&history_dictations_dir(), &id) {
+                    Ok(Some(record)) => {
+                        let env = crate::report::Environment::current();
+                        ui.overlay_send(OverlayRequest::ReportPanel {
+                            id,
+                            text: record
+                                .pointer("/text/inserted")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            included: crate::report::included_lines(&record, &env),
+                            audio_kept: false,
+                        });
+                    }
+                    Ok(None) => menu.alert(
+                        &ui,
+                        "Couldn't find that dictation".into(),
+                        "It is no longer in the history.".into(),
+                        false,
+                    ),
+                    Err(error) => {
+                        logging::warn(&format!("could not read the dictation history: {error}"));
+                        menu.alert(
+                            &ui,
+                            "Couldn't read the history".into(),
+                            crate::menu_bar::sentence(&error.to_string()),
+                            false,
+                        );
+                    }
+                }
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SendReport {
+                id,
+                include_text,
+                include_audio,
+            }))) => {
+                if include_audio {
+                    // No dictation keeps its audio yet; the panel greys the box.
+                    logging::warn("report asked for audio, but none was kept");
+                }
+                let saved = crate::history_cli::find_record(&history_dictations_dir(), &id)
+                    .and_then(|record| {
+                        record.ok_or_else(|| {
+                            std::io::Error::other("the dictation is no longer in the history")
+                        })
+                    })
+                    .and_then(|record| {
+                        let code = crate::report::new_code();
+                        let report = crate::report::build(
+                            &record,
+                            &code,
+                            &crate::report::Environment::current(),
+                            include_text,
+                            crate::history::now_ms(),
+                        );
+                        crate::report::save(&crate::report::reports_dir(), &report)?;
+                        Ok(code)
+                    });
+                let reply = match saved {
+                    Ok(code) => {
+                        logging::info(&format!(
+                            "accuracy report {code} saved (text {})",
+                            if include_text { "included" } else { "left out" }
+                        ));
+                        OverlayRequest::ReportSaved {
+                            id,
+                            code: Some(code),
+                            error: None,
+                        }
+                    }
+                    Err(error) => {
+                        logging::warn(&format!("could not save the accuracy report: {error}"));
+                        OverlayRequest::ReportSaved {
+                            id,
+                            code: None,
+                            error: Some(crate::menu_bar::sentence(&error.to_string())),
+                        }
+                    }
+                };
+                ui.overlay_send(reply);
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(event))) => {
                 logging::warn(&format!("unexpected overlay event: {event:?}"));
@@ -1831,7 +1996,16 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     "hotkey": hotkey,
                     "hotkey_reason": if hotkey == "blocked" { hotkey_block_reason() } else { String::new() },
                     "microphone": mic.name(),
-                    "asr": if sidecar_ready { "ready" } else { "loading" },
+                    "asr": if sidecar_ready {
+                        "ready"
+                    } else if awaiting_model {
+                        "downloading"
+                    } else {
+                        "loading"
+                    },
+                    "model_download_percent": model_download
+                        .filter(|_| awaiting_model)
+                        .map(download_percent),
                     "asr_backend": settings.backend,
                     "polish": polish,
                     "history": if history.is_enabled() { "on" } else { "off" },
@@ -1893,7 +2067,22 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         ));
                     }
                 }
+                if let Some(diag) = history.diag(session_id) {
+                    diag.words = Some(crate::diag::WordsDiag::new(&words, took.as_millis() as u32));
+                }
                 session_words = Some((session_id, words, english));
+            }
+            Ok(DaemonEvent::Diag {
+                session_id,
+                system,
+                input,
+            }) => {
+                if let Some(diag) = history.diag(session_id) {
+                    diag.system = Some(system);
+                    if let Some(input) = input {
+                        diag.input(input);
+                    }
+                }
             }
             Ok(DaemonEvent::UpdateReady(staged)) => {
                 pending_update = Some(staged);
@@ -1935,6 +2124,34 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         );
                     }
                 }
+            }
+            Ok(DaemonEvent::SpeechModelFetched(Ok(()))) if awaiting_model => {
+                awaiting_model = false;
+                model_retry_at = None;
+                if let Some(download) = model_download.as_mut() {
+                    download.done_bytes = download.total_bytes;
+                    download.retrying = false;
+                }
+                ui.loading_detail = None;
+                if ui.attention == Some(DaemonHealth::LoadingAsr) {
+                    ui.send_state(DaemonHealth::LoadingAsr);
+                }
+                logging::info("speech model downloaded; starting the speech engine");
+                match spawn_sidecar(&settings, events_tx.clone()) {
+                    Ok(client) => sidecar = Some(client),
+                    Err(error) => {
+                        logging::error(&format!("sidecar start failed: {error}"));
+                        respawn_at = Some(Instant::now() + respawn_backoff);
+                    }
+                }
+            }
+            Ok(DaemonEvent::SpeechModelFetched(Err(error))) if awaiting_model => {
+                logging::warn(&format!(
+                    "could not download the speech model ({error}); trying again in {}s",
+                    model_retry_backoff.as_secs()
+                ));
+                model_retry_at = Some(Instant::now() + model_retry_backoff);
+                model_retry_backoff = (model_retry_backoff * 2).min(MODEL_RETRY_CAP);
             }
             Ok(DaemonEvent::SpeechModelFetched(Ok(()))) => {
                 model_switch_due = true;
@@ -1986,10 +2203,40 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             if !state.0 || (!state.1 && !initial_capture_pending) {
                 onboarding_in_progress = true;
             }
-            if onboarding_in_progress && last_onboarding != Some(state) {
-                last_onboarding = Some(state);
-                ui.overlay_send(onboarding_request(state, &settings.shortcut));
+            if awaiting_model && let Some(dir) = crate::settings::local_parakeet_model_dir() {
+                let (done_bytes, total_bytes) = crate::setup::speech_model_progress(&dir);
+                let download = ModelDownload {
+                    done_bytes,
+                    total_bytes,
+                    retrying: model_retry_at.is_some(),
+                };
+                model_download = Some(download);
+                let caption = download_caption(download);
+                if ui.loading_detail.as_deref() != Some(caption.as_str()) {
+                    ui.loading_detail = Some(caption);
+                    if ui.attention == Some(DaemonHealth::LoadingAsr) {
+                        ui.send_state(DaemonHealth::LoadingAsr);
+                    }
+                    menu.changed();
+                }
             }
+            if onboarding_in_progress && last_onboarding != Some((state, model_download)) {
+                last_onboarding = Some((state, model_download));
+                ui.overlay_send(onboarding_request(
+                    state,
+                    &settings.shortcut,
+                    model_download,
+                ));
+            }
+        }
+        if let Some(at) = model_retry_at
+            && Instant::now() >= at
+        {
+            model_retry_at = None;
+            if let Some(handle) = model_fetch.take() {
+                let _ = handle.join();
+            }
+            model_fetch = spawn_model_fetch(events_tx.clone(), Arc::clone(&model_fetch_stop));
         }
         if !onboarding_in_progress
             && !blocked_modes.is_empty()
@@ -2108,6 +2355,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 auto_update: update_switch.get(),
                 update_blocked: update_install_blocker.as_deref(),
                 pending_update: pending_update.as_ref(),
+                loading_detail: ui.loading_detail.as_deref(),
             },
         );
         if let Some(mode) =
@@ -2290,13 +2538,43 @@ mod onboarding_tests {
     #[test]
     fn publishes_the_latched_permission_state() {
         assert_eq!(
-            onboarding_request((false, true), "RightOption"),
+            onboarding_request((false, true), "RightOption", None),
             OverlayRequest::Onboarding {
                 accessibility: false,
                 microphone: true,
                 shortcut: Some("Right Option".into()),
+                model_download: None,
             }
         );
+    }
+
+    #[test]
+    fn the_pill_counts_the_download_in_whole_percent() {
+        let download = |done_bytes, total_bytes, retrying| ModelDownload {
+            done_bytes,
+            total_bytes,
+            retrying,
+        };
+        assert_eq!(
+            download_caption(download(0, 1_235_856_093, false)),
+            "downloading speech model 0%"
+        );
+        assert_eq!(
+            download_caption(download(617_928_047, 1_235_856_093, false)),
+            "downloading speech model 50%"
+        );
+        assert_eq!(download_percent(download(10, 10, false)), 100);
+        assert_eq!(
+            download_caption(download(10, 10, false)),
+            "checking speech model..."
+        );
+        assert_eq!(download_percent(download(5, 0, false)), 0);
+        assert_eq!(
+            download_caption(download(5, 10, true)),
+            "download paused; retrying"
+        );
+        // The pill's caption chip holds about 30 characters.
+        assert!(download_caption(download(10, 10, false)).len() <= 30);
     }
 }
 
@@ -2523,4 +2801,9 @@ mod system_mode_integration_tests {
         ));
         assert!(!dispatcher.dispatch(&input).is_success());
     }
+}
+
+/// Where the history's day files are (read for This was wrong).
+fn history_dictations_dir() -> std::path::PathBuf {
+    crate::history::dictations_dir(&crate::history::history_dir())
 }

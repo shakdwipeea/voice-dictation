@@ -65,6 +65,8 @@ pub(crate) struct SessionAudioStats {
     pub(crate) samples: usize,
     pub(crate) sum_squares: f64,
     pub(crate) peak: u16,
+    /// Samples at full scale (capture clamps to ±32767).
+    pub(crate) clipped: usize,
 }
 
 impl SessionAudioStats {
@@ -74,6 +76,9 @@ impl SessionAudioStats {
             let sample_f64 = f64::from(sample);
             self.sum_squares += sample_f64 * sample_f64;
             self.peak = self.peak.max(sample.unsigned_abs());
+            if sample.unsigned_abs() >= i16::MAX as u16 {
+                self.clipped += 1;
+            }
         }
     }
 
