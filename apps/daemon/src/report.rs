@@ -2,9 +2,9 @@
 //! step 2). The user flags a dictation in the menu bar's Recent Dictations;
 //! the overlay's panel lists what a report holds, built here from the
 //! dictation's history record. Send saves the report to
-//! `accuracy-reports/pending/`, which `report_send` uploads (step 3); Keep
-//! on This Mac saves it to `accuracy-reports/kept/`, which nothing reads.
-//! Either way the panel shows a short code the user can quote.
+//! `accuracy-reports/pending/`, which `report_send` uploads (step 3). A
+//! build with nowhere to send says Save and writes `accuracy-reports/kept/`
+//! instead. Either way the panel shows a short code the user can quote.
 //!
 //! A report is built from an allowlist of record fields: the version, the
 //! speech engine, timings and the `diag` counts. The dictation's text goes
@@ -232,7 +232,7 @@ pub(crate) fn build(
 
 /// Write `report` to `dir/<folder>/<code>.json` (private to this user,
 /// written whole or not at all) and return its path. `folder` is
-/// `pending` (to send) or `kept` (this Mac only).
+/// `pending` (to send) or `kept` (a build with nowhere to send).
 pub(crate) fn save(dir: &Path, folder: &str, report: &Value) -> io::Result<PathBuf> {
     let pending = dir.join(folder);
     fs::create_dir_all(&pending)?;

@@ -16,8 +16,8 @@ use sunoto_desktop::{
     hotkey_block_reason, keep_process_responsive, microphone_authorized, request_accessibility,
 };
 use sunoto_ipc::{
-    ModelDownload, OverlayRequest, OverlaySuggestion, PermissionKind, ReportSending, SidecarEvent,
-    SidecarMessage, SidecarRequest,
+    ModelDownload, OverlayRequest, OverlaySuggestion, PermissionKind, SidecarEvent, SidecarMessage,
+    SidecarRequest,
 };
 use sunoto_polish::{polish, resolve_style};
 use sunoto_system::{
@@ -396,10 +396,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             None
         }
     };
-    // This Was Wrong… reports (step 3 of the accuracy-reports plan): the
-    // panel's last choice, and the thread that uploads the Send ones.
-    let mut send_reports = settings.send_reports;
-    let mut report_sender = crate::report_send::Sender::new(send_reports);
+    // Uploads the reports filed with This Was Wrong… (Send).
+    let mut report_sender = crate::report_send::Sender::new();
     let mut menu = MenuBar::new(&settings);
     if settings.capture_idle_stop_secs > 0 {
         logging::info(&format!(
@@ -1565,12 +1563,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 .to_string(),
                             included: crate::report::included_lines(&record, &env),
                             audio_kept: false,
-                            sending: match (report_sender.available(), send_reports) {
-                                (false, _) => ReportSending::Unavailable,
-                                (true, None) => ReportSending::Ask,
-                                (true, Some(true)) => ReportSending::On,
-                                (true, Some(false)) => ReportSending::Off,
-                            },
+                            can_send: report_sender.available(),
                         });
                     }
                     Ok(None) => menu.alert(
@@ -1594,28 +1587,13 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 id,
                 include_text,
                 include_audio,
-                upload,
             }))) => {
                 if include_audio {
                     // No dictation keeps its audio yet; the panel greys the box.
                     logging::warn("report asked for audio, but none was kept");
                 }
-                // The panel remembers Send or Keep on This Mac for next time.
-                if let Some(choice) = upload
-                    && send_reports != Some(choice)
-                {
-                    match crate::setup::set_config_value(
-                        &crate::settings::config_path(),
-                        "send_reports",
-                        choice.into(),
-                    ) {
-                        Ok(()) => send_reports = Some(choice),
-                        Err(error) => {
-                            logging::warn(&format!("could not save send_reports: {error}"));
-                        }
-                    }
-                }
-                let upload = upload == Some(true) && report_sender.available();
+                // A build with nowhere to send only saves (the panel says Save).
+                let upload = report_sender.available();
                 let saved = crate::history_cli::find_record(&history_dictations_dir(), &id)
                     .and_then(|record| {
                         record.ok_or_else(|| {
@@ -1643,7 +1621,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             if upload {
                                 "queued to send"
                             } else {
-                                "kept on this Mac"
+                                "saved on this Mac"
                             },
                             if include_text { "included" } else { "left out" }
                         ));

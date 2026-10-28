@@ -151,16 +151,16 @@ Updates (macOS release installs):
   it on checks right away); **Check for Updates…** looks now and offers
   Install Now. Builds from a checkout never update themselves.
   Progress goes to `~/Library/Logs/sunoto/update.log`.
-- `send_reports`: what the **This Was Wrong…** panel does with a report.
-  Unset until the panel first asks; then it holds the last choice, `true`
-  (Send: upload it to Sunoto's Sentry project) or `false` (Keep on This Mac).
-  Sent reports wait in `accuracy-reports/pending/` next to the history until
-  they go (a background thread, at most 20 a day; after a failed send it
-  tries again in 1 minute, then 2, 4 ... up to hourly); kept ones stay in `accuracy-reports/kept/`; refused ones move to
-  `accuracy-reports/failed/`. Builds without a DSN only save. For a test or
-  self-hosted project set `SUNOTO_REPORT_DSN` (`launchctl setenv` for the
-  installed app). The report holds counts, never the words on screen; the
-  dictation's text goes only when ticked, as an attachment.
+- **This Was Wrong…** reports are not a setting: clicking Send in the
+  panel is the consent for that report. A sent report waits in
+  `accuracy-reports/pending/` next to the history until it goes (a
+  background thread, at most 20 a day; after a failed send it tries again
+  in 1 minute, then 2, 4 ... up to hourly); refused ones move to
+  `accuracy-reports/failed/`. Builds without a DSN say Save and keep the
+  report in `accuracy-reports/kept/`. For a test or self-hosted project set
+  `SUNOTO_REPORT_DSN` (`launchctl setenv` for the installed app). The
+  report holds counts, never the words on screen; the dictation's text
+  goes only when ticked, as an attachment.
 - `llm_polish_keepalive_secs`: GPU ping interval while a dictation session
   is in flight (press until 20 s after the polish result). `0` disables.
 - `llm_polish_keepalive_always`: ping all day, as before 2026-09-17. Costs
