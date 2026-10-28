@@ -257,6 +257,21 @@ class PauseDecodeTest(unittest.TestCase):
         self.assertEqual(engine.finish(), _words(1.0))
         self.assertEqual(engine.pieces, [(0, 16_000)])
 
+    def test_finish_reports_pieces_and_pause_reuse_without_text(self):
+        engine = _FakeDirectParakeetEngine(final_text=None, **PAUSES)
+        engine.start(560)
+        _feed(engine, [(8000, 0.8), (0, 0.5)])
+        engine.finish()
+        self.assertEqual(
+            engine.last_diag,
+            {"decode_ms": 0, "pieces": 1, "unk_retries": 0, "pause_reused": True, "boosted_tokens": 0},
+        )
+        engine.start(560)
+        _feed(engine, [(8000, 0.8), (0, 0.5), (8000, 0.5)])
+        engine.finish()
+        self.assertEqual(engine.last_diag["pieces"], 1)
+        self.assertFalse(engine.last_diag["pause_reused"])
+
     def test_a_long_silence_starts_only_one_pause_decode(self):
         engine = _FakeDirectParakeetEngine(final_text=None, **PAUSES)
         engine.start(560)
@@ -352,6 +367,15 @@ class OfflineProtocolTest(unittest.TestCase):
             [{"type": "final", "session_id": 7, "text": "offline parakeet"}],
         )
         self.assertEqual(len(self.engine.transcribe_calls), 1)
+
+    def test_final_carries_the_engines_counts_when_it_has_them(self):
+        self.handle('{"type":"start_session","session_id":4,"profile_ms":560}')
+        self.handle('{"type":"audio_chunk","session_id":4,"samples":[0,1,2]}')
+        self.engine.last_diag = {"pieces": 2}
+        self.assertEqual(
+            self.handle('{"type":"finish_session","session_id":4}'),
+            [{"type": "final", "session_id": 4, "text": "offline parakeet", "diag": {"pieces": 2}}],
+        )
 
     def test_profile_ms_is_accepted_but_ignored(self):
         for profile in (80, 160, 560, 1120):

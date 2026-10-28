@@ -136,6 +136,10 @@ class WordBooster:
                     self.start_bonus[token_id] = value
         self._next: dict[tuple[int, int], dict[int, int]] = {}
         self._start_vector = None
+        # Tokens where the bonus changed the decoder's pick, over every decode
+        # of this dictation (for the accuracy record).
+        self.changed = 0
+        self.unk_retries = 0
         # One pattern for every word, compiled now while the user is still
         # talking, so respelling after the tap is a single search. A match is
         # looked up by its letters ("Husky AI" -> "huskyai").
@@ -291,6 +295,8 @@ def decode_greedy(model, mx, features, length: int, booster: WordBooster):
             and not booster.start_may_replace(wanted, pred_token)
         ):
             pred_token = wanted
+        if pred_token != wanted:
+            booster.changed += 1
 
         token_probs = mx.softmax(token_logits, axis=-1)
         entropy = -mx.sum(token_probs * mx.log(token_probs + 1e-10), axis=-1)
@@ -341,5 +347,6 @@ def generate(model, mx, mel, booster: WordBooster):
         from nemotron_sidecar import log  # noqa: delayed; avoids a cycle
 
         log("word list: decode emitted a special token; decoding again without the list")
+        booster.unk_retries += 1
         return model.generate(mel)[0]
     return sentences_to_result(tokens_to_sentences(tokens))

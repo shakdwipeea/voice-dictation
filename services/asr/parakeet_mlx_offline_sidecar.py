@@ -152,6 +152,7 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         self._get_logmel = None
         self._token_index = None
         self._booster = None  # this dictation's words; touched on the worker only
+        self.last_diag = None  # counts about the last finish(), for the final event
         self.precision = precision
         self.chunk_duration = chunk_duration
         self.overlap_duration = overlap_duration
@@ -229,6 +230,8 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         self._segment_start = 0  # where the untranscribed audio begins
         self._pieces = []  # futures of (text, tokens), in audio order
         self._pause = None  # the latest PauseDecode, if any
+        self._decode_s = 0.0  # GPU decode time of this dictation, every piece
+        self._unk_retries = 0
 
     def start(self, profile_ms: int) -> None:
         # profile_ms is accepted for config parity but ignored offline.
@@ -280,6 +283,7 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         ``model.transcribe(path)`` because parakeet-mlx's chunk stitching lives
         there.
         """
+        self.last_diag = None
         if self.chunk_duration is not None:
             return self._worker.submit(super().finish).result()
         try:
@@ -307,6 +311,14 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
                 text = self._tokens_text(tokens)
             if self._booster is not None and text:
                 text = self._booster.respell(text)
+            booster = self._booster
+            self.last_diag = {
+                "decode_ms": round(self._decode_s * 1000),
+                "pieces": len(pieces),
+                "unk_retries": self._unk_retries + (booster.unk_retries if booster else 0),
+                "pause_reused": reused,
+                "boosted_tokens": booster.changed if booster else 0,
+            }
             log(
                 f"finish: {end} samples ({end / SAMPLE_RATE:.2f}s audio), "
                 f"{len(pieces)} piece(s), last one "
@@ -494,6 +506,7 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         else:
             results = [word_boost.generate(self.model, self._mx, mel, booster)]
         t_generate = time.perf_counter() - t_gen0
+        self._decode_s += t_generate
         log(
             f"model.generate: audio_array {t_audio*1000:.0f}ms, "
             f"logmel {t_mel*1000:.0f}ms, decode {t_generate*1000:.0f}ms"
@@ -523,6 +536,7 @@ class OfflineParakeetMlxEngine(_OfflineBufferEngine):
         if not special(result):
             return result
         log("decode emitted special tokens (<unk>); decoding again")
+        self._unk_retries += 1
         retry = self.model.generate(mel)[0]
         if not special(retry):
             return retry

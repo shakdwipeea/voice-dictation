@@ -19,6 +19,7 @@ use serde::Serialize;
 use sunoto_ipc::RecentDictation;
 use sunoto_polish::{StageTrace, StyleProfile};
 
+use crate::diag::Diag;
 use crate::logging;
 use crate::session::{SessionAudioStats, TimingBreakdown};
 use crate::settings::Settings;
@@ -248,6 +249,8 @@ pub(crate) struct Record {
     pub(crate) llm: Llm,
     pub(crate) insertion: Option<Insertion>,
     pub(crate) timing_ms: Option<TimingBreakdown>,
+    /// Counts for accuracy reports; never text (see `diag`).
+    pub(crate) diag: Diag,
 }
 
 impl Record {
@@ -273,6 +276,7 @@ impl Record {
             llm: Llm::default(),
             insertion: None,
             timing_ms: None,
+            diag: Diag::default(),
         }
     }
 
@@ -294,8 +298,9 @@ struct Draft {
     streamed: bool,
 }
 
-/// The event loop's handle on history. Every method is a cheap no-op when
-/// history is off, so the loop calls them unconditionally.
+/// The event loop's handle on history. With history off the record is still
+/// kept while the dictation runs, for its `diag` summary in the log, and
+/// dropped at `finish`; the loop calls every method unconditionally.
 pub(crate) struct HistoryRecorder {
     writer: Option<SyncSender<Box<Record>>>,
     exclude_apps: Vec<String>,
@@ -392,9 +397,6 @@ impl HistoryRecorder {
     /// A dictation started. System mode is never recorded, so the loop calls
     /// this for dictation sessions only.
     pub(crate) fn begin(&mut self, session_id: u64) {
-        if self.writer.is_none() {
-            return;
-        }
         if let Some(stale) = self.draft.take() {
             self.send(stale.record);
         }
@@ -411,6 +413,11 @@ impl HistoryRecorder {
             .as_mut()
             .filter(|draft| draft.session_id == session_id)
             .map(|draft| &mut draft.record)
+    }
+
+    /// This dictation's accuracy counts, while it runs.
+    pub(crate) fn diag(&mut self, session_id: u64) -> Option<&mut Diag> {
+        self.draft(session_id).map(|record| &mut record.diag)
     }
 
     /// The window focused at release: `(bundle id, name)` on macOS,
@@ -440,6 +447,9 @@ impl HistoryRecorder {
                 rms: stats.rms().round() as u32,
                 peak: stats.peak,
             });
+            if let Some(stats) = audio {
+                draft.record.diag.audio.clipped_samples = stats.clipped as u64;
+            }
         }
     }
 
@@ -504,6 +514,12 @@ impl HistoryRecorder {
         record.error = error;
         record.insertion = method.map(|method| Insertion { method, streamed });
         record.timing_ms = timing;
+        logging::info(&format!(
+            "session {session_id}: diag: {}",
+            record
+                .diag
+                .summary(record.sound.map_or(0, |sound| sound.ms))
+        ));
         let excluded = record.target.as_ref().is_some_and(|target| {
             self.exclude_apps.iter().any(|app| {
                 app.eq_ignore_ascii_case(&target.id) || app.eq_ignore_ascii_case(&target.name)
@@ -569,6 +585,7 @@ impl HistoryRecorder {
 fn recent_entry(record: &Record) -> Option<RecentDictation> {
     let text = record.text.inserted.as_deref()?.trim();
     (!record.redacted && !text.is_empty()).then(|| RecentDictation {
+        id: record.id.clone(),
         text: text.to_string(),
         at_ms: record.ts,
     })
@@ -924,7 +941,13 @@ mod tests {
         assert!(!history.is_enabled());
         history.begin(1);
         history.transcript(1, "hello", None);
+        // Kept in memory for the diag log line, never saved.
+        assert!(history.diag(1).is_some());
+        history.inserted(1, "hello", false);
+        history.finish(1, Status::Inserted, None, Some("pasted"), None);
         assert!(history.draft.is_none());
+        assert!(history.recent().is_empty());
+        assert!(!history.take_recent_changed());
     }
 
     #[test]

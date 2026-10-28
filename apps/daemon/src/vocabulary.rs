@@ -116,6 +116,21 @@ pub struct SessionWords {
     /// The folder the project words came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_dir: Option<PathBuf>,
+    /// How much of the screen was read for this list.
+    #[serde(skip)]
+    pub read: ScreenRead,
+}
+
+/// How much of the focused window one word list read, in counts only (for
+/// the accuracy record; never the words).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScreenRead {
+    /// The whole window was walked because the text box was short.
+    pub window: bool,
+    /// Elements visited in that walk.
+    pub elements: u32,
+    /// Characters of screen text the list was drawn from.
+    pub chars: u32,
 }
 
 impl SessionWords {
@@ -123,16 +138,13 @@ impl SessionWords {
         self.screen.is_empty() && self.project.is_empty() && self.everywhere.is_empty()
     }
 
+    /// Counts only: the project folder's name is the user's, so it stays
+    /// out of the log.
     pub fn summary(&self) -> String {
         format!(
-            "{} on screen, {} in project{}, {} everywhere",
+            "{} on screen, {} in project, {} everywhere",
             self.screen.len(),
             self.project.len(),
-            self.project_dir
-                .as_ref()
-                .and_then(|dir| dir.file_name())
-                .map(|name| format!(" {}", name.to_string_lossy()))
-                .unwrap_or_default(),
             self.everywhere.len()
         )
     }
@@ -996,6 +1008,8 @@ pub struct Focus {
     pub text: Option<String>,
     /// The rest of the window's visible text, when it was read.
     pub window_text: Option<String>,
+    /// Elements visited reading `window_text`, when the window was walked.
+    pub walked_elements: Option<u32>,
 }
 
 /// The project the focused window is in: the folder of its document (a
@@ -1065,6 +1079,7 @@ fn read_focus(pid: Option<i32>, sources: &Sources) -> Option<Focus> {
         document: snapshot.document,
         text: snapshot.text,
         window_text: snapshot.window_text,
+        walked_elements: snapshot.walk.map(|walk| walk.elements),
     })
 }
 
@@ -1279,6 +1294,11 @@ impl Collector {
         .into_iter()
         .flatten()
         .collect();
+        let read = ScreenRead {
+            window: focus.walked_elements.is_some(),
+            elements: focus.walked_elements.unwrap_or(0),
+            chars: texts.iter().map(|text| text.chars().count() as u32).sum(),
+        };
         let mut screen: Vec<String> = self.extra.clone();
         screen.extend(unusual_words(
             &texts,
@@ -1291,6 +1311,7 @@ impl Collector {
             project,
             everywhere,
             project_dir,
+            read,
         };
         merge_spellings(&mut words);
         words
@@ -1768,7 +1789,7 @@ mod tests {
             screen: vec!["SUNOTO".into(), "Ghostty".into()],
             project: vec!["sunoto".into(), "nemotron".into()],
             everywhere: vec!["Sunoto".into(), "ghostty".into(), "uniblox".into()],
-            project_dir: None,
+            ..SessionWords::default()
         };
         merge_spellings(&mut words);
         assert_eq!(words.screen, ["Sunoto", "Ghostty"]);

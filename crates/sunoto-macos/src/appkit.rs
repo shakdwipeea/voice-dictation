@@ -8,15 +8,28 @@
 //! gives every item's every type as bytes, which is what a faithful restore
 //! needs. Every call is wrapped in an autorelease pool and returns `Option`
 //! or `bool`; nothing here panics on a missing class or selector.
+//!
+//! The app's first-start chores live here too, for the same runtime
+//! plumbing: its Login Item, the Trash, and finding where a translocated
+//! copy really is.
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_void};
+use std::os::raw::{c_char, c_int, c_void};
+use std::path::{Path, PathBuf};
 
 #[link(name = "NaturalLanguage", kind = "framework")]
 unsafe extern "C" {}
 
 #[link(name = "Contacts", kind = "framework")]
 unsafe extern "C" {}
+
+#[link(name = "ServiceManagement", kind = "framework")]
+unsafe extern "C" {}
+
+unsafe extern "C" {
+    fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+}
 
 #[link(name = "AppKit", kind = "framework")]
 #[link(name = "objc")]
@@ -372,6 +385,21 @@ pub fn frontmost_pid() -> Option<i32> {
     (pid > 0).then_some(pid)
 }
 
+/// `NSProcessInfo.thermalState`: 0 nominal, 1 fair, 2 serious, 3 critical.
+pub fn thermal_state() -> Option<u32> {
+    let pool = Pool::new()?;
+    // SAFETY: documented NSProcessInfo selectors; thermalState is an NSInteger.
+    let state = unsafe {
+        let info = send_id(objc_class("NSProcessInfo")?, sel("processInfo")?);
+        if info.is_null() {
+            return None;
+        }
+        send_isize(info, sel("thermalState")?)
+    };
+    drop(pool);
+    u32::try_from(state).ok()
+}
+
 /// Opt the process out of App Nap for its whole lifetime. Without this a
 /// background app with no window and no audio running gets throttled: the
 /// event tap is disabled "by timeout", the delivery probe expires, and the
@@ -411,6 +439,174 @@ pub fn keep_process_responsive(reason: &str) -> bool {
     };
     drop(pool);
     ok
+}
+
+/// Whether macOS opens this app at login, as `SMAppService` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginItemStatus {
+    NotRegistered,
+    Enabled,
+    /// Registered, but switched off under Login Items in System Settings.
+    RequiresApproval,
+    NotFound,
+}
+
+/// The login item of the app this process runs from, through
+/// `SMAppService.mainApp`. Only meaningful in a process whose executable is
+/// inside the app bundle. `None` when ServiceManagement is unavailable.
+pub fn login_item_status() -> Option<LoginItemStatus> {
+    let pool = Pool::new()?;
+    // SAFETY: documented SMAppService class method and NSInteger property.
+    let status = unsafe {
+        let service = send_id(objc_class("SMAppService")?, sel("mainAppService")?);
+        if service.is_null() {
+            return None;
+        }
+        send_usize(service, sel("status")?)
+    };
+    drop(pool);
+    Some(match status {
+        0 => LoginItemStatus::NotRegistered,
+        1 => LoginItemStatus::Enabled,
+        2 => LoginItemStatus::RequiresApproval,
+        _ => LoginItemStatus::NotFound,
+    })
+}
+
+/// Add this app to Login Items, or take it out. Adding it asks for no
+/// permission (AppleScript through System Events did); macOS shows a
+/// "Login Item Added" notice instead, and the user can switch it off in
+/// System Settings.
+pub fn set_login_item(on: bool) -> Result<(), String> {
+    let pool = Pool::new().ok_or("AppKit is unavailable")?;
+    let name = if on {
+        "registerAndReturnError:"
+    } else {
+        "unregisterAndReturnError:"
+    };
+    // SAFETY: documented SMAppService selectors taking an NSError
+    // out-pointer; the error is autoreleased into `pool`.
+    let result = unsafe {
+        let class = objc_class("SMAppService").ok_or("ServiceManagement is unavailable")?;
+        let service = send_id(class, sel("mainAppService").ok_or("no selector")?);
+        if service.is_null() {
+            return Err("SMAppService has no main app service".into());
+        }
+        let function: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut *mut c_void) -> bool =
+            std::mem::transmute(objc_msgSend as *const ());
+        let mut error: *mut c_void = std::ptr::null_mut();
+        if function(service, sel(name).ok_or("no selector")?, &mut error) {
+            Ok(())
+        } else {
+            Err(error_text(error))
+        }
+    };
+    drop(pool);
+    result
+}
+
+/// Move `path` to the Trash, as Finder would.
+pub fn move_to_trash(path: &Path) -> Result<(), String> {
+    let pool = Pool::new().ok_or("AppKit is unavailable")?;
+    let text = path.to_str().ok_or("the path is not UTF-8")?;
+    // SAFETY: documented NSFileManager / NSURL selectors; every object is
+    // autoreleased into `pool`.
+    let result = unsafe {
+        let url = file_url(text).ok_or("cannot make a file URL")?;
+        let manager = send_id(
+            objc_class("NSFileManager").ok_or("no NSFileManager")?,
+            sel("defaultManager").ok_or("no selector")?,
+        );
+        let function: unsafe extern "C" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+            *mut *mut c_void,
+            *mut *mut c_void,
+        ) -> bool = std::mem::transmute(objc_msgSend as *const ());
+        let mut error: *mut c_void = std::ptr::null_mut();
+        if function(
+            manager,
+            sel("trashItemAtURL:resultingItemURL:error:").ok_or("no selector")?,
+            url,
+            std::ptr::null_mut(),
+            &mut error,
+        ) {
+            Ok(())
+        } else {
+            Err(error_text(error))
+        }
+    };
+    drop(pool);
+    result
+}
+
+/// Where a translocated app really is. macOS runs a downloaded app that
+/// was not moved by Finder (one opened straight from a disk image or from
+/// Downloads) from a random read-only path; this maps that path back.
+/// `None` when `path` is not translocated. The two functions are
+/// Security.framework exports without a public header, so they are looked
+/// up at run time.
+pub fn translocated_original(path: &Path) -> Option<PathBuf> {
+    type IsTranslocated = unsafe extern "C" fn(*mut c_void, *mut bool, *mut *mut c_void) -> bool;
+    type OriginalPath = unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> *mut c_void;
+    const RTLD_LAZY: c_int = 1;
+    let pool = Pool::new()?;
+    // SAFETY: the symbols have these signatures since macOS 10.12 and are
+    // checked for null before use; the NSURL passed is toll-free bridged to
+    // CFURLRef, and the created original URL is released after reading it.
+    let original = unsafe {
+        let security = dlopen(
+            c"/System/Library/Frameworks/Security.framework/Security".as_ptr(),
+            RTLD_LAZY,
+        );
+        if security.is_null() {
+            return None;
+        }
+        let is_translocated = dlsym(security, c"SecTranslocateIsTranslocatedURL".as_ptr());
+        let original_path = dlsym(security, c"SecTranslocateCreateOriginalPathForURL".as_ptr());
+        if is_translocated.is_null() || original_path.is_null() {
+            return None;
+        }
+        let is_translocated: IsTranslocated = std::mem::transmute(is_translocated);
+        let original_path: OriginalPath = std::mem::transmute(original_path);
+        let url = file_url(path.to_str()?)?;
+        let mut translocated = false;
+        if !is_translocated(url, &mut translocated, std::ptr::null_mut()) || !translocated {
+            return None;
+        }
+        let original = original_path(url, std::ptr::null_mut());
+        if original.is_null() {
+            return None;
+        }
+        let text = ns_string_to_rust(send_id(original, sel("path")?));
+        send_void(original, sel("release")?);
+        text
+    };
+    drop(pool);
+    original.map(PathBuf::from)
+}
+
+/// SAFETY: call inside an autorelease pool; the URL is autoreleased.
+unsafe fn file_url(path: &str) -> Option<*mut c_void> {
+    let url = unsafe {
+        send_id_id(
+            objc_class("NSURL")?,
+            sel("fileURLWithPath:")?,
+            ns_string(path)?,
+        )
+    };
+    if url.is_null() { None } else { Some(url) }
+}
+
+/// SAFETY: `error` must be an NSError or null.
+unsafe fn error_text(error: *mut c_void) -> String {
+    if error.is_null() {
+        return "unknown error".into();
+    }
+    sel("localizedDescription")
+        .and_then(|selector| unsafe { ns_string_to_rust(send_id(error, selector)) })
+        .unwrap_or_else(|| "unknown error".into())
 }
 
 // ----- runtime plumbing --------------------------------------------------------
@@ -602,6 +798,12 @@ unsafe fn send_i32(receiver: *mut c_void, selector: *mut c_void) -> i32 {
     unsafe { function(receiver, selector) }
 }
 
+unsafe fn send_isize(receiver: *mut c_void, selector: *mut c_void) -> isize {
+    let function: unsafe extern "C" fn(*mut c_void, *mut c_void) -> isize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector) }
+}
+
 unsafe fn send_cstr(receiver: *mut c_void, selector: *mut c_void) -> *const c_char {
     let function: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *const c_char =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
@@ -639,5 +841,22 @@ mod tests {
         assert!(restore(&before, count));
         let after = snapshot().expect("snapshot after");
         assert_eq!(after, before);
+    }
+
+    /// A folder this process made goes to the real Trash, and a path that
+    /// was never translocated maps to nothing. Ignored by default because it
+    /// leaves a folder in the Trash; run with `--ignored` on a Mac.
+    #[test]
+    #[ignore = "puts a folder in the Trash"]
+    fn live_trash_and_translocation_lookup() {
+        let dir = std::env::temp_dir().join(format!("sunoto-trash-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(translocated_original(&dir), None);
+        move_to_trash(&dir).expect("trash");
+        assert!(!dir.exists());
+        assert!(
+            move_to_trash(&dir).is_err(),
+            "a missing file reports an error"
+        );
     }
 }

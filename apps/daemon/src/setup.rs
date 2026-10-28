@@ -1,5 +1,6 @@
-//! `sunoto-daemon setup`: build the app bundle, register it as a Login Item,
-//! start it, and watch the running daemon's own health until it is ready.
+//! `sunoto-daemon setup`: build the app bundle, install and start it, and
+//! watch the running daemon's own health until it is ready. The app adds
+//! itself to Login Items when it starts (`first_open`).
 //!
 //! Why the daemon is the bundle's executable: macOS attaches Input
 //! Monitoring and Accessibility grants to the process that uses them, and
@@ -336,8 +337,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         // copy as well, and the updater could not roll back to a working app.
         require_installed_identity(&home)?;
     } else {
-        // Both talk to System Events, which an update started by the app
-        // itself may not be allowed to do; the Login Item already exists.
+        // It may talk to System Events, which an update started by the app
+        // itself may not be allowed to do.
         remove_legacy_login_item(&home);
     }
     stop_running_daemons();
@@ -378,6 +379,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let marker = home
         .join("Library/Application Support/sunoto")
         .join(SIGNING_IDENTITY_MARKER);
+    // An earlier setup left this marker, and it added the Login Item
+    // through System Events (see `first_open`).
+    let installed_before = marker.is_file();
     let identity_changed = identity.as_ref().is_none_or(|identity| {
         fs::read_to_string(&marker)
             .map(|value| value.trim() != identity.fingerprint)
@@ -400,10 +404,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     } else {
         let _ = fs::remove_file(&marker);
     }
-    if args.login_item {
-        register_login_item(&installed)?;
-        ok(&format!("{APP_NAME} registered in Login Items"));
-    }
+    login_item(&args, installed_before, &installed)?;
     fs::create_dir_all(log_path.parent().expect("log path has a parent"))?;
     // An update keeps the log, so the old version's lines about it stay.
     if !args.update {
@@ -414,6 +415,46 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     section("permissions");
     watch_until_ready(args.timeout, &installed)
+}
+
+/// The app adds itself to Login Items when it starts (`first_open`), which
+/// asks for no permission; setup only records what an older install has,
+/// or that the user wants none.
+fn login_item(args: &Args, installed_before: bool, app: &Path) -> Result<(), Box<dyn Error>> {
+    use crate::first_open::{LoginItemRoute, login_item_route, set_login_item_route};
+    let route = login_item_route();
+    if !args.login_item && !args.update {
+        if route == Some(LoginItemRoute::App) {
+            let status = Command::new(app.join("Contents/MacOS/sunoto-daemon"))
+                .args(["login-item", "off"])
+                .stdout(Stdio::null())
+                .status()?;
+            if !status.success() {
+                warn("could not take Sunoto out of Login Items; switch it off in System Settings");
+            }
+        }
+        set_login_item_route(LoginItemRoute::Off)?;
+        note(&format!(
+            "{APP_NAME} does not open at login (--no-login-item)"
+        ));
+    } else if route.is_some() {
+        ok(&format!(
+            "Login Item left as it is ({})",
+            if route == Some(LoginItemRoute::Off) {
+                "off"
+            } else {
+                "on"
+            }
+        ));
+    } else if installed_before {
+        set_login_item_route(LoginItemRoute::Legacy)?;
+        ok("kept the Login Item an earlier setup added");
+    } else {
+        note(&format!(
+            "{APP_NAME} adds itself to Login Items when it starts"
+        ));
+    }
+    Ok(())
 }
 
 /// Change one key in the config file and leave the rest as written, so
@@ -626,6 +667,25 @@ pub(crate) fn fetch_speech_model(dir: &Path, progress: Progress) -> Result<(), B
                 *bytes,
                 progress,
             )
+        })
+}
+
+/// How much of Sunoto's copy of the speech model is in `dir`, and how big it
+/// is in all, in bytes. A finished file counts whole; one still downloading
+/// counts its `.part`, which curl grows in place.
+pub(crate) fn speech_model_progress(dir: &Path) -> (u64, u64) {
+    ASR_MODEL_FILES
+        .iter()
+        .fold((0, 0), |(done, total), (name, _, bytes)| {
+            let file = dir.join(name);
+            let have = if file.is_file() {
+                *bytes
+            } else {
+                let mut partial = file.into_os_string();
+                partial.push(".part");
+                fs::metadata(partial).map_or(0, |meta| meta.len().min(*bytes))
+            };
+            (done + have, total + bytes)
         })
 }
 
@@ -905,18 +965,31 @@ pub fn uninstall(args: &[String]) -> Result<(), Box<dyn Error>> {
     section("uninstall");
     stop_running_daemons();
     remove_legacy_login_item(&home);
-    let script = format!(
-        r#"tell application "System Events"
+    match crate::first_open::login_item_route() {
+        Some(crate::first_open::LoginItemRoute::App) if installed.exists() => {
+            let _ = Command::new(installed.join("Contents/MacOS/sunoto-daemon"))
+                .args(["login-item", "off"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        Some(crate::first_open::LoginItemRoute::Legacy) => {
+            let script = format!(
+                r#"tell application "System Events"
     try
         delete every login item whose name is "{APP_NAME}"
     end try
 end tell"#
-    );
-    let _ = Command::new("osascript")
-        .args(["-e", &script])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+            );
+            let _ = Command::new("osascript")
+                .args(["-e", &script])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        _ => {}
+    }
+    crate::first_open::clear_login_item_route();
     if installed.exists() {
         fs::remove_dir_all(&installed)?;
         ok(&format!("removed {}", installed.display()));
@@ -1348,10 +1421,13 @@ fn remove_legacy_login_item(home: &Path) {
     let legacy_app = home
         .join("Applications")
         .join(format!("{LEGACY_LOGIN_ITEM}.app"));
-    if legacy_app.exists() {
-        let _ = fs::remove_dir_all(&legacy_app);
-        note(&format!("removed {}", legacy_app.display()));
+    if !legacy_app.exists() {
+        // Nothing of it is here, so do not ask System Events: that is an
+        // Automation prompt naming the Terminal.
+        return;
     }
+    let _ = fs::remove_dir_all(&legacy_app);
+    note(&format!("removed {}", legacy_app.display()));
     let script = format!(
         r#"tell application "System Events"
     try
@@ -1364,29 +1440,6 @@ end tell"#
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-}
-
-fn register_login_item(app: &Path) -> Result<(), Box<dyn Error>> {
-    let script = format!(
-        r#"on run argv
-    set appPath to item 1 of argv
-    tell application "System Events"
-        try
-            delete every login item whose name is "{APP_NAME}"
-        end try
-        make login item at end with properties {{name:"{APP_NAME}", path:appPath, hidden:true}}
-    end tell
-end run"#
-    );
-    let status = Command::new("osascript")
-        .args(["-e", &script])
-        .arg(app)
-        .stdout(Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err("could not register the Login Item (System Events refused)".into());
-    }
-    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<(), Box<dyn Error>> {
@@ -1777,5 +1830,23 @@ mod tests {
         let started = Instant::now();
         assert!(wait_unless_stopped(slow, &stop).is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn download_progress_counts_finished_files_and_the_part_being_written() {
+        let dir = std::env::temp_dir().join(format!("sunoto-progress-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let total: u64 = ASR_MODEL_FILES.iter().map(|(_, _, bytes)| bytes).sum();
+        assert_eq!(speech_model_progress(&dir), (0, total));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.json"), "{}").unwrap();
+        fs::write(dir.join("model.safetensors.part"), vec![0u8; 1000]).unwrap();
+        assert_eq!(
+            speech_model_progress(&dir),
+            (ASR_MODEL_FILES[0].2 + 1000, total)
+        );
+        fs::write(dir.join("model.safetensors"), "").unwrap();
+        assert_eq!(speech_model_progress(&dir), (total, total));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "website",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/antash/workspace/antash-mishra.github.io", "run", "dev", "--", "--port", "5199", "--strictPort"],
+      "port": 5199
+    }
+  ]
+}

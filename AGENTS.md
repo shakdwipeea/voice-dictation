@@ -188,7 +188,12 @@ muted; check System Settings → Sound → Input.
   ~/Applications/Sunoto.app`. Permissions (Accessibility and Microphone;
   Accessibility also covers the shortcut's event tap, so Input Monitoring is
   not requested) are granted to the one entry `Sunoto.app`; the stable local
-  signature keeps those grants across rebuilds and reinstalls.
+  signature keeps those grants across rebuilds and reinstalls. The app adds
+  itself to Login Items on its first start (`first_open.rs`, `SMAppService`,
+  no prompt); never go back to System Events from setup, which is an
+  Automation prompt naming the Terminal. A first start with no speech model
+  downloads it in the app (sidecar held back until it is in); an app opened
+  from a disk image or Downloads first offers Move to Applications.
 - **Development launch:** run the **bare binary** from a terminal, NOT via
   launchd — `nohup target/release/sunoto-daemon run > /tmp/sunoto-bare.log
   2>&1 &`. launchd agents have no responsible process, so TCC disables the
@@ -332,12 +337,18 @@ muted; check System Settings → Sound → Input.
 - The menu bar item (`MenuBarController` in the overlay, a waveform
   template image) builds its menu from the daemon's `menu` message
   (`apps/daemon/src/menu_bar.rs`, sent only when its content changes):
-  status, Recent Dictations (the last 10 kept in history; a click copies;
-  Clear History…), Check for Updates… (`update::spawn_check_now`, answered
+  status, Recent Dictations (the last 10 kept in history; each has Copy and
+  This Was Wrong…, which opens the report panel; Clear History…), Check for Updates… (`update::spawn_check_now`, answered
   with an `alert`) and Install Updates Automatically (writes `auto_update`,
   applied live through `update::ModeSwitch`). The overlay never logs or
   stores the dictation text it is sent. The app icon comes from
   `tools/ui/make-app-icon.swift` → `packaging/macos/AppIcon.icns`.
+- Accuracy reports (docs/accuracy-reports-plan-2026-10-28.md): every
+  dictation's history record carries `diag` counts (`apps/daemon/src/diag.rs`,
+  logged as `session N: diag: …`). This Was Wrong… shows the report panel
+  (`ReportPanelController`); Send saves `report::build`'s allowlisted report
+  to `accuracy-reports/pending/SUN-XXXX.json`. The dictation's text goes in
+  only when ticked, and only under `attachments`. Nothing uploads yet (step 3).
 - On a Mac with a notch the pill is an island grown out of the notch
   (`IslandView`, `overlay_style: "auto"`, the default; design A of
   `docs/notch-island-designs.html`): the notch grows a short pill under the

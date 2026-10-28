@@ -91,7 +91,7 @@ for venv in .venv-nemotron-mac .venv-llm-polish-mac; do
 done
 cp "$ROOT/target/release/sunoto-daemon" "$APP/Contents/MacOS/sunoto-daemon"
 cp "$ROOT/target/release/sunoto-overlay" "$APP/Contents/MacOS/sunoto-overlay"
-cp "$ROOT/packaging/macos/AppIcon.icns" "$RES/AppIcon.icns"
+cp "$ROOT/packaging/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 "$ROOT/target/release/sunoto-daemon" setup --print-plist > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 # Use the machine-local identity when this build host has one. Release CI

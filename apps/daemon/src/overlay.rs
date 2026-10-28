@@ -62,11 +62,23 @@ pub(crate) struct UiFront {
     /// `hide()` returns to this state instead of clearing the screen, so a
     /// transient error bubble never erases "hotkey blocked".
     pub(crate) attention: Option<DaemonHealth>,
+    /// What the pill says instead of "loading speech model..." while a
+    /// first start downloads it ("downloading speech model 40%").
+    pub(crate) loading_detail: Option<String>,
 }
 
 impl UiFront {
     pub(crate) fn overlay_active(&self) -> bool {
         self.overlay.is_some() && self.overlay_ready
+    }
+
+    /// The caption for `health`, with the download's progress in place of
+    /// the loading one.
+    pub(crate) fn caption(&self, health: DaemonHealth) -> String {
+        match &self.loading_detail {
+            Some(detail) if health == DaemonHealth::LoadingAsr => detail.clone(),
+            _ => health.caption().to_string(),
+        }
     }
 
     /// Publish daemon health. `Ready` clears the idle pill; anything else
@@ -84,14 +96,14 @@ impl UiFront {
         if self.overlay_active() {
             self.overlay_send(OverlayRequest::State {
                 name: health.name().to_string(),
-                detail: health.caption().to_string(),
+                detail: self.caption(health),
             });
         } else if health.is_ready() {
             let _ = self.bubble.send(UiCommand::HideBubble);
         } else {
             let _ = self.bubble.send(UiCommand::ShowBubble(
                 BubbleKind::Transcribing,
-                health.caption().to_string(),
+                self.caption(health),
             ));
         }
     }
@@ -202,6 +214,7 @@ mod tests {
             overlay: Some(OverlayHandle { tx }),
             overlay_ready: true,
             attention: None,
+            loading_detail: None,
         };
         (ui, rx)
     }

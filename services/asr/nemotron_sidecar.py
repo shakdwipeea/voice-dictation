@@ -542,7 +542,12 @@ class SidecarServer:
                 return [self._error(session_id, "invalid request: finish_session")]
             text = self.engine.finish()
             self.active_session = None
-            return [{"type": "final", "session_id": session_id, "text": text}]
+            final = {"type": "final", "session_id": session_id, "text": text}
+            # Counts about the decode, from engines that keep them.
+            diag = getattr(self.engine, "last_diag", None)
+            if diag:
+                final["diag"] = diag
+            return [final]
 
         if request_type == "cancel_session":
             if session_id is None or session_id != self.active_session:

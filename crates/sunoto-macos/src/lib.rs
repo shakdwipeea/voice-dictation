@@ -10,6 +10,7 @@
 
 mod accessibility;
 mod appkit;
+mod diag;
 mod ffi;
 mod hotkey;
 mod insertion;
@@ -17,8 +18,15 @@ mod permissions;
 mod system;
 mod types;
 
-pub use accessibility::{FocusSnapshot, SnapshotOptions, app_snapshot, focus_snapshot};
-pub use appkit::{EnglishVocabulary, PasteboardSnapshot, contact_names, keep_process_responsive};
+pub use accessibility::{FocusSnapshot, SnapshotOptions, WindowWalk, app_snapshot, focus_snapshot};
+pub use appkit::{
+    EnglishVocabulary, LoginItemStatus, PasteboardSnapshot, contact_names, keep_process_responsive,
+    login_item_status, move_to_trash, set_login_item, thermal_state, translocated_original,
+};
+pub use diag::{
+    gpu_utilization_percent, mac_model, macos_version, memory_pressure_level,
+    on_screen_window_count,
+};
 pub use hotkey::{HotkeyListener, PROBE_TIMEOUT, hotkey_block_reason};
 pub use insertion::{ProbeWindow, UiAdapter};
 pub use permissions::{accessibility_granted, microphone_authorized, request_accessibility};

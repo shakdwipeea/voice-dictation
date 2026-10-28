@@ -1862,7 +1862,17 @@ private final class StepRowView: NSView {
 
 /// First-run permission guide. Only the next missing permission is actionable;
 /// the panel stays open until every grant is live and the user clicks Done.
+/// On a first start with no speech model, a row under the steps shows the
+/// download, which runs while the user grants the permissions.
 private final class OnboardingController: NSObject, NSWindowDelegate {
+    struct Download: Equatable {
+        let done: UInt64
+        let total: UInt64
+        let retrying: Bool
+
+        var finished: Bool { total > 0 && done >= total }
+    }
+
     private struct Row {
         let key: String
         let permission: String
@@ -1903,6 +1913,12 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
     private let hint = NSTextField(labelWithString: "")
     private var attempted: Set<String> = []
     private let progressLabel = NSTextField(labelWithString: "")
+    private let downloadRow = NSStackView()
+    private let downloadIcon = NSImageView()
+    private let downloadDetail = NSTextField(labelWithString: "")
+    private let downloadBar = NSProgressIndicator()
+    private var download: Download?
+    private var permissionsGranted = false
     private let doneButton: NSButton
     private let onAction: (String) -> Void
     private let onDone: () -> Void
@@ -2052,6 +2068,10 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
             stack.addArrangedSubview(rowView)
         }
 
+        buildDownloadRow(width: textWidth)
+        stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!)
+        stack.addArrangedSubview(downloadRow)
+
         let rule = NSBox()
         rule.boxType = .separator
         rule.translatesAutoresizingMaskIntoConstraints = false
@@ -2095,17 +2115,95 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
             content.widthAnchor.constraint(equalToConstant: Self.width),
         ])
         panel.contentView = content
-        content.layoutSubtreeIfNeeded()
-        panel.setContentSize(NSSize(width: Self.width, height: content.fittingSize.height))
+        fitToContent()
         setShortcut("Right Option")
         update(accessibility: false, microphone: false, reveal: false)
     }
 
-    func update(accessibility: Bool, microphone: Bool, shortcut: String?) {
+    func update(accessibility: Bool, microphone: Bool, shortcut: String?, download: Download?) {
         if let shortcut, !shortcut.isEmpty {
             setShortcut(shortcut)
         }
+        setDownload(download)
         update(accessibility: accessibility, microphone: microphone, reveal: true)
+    }
+
+    /// The speech model row: a symbol, what is happening, and a bar.
+    private func buildDownloadRow(width: CGFloat) {
+        downloadIcon.symbolConfiguration = .init(pointSize: 15, weight: .medium)
+        downloadIcon.setContentHuggingPriority(.required, for: .horizontal)
+        let title = NSTextField(labelWithString: "Speech model")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .labelColor
+        downloadDetail.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        downloadDetail.textColor = .secondaryLabelColor
+        downloadDetail.lineBreakMode = .byTruncatingTail
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let line = NSStackView(views: [downloadIcon, title, spacer, downloadDetail])
+        line.orientation = .horizontal
+        line.alignment = .centerY
+        line.spacing = 8
+        downloadBar.style = .bar
+        downloadBar.isIndeterminate = false
+        downloadBar.minValue = 0
+        downloadBar.maxValue = 1
+        downloadBar.controlSize = .small
+        downloadRow.orientation = .vertical
+        downloadRow.alignment = .leading
+        downloadRow.spacing = 7
+        downloadRow.addArrangedSubview(line)
+        downloadRow.addArrangedSubview(downloadBar)
+        downloadRow.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            downloadRow.widthAnchor.constraint(equalToConstant: width),
+            line.widthAnchor.constraint(equalTo: downloadRow.widthAnchor),
+            downloadBar.widthAnchor.constraint(equalTo: downloadRow.widthAnchor),
+        ])
+        downloadRow.setAccessibilityElement(true)
+        downloadRow.setAccessibilityRole(.progressIndicator)
+        downloadRow.isHidden = true
+    }
+
+    private func setDownload(_ next: Download?) {
+        guard next != download else { return }
+        let wasShown = download != nil
+        download = next
+        downloadRow.isHidden = next == nil
+        if let next {
+            let bytes = ByteCountFormatter()
+            bytes.countStyle = .file
+            let fraction = next.total == 0 ? 0 : Double(next.done) / Double(next.total)
+            let symbol: String
+            let tint: NSColor
+            if next.finished {
+                symbol = "checkmark.circle.fill"
+                tint = .systemGreen
+                downloadDetail.stringValue = "Downloaded"
+            } else if next.retrying {
+                symbol = "wifi.exclamationmark"
+                tint = .systemOrange
+                downloadDetail.stringValue = "Waiting for the internet, tries again by itself"
+            } else {
+                symbol = "arrow.down.circle"
+                tint = .controlAccentColor
+                downloadDetail.stringValue = "\(bytes.string(fromByteCount: Int64(next.done))) of \(bytes.string(fromByteCount: Int64(next.total)))"
+            }
+            downloadIcon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            downloadIcon.contentTintColor = tint
+            downloadBar.isHidden = next.finished
+            downloadBar.doubleValue = fraction
+            downloadRow.setAccessibilityLabel("Speech model: \(downloadDetail.stringValue)")
+        }
+        if wasShown != (next != nil) {
+            fitToContent()
+        }
+    }
+
+    private func fitToContent() {
+        guard let content = panel.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        panel.setContentSize(NSSize(width: Self.width, height: content.fittingSize.height))
     }
 
     /// Teach the real shortcut: tap to start, tap again to paste.
@@ -2133,6 +2231,8 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
         }
         if let firstMissing {
             progressLabel.stringValue = "Step \(firstMissing + 1) of \(rows.count): \(rows[firstMissing].title)"
+        } else if let download, !download.finished {
+            progressLabel.stringValue = "All set. Click Done; the download carries on."
         } else {
             progressLabel.stringValue = "All set. Click Done and Sunoto restarts once."
         }
@@ -2311,6 +2411,21 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
             let item = action(MenuBarController.preview(text), #selector(copyDictation(_:)))
             item.representedObject = text
             item.toolTip = "Click to copy"
+            if let id = row["id"] as? String, !id.isEmpty {
+                // A row with a submenu cannot also be clicked, so Copy moves
+                // into it next to This was wrong.
+                let actions = NSMenu()
+                actions.autoenablesItems = false
+                let copy = action("Copy", #selector(copyDictation(_:)))
+                copy.representedObject = text
+                actions.addItem(copy)
+                let wrong = action("This Was Wrong…", #selector(flagDictation(_:)))
+                wrong.representedObject = id
+                actions.addItem(wrong)
+                item.action = nil
+                item.toolTip = nil
+                item.submenu = actions
+            }
             if let ms = (row["at_ms"] as? NSNumber)?.doubleValue {
                 let when = relative.localizedString(for: Date(timeIntervalSince1970: ms / 1000), relativeTo: now)
                 let title = NSMutableAttributedString(
@@ -2365,6 +2480,11 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    @objc private func flagDictation(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        emit(["type": "flag_dictation", "id": id])
+    }
+
     @objc private func checkForUpdates() {
         state["checking"] = true
         emit(["type": "check_updates"])
@@ -2417,6 +2537,194 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
     }
 }
 
+// MARK: Report panel
+
+/// "This was wrong": what a report on one dictation holds, two boxes that
+/// are off by default (the text; the audio, when it was kept), and Send.
+/// The daemon builds the list from the history record and answers Send
+/// with `report_saved`, carrying the report's code.
+private final class ReportPanelController: NSObject, NSWindowDelegate {
+    private static let width: CGFloat = 460
+    private static let inset: CGFloat = 24
+    private let emit: ([String: Any]) -> Void
+    private let panel: NSPanel
+    private let stack = NSStackView()
+    private let textBox = NSButton(checkboxWithTitle: "Include the text of this dictation", target: nil, action: nil)
+    private let audioBox = NSButton(checkboxWithTitle: "Include the audio", target: nil, action: nil)
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private let sendButton = NSButton(title: "Send", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private var id: String?
+    private var saved = false
+
+    init(emit: @escaping ([String: Any]) -> Void) {
+        self.emit = emit
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 400),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        panel.title = "Report a Wrong Dictation"
+        panel.delegate = self
+        panel.level = .floating
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: Self.inset, bottom: 20, right: Self.inset)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView()
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: content.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            stack.widthAnchor.constraint(equalToConstant: Self.width),
+        ])
+        panel.contentView = content
+
+        for button in [textBox, audioBox, sendButton, cancelButton] {
+            button.target = self
+        }
+        sendButton.action = #selector(send)
+        sendButton.keyEquivalent = "\r"
+        cancelButton.action = #selector(cancel)
+        cancelButton.keyEquivalent = "\u{1b}"
+        status.font = .systemFont(ofSize: 12)
+        status.preferredMaxLayoutWidth = Self.width - Self.inset * 2
+        status.isSelectable = true
+    }
+
+    private func label(_ text: String, size: CGFloat = 12, color: NSColor = .secondaryLabelColor, weight: NSFont.Weight = .regular) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.textColor = color
+        label.preferredMaxLayoutWidth = Self.width - Self.inset * 2
+        label.isSelectable = false
+        return label
+    }
+
+    /// "•" with the wrapped lines lined up under the text, not the dot.
+    private func bullet(_ text: String) -> NSTextField {
+        let field = label("")
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .left, location: 14)]
+        style.headIndent = 14
+        field.attributedStringValue = NSAttributedString(
+            string: "•\t\(text)",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: style,
+            ]
+        )
+        return field
+    }
+
+    func show(_ message: [String: Any]) {
+        guard let id = message["id"] as? String else { return }
+        self.id = id
+        saved = false
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        stack.addArrangedSubview(label("Tell us Sunoto got this one wrong", size: 15, color: .labelColor, weight: .semibold))
+        let text = (message["text"] as? String) ?? ""
+        let quote = label("“\(MenuBarController.preview(text))”", size: 13, color: .labelColor)
+        quote.font = NSFontManager.shared.convert(.systemFont(ofSize: 13), toHaveTrait: .italicFontMask)
+        stack.addArrangedSubview(quote)
+        stack.setCustomSpacing(14, after: quote)
+
+        stack.addArrangedSubview(label("The report holds:", color: .labelColor, weight: .medium))
+        for line in (message["included"] as? [String]) ?? [] {
+            stack.addArrangedSubview(bullet(line))
+        }
+        let never = label("Never sent: the words on your screen, window titles, app or file names.", size: 11)
+        stack.addArrangedSubview(never)
+        stack.setCustomSpacing(14, after: never)
+
+        textBox.state = .off
+        stack.addArrangedSubview(textBox)
+        audioBox.state = .off
+        let audioKept = message["audio_kept"] as? Bool ?? false
+        audioBox.isEnabled = audioKept
+        audioBox.title = audioKept ? "Include the audio" : "Include the audio (not kept for this dictation)"
+        stack.addArrangedSubview(audioBox)
+
+        status.stringValue = ""
+        status.isHidden = true
+        stack.addArrangedSubview(status)
+
+        let buttons = NSStackView(views: [cancelButton, sendButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 10
+        let row = NSStackView(views: [NSView(), buttons])
+        row.orientation = .horizontal
+        row.distribution = .fill
+        row.translatesAutoresizingMaskIntoConstraints = false
+        stack.setCustomSpacing(16, after: status)
+        stack.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalToConstant: Self.width - Self.inset * 2).isActive = true
+
+        sendButton.title = "Send"
+        sendButton.isEnabled = true
+        cancelButton.isHidden = false
+        textBox.isEnabled = true
+
+        panel.layoutIfNeeded()
+        panel.setContentSize(stack.fittingSize)
+        panel.center()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// The daemon saved the report (`code`) or could not (`error`).
+    func saved(_ message: [String: Any]) {
+        guard message["id"] as? String == id else { return }
+        status.isHidden = false
+        if let code = message["code"] as? String {
+            saved = true
+            status.textColor = .labelColor
+            status.stringValue = "Saved as \(code). If you write to us about it, quote this code."
+            sendButton.title = "Done"
+            sendButton.isEnabled = true
+            cancelButton.isHidden = true
+        } else {
+            status.textColor = .systemRed
+            status.stringValue = (message["error"] as? String) ?? "The report could not be saved."
+            sendButton.isEnabled = true
+            textBox.isEnabled = true
+            audioBox.isEnabled = audioBox.title == "Include the audio"
+        }
+        panel.layoutIfNeeded()
+        panel.setContentSize(stack.fittingSize)
+    }
+
+    @objc private func send() {
+        guard let id, !saved else {
+            panel.orderOut(nil)
+            return
+        }
+        sendButton.isEnabled = false
+        textBox.isEnabled = false
+        audioBox.isEnabled = false
+        emit([
+            "type": "send_report",
+            "id": id,
+            "include_text": textBox.state == .on,
+            "include_audio": audioBox.state == .on,
+        ])
+    }
+
+    @objc private func cancel() {
+        panel.orderOut(nil)
+    }
+}
+
 private final class OverlayApp: NSObject, NSApplicationDelegate {
     private let model = PillModel()
     private var panel = OverlayApp.makePillPanel()
@@ -2434,6 +2742,7 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     private var palette: SystemPaletteController!
     private var onboarding: OnboardingController!
     private var menuBar: MenuBarController!
+    private var reportPanel: ReportPanelController!
     private var visible = false
     private var displayClock: Timer?
     /// A close waiting for the check mark to be seen.
@@ -2462,6 +2771,9 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                 self?.emit(["type": "onboarding_done"])
             }
         )
+        reportPanel = ReportPanelController(emit: { [weak self] message in
+            self?.emit(message)
+        })
         menuBar = MenuBarController(emit: { [weak self] message in
             self?.emit(message)
         })
@@ -2581,10 +2893,19 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
                 show()
             }
         case "onboarding":
+            var download: OnboardingController.Download?
+            if let row = message["model_download"] as? [String: Any] {
+                download = OnboardingController.Download(
+                    done: uint64(row["done_bytes"]) ?? 0,
+                    total: uint64(row["total_bytes"]) ?? 0,
+                    retrying: row["retrying"] as? Bool ?? false
+                )
+            }
             onboarding.update(
                 accessibility: message["accessibility"] as? Bool ?? false,
                 microphone: message["microphone"] as? Bool ?? false,
-                shortcut: message["shortcut"] as? String
+                shortcut: message["shortcut"] as? String,
+                download: download
             )
         case "system_palette":
             guard let sessionID = uint64(message["session_id"]),
@@ -2612,6 +2933,12 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             return
         case "alert":
             menuBar.showAlert(message)
+            return
+        case "report_panel":
+            reportPanel.show(message)
+            return
+        case "report_saved":
+            reportPanel.saved(message)
             return
         case "segment", "clear":
             break
@@ -2838,9 +3165,37 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
     }
 }
 
+// MARK: Move to Applications
+
+func moveToApplicationsAlert() -> NSAlert {
+    let alert = NSAlert()
+    alert.messageText = "Move Sunoto to Applications?"
+    alert.informativeText = "Sunoto works from your Applications folder, so it can open when you log in and keep itself up to date."
+    alert.addButton(withTitle: "Move to Applications")
+    alert.addButton(withTitle: "Quit")
+    return alert
+}
+
+/// `sunoto-overlay --ask-move-to-applications`: the daemon asks this when the
+/// app was opened from a disk image or Downloads, before anything else
+/// starts. Prints "move" or "quit" for the daemon, which does the moving.
+func askToMoveToApplications() -> Never {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    app.activate(ignoringOtherApps: true)
+    let answer = moveToApplicationsAlert().runModal() == .alertFirstButtonReturn ? "move" : "quit"
+    print(answer)
+    fflush(stdout)
+    exit(0)
+}
+
 // MARK: App launch
 // tools/ui/render-overlay-frames.sh cuts the file here and appends its own
 // main, so keep everything above this line free of top-level side effects.
+
+if CommandLine.arguments.contains("--ask-move-to-applications") {
+    askToMoveToApplications()
+}
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

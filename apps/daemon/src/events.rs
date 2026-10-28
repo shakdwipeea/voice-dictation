@@ -45,6 +45,13 @@ pub enum DaemonEvent {
         english: std::sync::Arc<crate::vocabulary::EnglishWords>,
         took: std::time::Duration,
     },
+    /// The system and microphone at the press, for the dictation's
+    /// accuracy record (`diag::spawn_snapshot`).
+    Diag {
+        session_id: u64,
+        system: crate::diag::SystemDiag,
+        input: Option<sunoto_audio::InputInfo>,
+    },
     /// A newer release, verified and unpacked, waiting for an idle moment.
     UpdateReady(crate::update::Staged),
     /// The answer to Check for Updates in the menu bar: a newer release,

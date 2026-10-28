@@ -29,6 +29,8 @@ pub(crate) struct MenuInputs<'a> {
     /// Why this copy cannot update itself, whatever the setting.
     pub(crate) update_blocked: Option<&'a str>,
     pub(crate) pending_update: Option<&'a Staged>,
+    /// The speech model download of a first start, as the pill words it.
+    pub(crate) loading_detail: Option<&'a str>,
 }
 
 impl MenuBar {
@@ -79,7 +81,12 @@ impl MenuBar {
 
 fn menu_request(inputs: &MenuInputs, checking: bool, history: &HistoryRecorder) -> OverlayRequest {
     OverlayRequest::Menu {
-        status: inputs.health.menu_status().to_string(),
+        status: match inputs.loading_detail {
+            Some(detail) if inputs.health == DaemonHealth::LoadingAsr => {
+                sentence(detail).trim_end_matches('.').to_string()
+            }
+            _ => inputs.health.menu_status().to_string(),
+        },
         ready: inputs.health.is_ready(),
         hint: format!(
             "Tap {} to dictate",
@@ -142,6 +149,7 @@ mod tests {
             auto_update: Mode::Off,
             update_blocked: Some("this copy of Sunoto was built from source"),
             pending_update: None,
+            loading_detail: Some("downloading speech model 40%"),
         };
         let OverlayRequest::Menu {
             status,
@@ -173,5 +181,14 @@ mod tests {
             Some("This copy of Sunoto was built from source.")
         );
         assert_eq!(update_note, None);
+        let downloading = MenuInputs {
+            health: DaemonHealth::LoadingAsr,
+            ..inputs
+        };
+        let OverlayRequest::Menu { status, .. } = menu_request(&downloading, false, &history)
+        else {
+            panic!("not a menu");
+        };
+        assert_eq!(status, "Downloading speech model 40%");
     }
 }

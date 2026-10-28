@@ -86,6 +86,16 @@ pub struct FocusSnapshot {
     /// being answered), read only when the focused element has little and
     /// `SnapshotOptions::walk_window` asks for it.
     pub window_text: Option<String>,
+    /// How the window walk went, when there was one.
+    pub walk: Option<WindowWalk>,
+}
+
+/// One walk of the focused window, in counts (for the accuracy record).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WindowWalk {
+    pub elements: u32,
+    pub chars: u32,
+    pub ms: u32,
 }
 
 /// How much `focus_snapshot` reads.
@@ -184,7 +194,9 @@ unsafe fn snapshot_of(app: ffi::AXUIElementRef, options: SnapshotOptions) -> Foc
         let short = snapshot.text.as_deref().map_or(0, |text| text.chars().count()) < WALK_BELOW_CHARS;
         if let Some(window) = window {
             if options.walk_window && short && !secure {
-                snapshot.window_text = window_text(window, options.max_chars);
+                let (text, walk) = window_text(window, options.max_chars);
+                snapshot.window_text = text;
+                snapshot.walk = Some(walk);
             }
             ffi::CFRelease(window);
         }
@@ -228,18 +240,20 @@ unsafe fn first_wake(app: ffi::AXUIElementRef) -> bool {
 /// `max_chars`. Password fields are skipped.
 ///
 /// SAFETY: `window` must be a live AXUIElementRef; it is not released.
-unsafe fn window_text(window: ffi::AXUIElementRef, max_chars: usize) -> Option<String> {
+unsafe fn window_text(window: ffi::AXUIElementRef, max_chars: usize) -> (Option<String>, WindowWalk) {
     let started = std::time::Instant::now();
     let mut text = String::new();
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![unsafe { ffi::CFRetain(window) }];
     let mut visited = 0;
+    let mut read = 0;
     while let Some(element) = stack.pop() {
         visited += 1;
         let done = visited > WALK_MAX_ELEMENTS
             || started.elapsed() > WALK_BUDGET
             || text.len() >= max_chars;
         if !done {
+            read += 1;
             let role = unsafe { copy_string_attribute(element, "AXRole") };
             if role.as_deref() != Some(SECURE_ROLE) {
                 for name in ["AXValue", "AXTitle", "AXDescription"] {
@@ -265,7 +279,12 @@ unsafe fn window_text(window: ffi::AXUIElementRef, max_chars: usize) -> Option<S
         }
         unsafe { ffi::CFRelease(element) };
     }
-    (!text.is_empty()).then_some(text)
+    let walk = WindowWalk {
+        elements: read,
+        chars: text.chars().count() as u32,
+        ms: started.elapsed().as_millis() as u32,
+    };
+    ((!text.is_empty()).then_some(text), walk)
 }
 
 /// SAFETY: `element` must be a live AXUIElementRef.

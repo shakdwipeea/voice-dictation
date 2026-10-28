@@ -23,7 +23,7 @@
 #![allow(clippy::duplicated_attributes)]
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -48,6 +48,18 @@ const SEL_DEVICES: u32 = fourcc(b'd', b'e', b'v', b'#'); // 'dev#'
 const SEL_DEVICE_NAME: u32 = fourcc(b'n', b'a', b'm', b'e'); // 'name'
 const SEL_STREAMS: u32 = fourcc(b's', b't', b'm', b'#'); // 'stm#'
 const SEL_VIRTUAL_FORMAT: u32 = fourcc(b's', b'f', b'm', b't'); // 'sfmt'
+const SEL_TRANSPORT_TYPE: u32 = fourcc(b't', b'r', b'a', b'n'); // 'tran'
+const SEL_NOMINAL_SAMPLE_RATE: u32 = fourcc(b'n', b's', b'r', b't'); // 'nsrt'
+const SEL_PROCESS_OBJECTS: u32 = fourcc(b'p', b'r', b's', b'#'); // 'prs#' (macOS 14.2+)
+const SEL_PROCESS_PID: u32 = fourcc(b'p', b'p', b'i', b'd'); // 'ppid'
+const SEL_PROCESS_RUNNING_INPUT: u32 = fourcc(b'p', b'i', b'r', b'i'); // 'piri'
+
+const TRANSPORT_BUILT_IN: u32 = fourcc(b'b', b'l', b't', b'n');
+const TRANSPORT_USB: u32 = fourcc(b'u', b's', b'b', b' ');
+const TRANSPORT_BLUETOOTH: u32 = fourcc(b'b', b'l', b'u', b'e');
+const TRANSPORT_BLUETOOTH_LE: u32 = fourcc(b'b', b'l', b'e', b'a');
+
+const TIMESTAMP_SAMPLE_TIME_VALID: u32 = 1;
 
 const FMT_LINEAR_PCM: u32 = fourcc(b'l', b'p', b'c', b'm'); // 'lpcm'
 
@@ -164,7 +176,17 @@ struct CaptureState {
     frame_samples: usize,
     /// Source ASBD (mono, after down-mix) describing the IO proc's buffers.
     src_format: AudioStreamBasicDescription,
+    /// Bytes per frame of the device's first buffer, before the down-mix.
+    in_bytes_per_frame: u32,
+    /// Device sample time the next callback should start at, once known.
+    next_sample_time: Option<f64>,
 }
+
+/// Input lost between callbacks, over the whole process: CoreAudio skipped
+/// ahead because a callback came late (a busy Mac), counted from the input
+/// timestamps. `crate::input_gaps` reads them.
+pub(crate) static GAP_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GAP_LOST_US: AtomicU64 = AtomicU64::new(0);
 
 unsafe impl Send for CaptureState {}
 
@@ -543,6 +565,8 @@ fn start_device_capture(
         accum: Vec::new(),
         frame_samples,
         src_format,
+        in_bytes_per_frame: in_format.mBytesPerFrame,
+        next_sample_time: None,
     }));
     let state_ptr = Arc::as_ptr(&state) as *mut c_void;
 
@@ -596,7 +620,7 @@ unsafe extern "C" fn io_proc(
     _device: AudioObjectID,
     _now: *const AudioTimeStamp,
     input_data: *const AudioBufferList,
-    _in_time: *const AudioTimeStamp,
+    in_time: *const AudioTimeStamp,
     _out_data: *mut AudioBufferList,
     _out_time: *const AudioTimeStamp,
     client_data: *mut c_void,
@@ -615,10 +639,103 @@ unsafe extern "C" fn io_proc(
         Err(_) => return 0,
     };
     let list = unsafe { &*input_data };
+    if !in_time.is_null() && list.mNumberBuffers > 0 {
+        let frames = list.mBuffers[0].mDataByteSize / guard.in_bytes_per_frame.max(1);
+        note_gap(&mut guard, unsafe { &*in_time }, frames);
+    }
     let bytes = downmix_to_mono_bytes(&guard, list);
     let samples = convert_chunk(&mut guard, &bytes);
     accumulate_and_emit(&mut guard, samples);
     0
+}
+
+/// Count a jump in the input's sample time: frames the device produced that
+/// never reached this callback.
+fn note_gap(state: &mut CaptureState, time: &AudioTimeStamp, frames: u32) {
+    if time.mFlags & TIMESTAMP_SAMPLE_TIME_VALID == 0 {
+        state.next_sample_time = None;
+        return;
+    }
+    if let Some(expected) = state.next_sample_time {
+        let skipped = time.mSampleTime - expected;
+        // Sample times are whole frames; anything under one is jitter.
+        if skipped >= 1.0 {
+            GAP_COUNT.fetch_add(1, Ordering::Relaxed);
+            let rate = state.src_format.mSampleRate.max(1.0);
+            GAP_LOST_US.fetch_add((skipped / rate * 1e6) as u64, Ordering::Relaxed);
+        }
+    }
+    state.next_sample_time = Some(time.mSampleTime + f64::from(frames));
+}
+
+/// Mic type, rate and other users of the input for the accuracy record.
+pub(crate) fn input_info(device: &str) -> Option<crate::InputInfo> {
+    let device: AudioObjectID = device.strip_prefix("coreaudio:")?.parse().ok()?;
+    let transport: u32 = get_property(device, SEL_TRANSPORT_TYPE)?;
+    let rate: f64 = get_property(device, SEL_NOMINAL_SAMPLE_RATE)?;
+    let kind = match transport {
+        TRANSPORT_BUILT_IN => crate::MicKind::BuiltIn,
+        TRANSPORT_USB => crate::MicKind::Usb,
+        TRANSPORT_BLUETOOTH | TRANSPORT_BLUETOOTH_LE => crate::MicKind::Bluetooth,
+        _ => crate::MicKind::Other,
+    };
+    Some(crate::InputInfo {
+        kind,
+        sample_rate: rate.round() as u32,
+        other_apps: other_apps_recording(),
+    })
+}
+
+/// How many other processes are recording from any input now. `None` before
+/// macOS 14.2, which has no process objects.
+fn other_apps_recording() -> Option<u32> {
+    let a = addr(SEL_PROCESS_OBJECTS, SCOPE_GLOBAL);
+    let mut size: u32 = 0;
+    let status = unsafe { AudioObjectGetPropertyDataSize(1, &a, 0, std::ptr::null(), &mut size) };
+    if status != 0 {
+        return None;
+    }
+    let mut processes: Vec<AudioObjectID> = vec![0; size as usize / std::mem::size_of::<AudioObjectID>()];
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            1,
+            &a,
+            0,
+            std::ptr::null(),
+            &mut size,
+            processes.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let me = std::process::id() as i32;
+    let others = processes
+        .into_iter()
+        .filter(|&process| {
+            get_property::<i32>(process, SEL_PROCESS_PID).is_some_and(|pid| pid != me)
+                && get_property::<u32>(process, SEL_PROCESS_RUNNING_INPUT).is_some_and(|on| on != 0)
+        })
+        .count();
+    Some(others as u32)
+}
+
+/// A fixed-size global property of `object`.
+fn get_property<T: Copy + Default>(object: AudioObjectID, selector: u32) -> Option<T> {
+    let a = addr(selector, SCOPE_GLOBAL);
+    let mut value = T::default();
+    let mut size = std::mem::size_of::<T>() as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            object,
+            &a,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut value as *mut T as *mut c_void,
+        )
+    };
+    (status == 0 && size as usize == std::mem::size_of::<T>()).then_some(value)
 }
 
 /// Entry point used by `start_capture` on macOS.
@@ -713,3 +830,53 @@ pub fn start_capture_macos(config: CaptureConfig) -> Result<CaptureHandle, Audio
 // Keep the JoinHandle import used.
 #[allow(dead_code)]
 fn _use_join(_h: JoinHandle<()>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp(sample_time: f64) -> AudioTimeStamp {
+        AudioTimeStamp {
+            mFlags: TIMESTAMP_SAMPLE_TIME_VALID,
+            mHostTime: 0,
+            mRateScalar: 1.0,
+            mWordClockTime: 0,
+            mSampleTime: sample_time,
+            mReserved: std::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn a_jump_in_sample_time_counts_as_a_gap() {
+        let (tx, _rx) = mpsc::channel();
+        let mut format = target_format();
+        format.mSampleRate = 48_000.0;
+        let mut state = CaptureState {
+            tx,
+            accum: Vec::new(),
+            frame_samples: 320,
+            src_format: format,
+            in_bytes_per_frame: 4,
+            next_sample_time: None,
+        };
+        let before = crate::input_gaps();
+        note_gap(&mut state, &stamp(0.0), 512);
+        note_gap(&mut state, &stamp(512.0), 512);
+        // 4,800 frames at 48 kHz never arrived: 100 ms.
+        note_gap(&mut state, &stamp(1_024.0 + 4_800.0), 512);
+        let gaps = crate::input_gaps().since(before);
+        // Other tests may run captures in parallel; this one adds exactly one.
+        assert!(gaps.count >= 1);
+        assert!(gaps.lost_us >= 100_000);
+        assert_eq!(state.next_sample_time, Some(1_024.0 + 4_800.0 + 512.0));
+    }
+
+    #[test]
+    fn the_default_input_has_a_kind_and_rate() {
+        let Ok(device) = default_input_device() else {
+            return; // no microphone on this machine
+        };
+        let info = input_info(&format!("coreaudio:{device}")).expect("device answers");
+        assert!(info.sample_rate >= 8_000, "{info:?}");
+    }
+}

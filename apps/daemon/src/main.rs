@@ -1,8 +1,10 @@
 mod bench;
 mod control;
 mod daemon;
+mod diag;
 mod eval;
 mod events;
+mod first_open;
 mod health;
 mod history;
 mod history_cli;
@@ -12,6 +14,7 @@ mod llm_report;
 mod logging;
 mod menu_bar;
 mod overlay;
+mod report;
 mod session;
 mod settings;
 mod setup;
@@ -58,6 +61,8 @@ Commands:
   setup [OPTIONS]           macOS: build Sunoto.app, register it at login, start it,
                             and wait until it reports ready (see setup --help)
   restart                   macOS: quit and reopen the installed Sunoto.app
+  login-item [on|off|status]
+                            macOS, run from inside Sunoto.app: whether it opens at login
   update [--check]          macOS: install the newest release now (--check only reports it);
                             release installs also update themselves when idle
   log                       macOS: follow ~/Library/Logs/sunoto/daemon.log
@@ -150,6 +155,9 @@ fn run_from_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn Error>> {
         env!("CARGO_PKG_VERSION"),
         bundle.display()
     ));
+    if first_open::prepare(bundle) == first_open::Start::Exit {
+        return Ok(());
+    }
     daemon::run(load_settings(&[])?)
 }
 
@@ -186,6 +194,7 @@ fn dispatch(args: &[String]) -> Result<(), Box<dyn Error>> {
         "trigger" => trigger(rest),
         "run" => daemon::run(load_settings(rest)?),
         "status" => setup::print_status(rest.iter().any(|arg| arg == "--json")),
+        "login-item" => first_open::run_cli(rest),
         "setup" if rest.iter().any(|arg| arg == "--print-plist") => {
             print!("{}", setup::info_plist());
             Ok(())

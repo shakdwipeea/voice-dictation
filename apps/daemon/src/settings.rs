@@ -524,6 +524,24 @@ impl Settings {
         self.runs_default_parakeet() && stopgap_parakeet_model().is_some()
     }
 
+    /// No speech model is on disk at all: an app opened from a disk image,
+    /// with no installer run before it. The app fetches Sunoto's copy before
+    /// it starts the sidecar, which would otherwise download the 2.5 GB
+    /// original itself, with nothing to show for it.
+    pub fn needs_model_download(&self) -> bool {
+        if !self.runs_default_parakeet() {
+            return false;
+        }
+        let (Some(local), Some(home)) = (local_parakeet_model_dir(), std::env::var_os("HOME"))
+        else {
+            return false;
+        };
+        let Some(support) = local.parent().and_then(Path::parent) else {
+            return false;
+        };
+        model_missing_in(&local, support, &hub_cache_dir(Path::new(&home)))
+    }
+
     /// The GGUF the polish sidecar will load: the explicit path if set,
     /// otherwise the named profile under the repository root.
     pub fn llm_polish_model_file(&self) -> Option<PathBuf> {
@@ -889,6 +907,12 @@ fn stopgap_in(local: &Path, support: &Path, hub: &Path) -> Option<String> {
         return Some(copy.to_string_lossy().into_owned());
     }
     hub_has_model(hub, RETIRED_PARAKEET_MLX_REPO).then(|| RETIRED_PARAKEET_MLX_REPO.to_string())
+}
+
+fn model_missing_in(local: &Path, support: &Path, hub: &Path) -> bool {
+    !model_dir_complete(local)
+        && !hub_has_model(hub, DEFAULT_PARAKEET_MLX_MODEL)
+        && stopgap_in(local, support, hub).is_none()
 }
 
 /// The Hugging Face cache the sidecar reads, found the way huggingface_hub
@@ -1562,6 +1586,37 @@ mod tests {
             stopgap_in(&local, &support, &hub),
             None,
             "the original v2 is cached"
+        );
+        std::fs::remove_dir_all(&support).unwrap();
+    }
+
+    #[test]
+    fn a_first_start_downloads_only_when_no_model_is_anywhere() {
+        let support = std::env::temp_dir().join(format!("sunoto-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&support);
+        let local = support.join(LOCAL_PARAKEET_MLX_MODEL);
+        let hub = support.join("hf/hub");
+
+        assert!(model_missing_in(&local, &support, &hub), "fresh Mac");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("config.json"), "{}").unwrap();
+        assert!(
+            model_missing_in(&local, &support, &hub),
+            "a half-fetched copy is fetched again"
+        );
+        put_model(&local);
+        assert!(!model_missing_in(&local, &support, &hub), "Sunoto's copy");
+        std::fs::remove_dir_all(&local).unwrap();
+        put_model(&hub.join("models--mlx-community--parakeet-tdt-0.6b-v2/snapshots/def"));
+        assert!(
+            !model_missing_in(&local, &support, &hub),
+            "the original is cached"
+        );
+        std::fs::remove_dir_all(&hub).unwrap();
+        put_model(&support.join(RETIRED_PARAKEET_MLX_COPY));
+        assert!(
+            !model_missing_in(&local, &support, &hub),
+            "an update runs its old model meanwhile"
         );
         std::fs::remove_dir_all(&support).unwrap();
     }

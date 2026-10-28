@@ -92,6 +92,10 @@ pub enum OverlayRequest {
         /// panel can teach it. Omitted when unknown.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shortcut: Option<String>,
+        /// The speech model a first start is downloading. Omitted when the
+        /// model was already on disk; kept, complete, once it arrives.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_download: Option<ModelDownload>,
     },
     /// What the menu bar item shows (macOS overlay only). Sent when the
     /// overlay comes up and whenever any of it changes; the menu is built
@@ -130,13 +134,49 @@ pub enum OverlayRequest {
         #[serde(default, skip_serializing_if = "is_false")]
         offer_install: bool,
     },
+    /// The "This was wrong" panel for one dictation (macOS overlay only):
+    /// what a report would hold, in plain lines, and the dictation's text,
+    /// which goes in only if the user ticks Include the text.
+    ReportPanel {
+        /// The history record's id; Send answers `send_report` with it.
+        id: String,
+        text: String,
+        included: Vec<String>,
+        /// The dictation's audio was kept, so Include the audio can be ticked.
+        #[serde(default, skip_serializing_if = "is_false")]
+        audio_kept: bool,
+    },
+    /// The answer to `send_report`: the report's code once it is saved, or
+    /// why it could not be.
+    ReportSaved {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Shutdown,
+}
+
+/// How far the speech model download of a first start is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDownload {
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    /// The last try failed (no connection, say); the app tries again by
+    /// itself.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retrying: bool,
 }
 
 /// One dictation in the menu bar's Recent Dictations: the text that was
 /// pasted, and when (milliseconds since the Unix epoch).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentDictation {
+    /// The history record's id, for This was wrong. Empty in records the
+    /// overlay cannot report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub text: String,
     pub at_ms: u64,
 }
@@ -156,6 +196,25 @@ pub enum PermissionKind {
     Microphone,
 }
 
+/// One dictation's decode, for the accuracy record: counts only, never text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsrDiag {
+    /// Time spent decoding on the GPU, all pieces together.
+    #[serde(default)]
+    pub decode_ms: u64,
+    #[serde(default)]
+    pub pieces: u32,
+    /// Decodes run again because they came back with `<unk>`.
+    #[serde(default)]
+    pub unk_retries: u32,
+    /// The last piece came from the decode made in the pause before the tap.
+    #[serde(default)]
+    pub pause_reused: bool,
+    /// Tokens where the word-list bonus changed the decoder's pick.
+    #[serde(default)]
+    pub boosted_tokens: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SidecarEvent {
@@ -172,6 +231,10 @@ pub enum SidecarEvent {
     Final {
         session_id: u64,
         text: String,
+        /// How the decode went, in counts (see `AsrDiag`). Engines that do
+        /// not report it leave it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diag: Option<AsrDiag>,
     },
     Error {
         session_id: Option<u64>,
@@ -200,6 +263,18 @@ pub enum SidecarEvent {
     },
     /// Menu bar: Clear History, after the user confirmed it.
     ClearHistory,
+    /// Menu bar: This was wrong, on one recent dictation.
+    FlagDictation {
+        id: String,
+    },
+    /// The report panel's Send.
+    SendReport {
+        id: String,
+        #[serde(default)]
+        include_text: bool,
+        #[serde(default)]
+        include_audio: bool,
+    },
 }
 
 /// Everything the reader thread can deliver. The sidecar streams events on its
@@ -396,6 +471,38 @@ mod tests {
     }
 
     #[test]
+    fn final_reads_with_and_without_diag() {
+        let plain: SidecarEvent =
+            serde_json::from_str(r#"{"type":"final","session_id":2,"text":"hi"}"#).unwrap();
+        assert_eq!(
+            plain,
+            SidecarEvent::Final {
+                session_id: 2,
+                text: "hi".into(),
+                diag: None
+            }
+        );
+        let with: SidecarEvent = serde_json::from_str(
+            r#"{"type":"final","session_id":2,"text":"hi","diag":{"decode_ms":118,"pieces":2,"unk_retries":1,"pause_reused":true,"boosted_tokens":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with,
+            SidecarEvent::Final {
+                session_id: 2,
+                text: "hi".into(),
+                diag: Some(AsrDiag {
+                    decode_ms: 118,
+                    pieces: 2,
+                    unk_retries: 1,
+                    pause_reused: true,
+                    boosted_tokens: 3,
+                })
+            }
+        );
+    }
+
+    #[test]
     fn overlay_protocol_round_trip_is_typed_json() {
         let request = OverlayRequest::Recording {
             elapsed_s: 1.5,
@@ -467,6 +574,7 @@ mod tests {
             accessibility: false,
             microphone: true,
             shortcut: None,
+            model_download: None,
         };
         let encoded = serde_json::to_string(&onboarding).unwrap();
         assert_eq!(
@@ -476,6 +584,25 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
             onboarding
+        );
+        let downloading = OverlayRequest::Onboarding {
+            accessibility: true,
+            microphone: false,
+            shortcut: None,
+            model_download: Some(ModelDownload {
+                done_bytes: 5,
+                total_bytes: 10,
+                retrying: false,
+            }),
+        };
+        let encoded = serde_json::to_string(&downloading).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"onboarding","accessibility":true,"microphone":false,"model_download":{"done_bytes":5,"total_bytes":10}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
+            downloading
         );
         let action = SidecarEvent::PermissionAction {
             permission: PermissionKind::Accessibility,
@@ -508,6 +635,7 @@ mod tests {
             checking: false,
             history_enabled: true,
             recent: vec![RecentDictation {
+                id: "1a1-3".into(),
                 text: "hello".into(),
                 at_ms: 1_760_000_000_000,
             }],
@@ -515,7 +643,7 @@ mod tests {
         let encoded = serde_json::to_string(&menu).unwrap();
         assert_eq!(
             encoded,
-            r#"{"type":"menu","status":"Sunoto is ready","ready":true,"hint":"Tap Right Option to dictate","version":"0.1.12","auto_update":true,"history_enabled":true,"recent":[{"text":"hello","at_ms":1760000000000}]}"#
+            r#"{"type":"menu","status":"Sunoto is ready","ready":true,"hint":"Tap Right Option to dictate","version":"0.1.12","auto_update":true,"history_enabled":true,"recent":[{"id":"1a1-3","text":"hello","at_ms":1760000000000}]}"#
         );
         assert_eq!(
             serde_json::from_str::<OverlayRequest>(&encoded).unwrap(),
@@ -538,6 +666,18 @@ mod tests {
                 SidecarEvent::SetAutoUpdate { on: false },
             ),
             (r#"{"type":"clear_history"}"#, SidecarEvent::ClearHistory),
+            (
+                r#"{"type":"flag_dictation","id":"1a1-3"}"#,
+                SidecarEvent::FlagDictation { id: "1a1-3".into() },
+            ),
+            (
+                r#"{"type":"send_report","id":"1a1-3","include_text":true}"#,
+                SidecarEvent::SendReport {
+                    id: "1a1-3".into(),
+                    include_text: true,
+                    include_audio: false,
+                },
+            ),
         ] {
             assert_eq!(serde_json::from_str::<SidecarEvent>(line).unwrap(), event);
         }
@@ -576,7 +716,8 @@ mod tests {
             expect_event(&rx),
             SidecarEvent::Final {
                 session_id: 1,
-                text: "hello".into()
+                text: "hello".into(),
+                diag: None,
             }
         );
     }
@@ -631,7 +772,8 @@ mod tests {
             expect_event(&rx),
             SidecarEvent::Final {
                 session_id: 3,
-                text: "hello world".into()
+                text: "hello world".into(),
+                diag: None,
             }
         );
     }
