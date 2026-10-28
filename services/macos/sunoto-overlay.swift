@@ -2543,7 +2543,8 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
 /// are off by default (the text; the audio, when it was kept), Send and
 /// Keep on This Mac. The daemon builds the list from the history record,
 /// says whether this build can send (`sending`), and answers with
-/// `report_saved`, carrying the report's code. The first time, a note says
+/// `report_saved`, carrying the report's code, which shows for 3 s before
+/// the panel closes itself. The first time, a note says
 /// that the choice is remembered; after that the last choice is the default
 /// button. A build with nowhere to send shows only Save.
 private final class ReportPanelController: NSObject, NSWindowDelegate {
@@ -2688,6 +2689,7 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
         row.widthAnchor.constraint(equalToConstant: Self.width - Self.inset * 2).isActive = true
 
         sendButton.title = canSend ? "Send" : "Save"
+        sendButton.isHidden = false
         sendButton.isEnabled = true
         keepButton.isHidden = !canSend
         keepButton.isEnabled = true
@@ -2715,11 +2717,16 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
                 ? "Report \(code) is on its way. If you write to us about it, quote this code."
                 : "Saved on this Mac as \(code)."
             note.isHidden = true
-            sendButton.title = "Done"
-            sendButton.isEnabled = true
-            sendButton.keyEquivalent = "\r"
-            keepButton.isHidden = true
-            cancelButton.isHidden = true
+            // No Done button: the code shows for a moment, then the panel
+            // closes itself (unless another report has opened in it since).
+            for button in [sendButton, keepButton, cancelButton] {
+                button.isHidden = true
+            }
+            let shown = id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, self.saved, self.id == shown else { return }
+                self.panel.orderOut(nil)
+            }
         } else {
             status.textColor = .systemRed
             status.stringValue = (message["error"] as? String) ?? "The report could not be saved."
