@@ -145,6 +145,9 @@ pub enum OverlayRequest {
         /// The dictation's audio was kept, so Include the audio can be ticked.
         #[serde(default, skip_serializing_if = "is_false")]
         audio_kept: bool,
+        /// Whether Send can upload the report, and what the user chose last.
+        #[serde(default)]
+        sending: ReportSending,
     },
     /// The answer to `send_report`: the report's code once it is saved, or
     /// why it could not be.
@@ -154,6 +157,9 @@ pub enum OverlayRequest {
         code: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// The report is queued for upload, not only kept on this Mac.
+        #[serde(default, skip_serializing_if = "is_false")]
+        sending: bool,
     },
     Shutdown,
 }
@@ -187,6 +193,22 @@ pub struct OverlaySuggestion {
     pub title: String,
     pub subtitle: Option<String>,
     pub action_label: String,
+}
+
+/// The report panel's choice between uploading a report and keeping it on
+/// this Mac (the `send_reports` setting).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportSending {
+    /// Never chosen: the panel says what Send does and that it is remembered.
+    Ask,
+    /// Send was chosen last; it is the default button.
+    On,
+    /// Keep on This Mac was chosen last; it is the default button.
+    Off,
+    /// This build has nowhere to send reports; they are only saved.
+    #[default]
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +296,10 @@ pub enum SidecarEvent {
         include_text: bool,
         #[serde(default)]
         include_audio: bool,
+        /// Send (true) or Keep on This Mac (false); unset when the panel
+        /// offered no choice, which keeps the report on this Mac.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload: Option<bool>,
     },
 }
 
@@ -658,6 +684,27 @@ mod tests {
             .unwrap(),
             r#"{"type":"alert","title":"Sunoto 0.1.13 is ready to install","text":"Sunoto restarts in a few seconds.","offer_install":true}"#
         );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::ReportPanel {
+                id: "1a1-3".into(),
+                text: "hello".into(),
+                included: vec!["Sunoto 0.1.15".into()],
+                audio_kept: false,
+                sending: ReportSending::Ask,
+            })
+            .unwrap(),
+            r#"{"type":"report_panel","id":"1a1-3","text":"hello","included":["Sunoto 0.1.15"],"sending":"ask"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&OverlayRequest::ReportSaved {
+                id: "1a1-3".into(),
+                code: Some("SUN-7F3A".into()),
+                error: None,
+                sending: true,
+            })
+            .unwrap(),
+            r#"{"type":"report_saved","id":"1a1-3","code":"SUN-7F3A","sending":true}"#
+        );
         for (line, event) in [
             (r#"{"type":"check_updates"}"#, SidecarEvent::CheckUpdates),
             (r#"{"type":"install_update"}"#, SidecarEvent::InstallUpdate),
@@ -676,6 +723,16 @@ mod tests {
                     id: "1a1-3".into(),
                     include_text: true,
                     include_audio: false,
+                    upload: None,
+                },
+            ),
+            (
+                r#"{"type":"send_report","id":"1a1-3","upload":false}"#,
+                SidecarEvent::SendReport {
+                    id: "1a1-3".into(),
+                    include_text: false,
+                    include_audio: false,
+                    upload: Some(false),
                 },
             ),
         ] {

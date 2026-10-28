@@ -69,6 +69,13 @@ checks; `"auto_update": "notify"` in the settings only logs that an update
 is out. The update log is
 `~/Library/Logs/sunoto/update.log`.
 
+**This Was Wrong…** on a recent dictation in the menu bar files a report: a
+panel lists what it holds (versions, timings, microphone type, word-list
+counts, never the words on your screen) and the dictation's text only if
+you tick it. Send uploads it to Sunoto's error tracker (Sentry, with IP
+addresses not stored); Keep on This Mac only saves it. Either way you get a
+code such as `SUN-7F3A` to quote.
+
 Settings live in `~/Library/Application Support/sunoto/config.json`; for
 example `"shortcut"` picks another key. Every option is described in
 [desktop configuration](docs/desktop-configuration.md). If the shortcut,

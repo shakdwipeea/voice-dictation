@@ -1,9 +1,10 @@
 //! "This was wrong" reports (docs/accuracy-reports-plan-2026-10-28.md,
 //! step 2). The user flags a dictation in the menu bar's Recent Dictations;
 //! the overlay's panel lists what a report holds, built here from the
-//! dictation's history record; Send saves the report to
-//! `accuracy-reports/pending/` with a short code the user can quote.
-//! Uploading the pending reports is step 3.
+//! dictation's history record. Send saves the report to
+//! `accuracy-reports/pending/`, which `report_send` uploads (step 3); Keep
+//! on This Mac saves it to `accuracy-reports/kept/`, which nothing reads.
+//! Either way the panel shows a short code the user can quote.
 //!
 //! A report is built from an allowlist of record fields: the version, the
 //! speech engine, timings and the `diag` counts. The dictation's text goes
@@ -59,6 +60,23 @@ pub(crate) fn new_code() -> String {
     let mut hasher = RandomState::new().build_hasher();
     hasher.write_u64(crate::history::now_ms());
     format!("SUN-{:04X}", hasher.finish() as u16)
+}
+
+/// Sentry's event id: 32 random hex digits. Saved with the report, so a
+/// resend after a lost answer is the same event, not a second one.
+pub(crate) fn new_event_id() -> String {
+    let mut bytes = [0u8; 16];
+    if fs::File::open("/dev/urandom")
+        .and_then(|mut file| io::Read::read_exact(&mut file, &mut bytes))
+        .is_err()
+    {
+        for half in bytes.chunks_mut(8) {
+            let mut hasher = RandomState::new().build_hasher();
+            hasher.write_u64(crate::history::now_ms());
+            half.copy_from_slice(&hasher.finish().to_le_bytes());
+        }
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The panel's list of what the report holds, in plain words.
@@ -162,6 +180,7 @@ pub(crate) fn included_lines(record: &Value, env: &Environment) -> Vec<String> {
 pub(crate) fn build(
     record: &Value,
     code: &str,
+    event_id: &str,
     env: &Environment,
     include_text: bool,
     created_ms: u64,
@@ -186,6 +205,7 @@ pub(crate) fn build(
     }
     let mut report = json!({
         "code": code,
+        "event_id": event_id,
         "kind": "accuracy",
         "subkind": "flagged",
         "created_ms": created_ms,
@@ -210,10 +230,11 @@ pub(crate) fn build(
     report
 }
 
-/// Write `report` to `dir/pending/<code>.json` (private to this user,
-/// written whole or not at all) and return its path.
-pub(crate) fn save(dir: &Path, report: &Value) -> io::Result<PathBuf> {
-    let pending = dir.join("pending");
+/// Write `report` to `dir/<folder>/<code>.json` (private to this user,
+/// written whole or not at all) and return its path. `folder` is
+/// `pending` (to send) or `kept` (this Mac only).
+pub(crate) fn save(dir: &Path, folder: &str, report: &Value) -> io::Result<PathBuf> {
+    let pending = dir.join(folder);
     fs::create_dir_all(&pending)?;
     for path in [dir, pending.as_path()] {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -263,6 +284,8 @@ mod tests {
         })
     }
 
+    const EVENT_ID: &str = "0123456789abcdef0123456789abcdef";
+
     fn env() -> Environment {
         Environment {
             macos: Some("26.1".into()),
@@ -272,7 +295,7 @@ mod tests {
 
     #[test]
     fn a_report_without_the_box_ticked_holds_no_text() {
-        let report = build(&record(), "SUN-7F3A", &env(), false, 1);
+        let report = build(&record(), "SUN-7F3A", EVENT_ID, &env(), false, 1);
         let encoded = report.to_string();
         for private in ["mini sign", "TextEdit", "free-form", "punctuation", "prose"] {
             assert!(!encoded.contains(private), "{private} leaked: {encoded}");
@@ -285,11 +308,12 @@ mod tests {
         assert_eq!(report["tags"]["word_list"], true);
         assert_eq!(report["kind"], "accuracy");
         assert_eq!(report["subkind"], "flagged");
+        assert_eq!(report["event_id"], EVENT_ID);
     }
 
     #[test]
     fn ticking_the_box_adds_the_text_as_an_attachment_only() {
-        let report = build(&record(), "SUN-7F3A", &env(), true, 1);
+        let report = build(&record(), "SUN-7F3A", EVENT_ID, &env(), true, 1);
         assert_eq!(
             report["attachments"]["text"],
             json!({"heard": "send the mini sign key", "pasted": "Send the mini sign key."})
@@ -331,8 +355,8 @@ mod tests {
             std::process::id(),
             crate::history::now_ms()
         ));
-        let report = build(&record(), "SUN-00AB", &env(), false, 1);
-        let path = save(&dir, &report).unwrap();
+        let report = build(&record(), "SUN-00AB", EVENT_ID, &env(), false, 1);
+        let path = save(&dir, "pending", &report).unwrap();
         assert_eq!(path, dir.join("pending/SUN-00AB.json"));
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -340,6 +364,17 @@ mod tests {
         assert_eq!(saved, report);
         assert_eq!(fs::read_dir(dir.join("pending")).unwrap().count(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn event_ids_are_32_random_hex_digits() {
+        let (a, b) = (new_event_id(), new_event_id());
+        assert_eq!(a.len(), 32);
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
+        assert_ne!(a, b);
     }
 
     #[test]
