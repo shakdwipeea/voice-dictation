@@ -91,12 +91,13 @@ existing `word-list` thread or once per dictation after insertion.
 was no transport to reuse; `report_send.rs` is a small one in the same
 shape (spool, `curl`, background thread), with no `sentry` crate.
 
-- **Opt-in:** a new setting `send_reports` (unset / `true` / `false`), meant
-  to be the shared opt-in when crash reports land. The panel has **Send**
-  and **Keep on This Mac**; the first time, a note says what Send does and
-  that the choice is remembered. After that the last choice is the default
-  button. Send saves to `pending/` and wakes the sender; Keep saves to
-  `kept/`, which nothing uploads. A build with no DSN shows only **Save**.
+- **Opt-in:** clicking **Send** is the consent, for that one report. The
+  panel lists what the report holds and says Send uploads it to Sentry;
+  **Cancel** sends nothing. Send saves to `pending/` and wakes the sender.
+  A build with no DSN says **Save** and writes `kept/`. (A first version
+  also had **Keep on This Mac** and a remembered `send_reports` setting;
+  removed 2026-10-29: a kept report helped no one, and the panel already
+  asks. Crash reports will need their own opt-in.)
 - **Envelope:** one event (`platform: other`, `level: info`,
   `release: sunoto@X.Y.Z`, `fingerprint: [accuracy, flagged]`), tags `kind`,
   `subkind`, `report_code`, `sunoto_version`, `macos_version`, `mac_model`,
@@ -106,8 +107,8 @@ shape (spool, `curl`, background thread), with no `sentry` crate.
   breadcrumbs. The ticked text is a `text.json` attachment. Each report
   carries a random `event_id` saved with it, so a resend is the same event.
 - **Sending:** the `sunoto-reports` thread starts only when a DSN exists and
-  `send_reports` is `true` (30 s after launch, or at once from the panel),
-  re-reads the setting before each run, and sends oldest first. 2xx deletes
+  a report is waiting (30 s after launch, or at once from the panel), and
+  sends oldest first. 2xx deletes
   the file; 429 waits for `Retry-After` (an hour if missing); another 4xx
   moves it to `failed/`; 5xx or no network keeps it and tries again after
   1 minute, then 2, 4, 8 ... up to hourly.
@@ -122,8 +123,7 @@ shape (spool, `curl`, background thread), with no `sentry` crate.
   Storing of IP Addresses" must be on in the project's Security & Privacy
   settings.
 - **Tried live 2026-10-29** on the installed app: Send (SUN-4C0C arrived
-  with counts only, `text_attached: no`); Keep on This Mac with the text
-  ticked (SUN-7E3B stayed in `kept/`, never in Sentry); offline, with the
+  with counts only, `text_attached: no`); offline, with the
   app's HTTPS sent to a closed local proxy port (SUN-1E2E waited in
   `pending/`, then went 60 s after the proxy came up, with no restart).
   `SENTRY_DSN` is set as a repository variable.

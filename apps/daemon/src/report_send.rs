@@ -4,9 +4,9 @@
 //! Each report is turned into one Sentry envelope: an event whose tags and
 //! `contexts.sunoto` come from the report's allowlisted fields, plus a
 //! `text.json` attachment only when the user ticked Include the text. A
-//! `sunoto-reports` thread sends them with `curl`, oldest first, while
-//! `send_reports` is `true`: when it starts, whenever the panel saves a
-//! report, and after a failed send: 1 minute later, then 2, 4, 8 ... up to
+//! `sunoto-reports` thread sends them with `curl`, oldest first: when the
+//! app starts with reports waiting, whenever the panel's Send saves one,
+//! and after a failed send: 1 minute later, then 2, 4, 8 ... up to
 //! once an hour, so a report filed offline goes soon after the network is
 //! back. Nothing here runs on the dictation path.
 //!
@@ -398,28 +398,21 @@ fn move_to_failed(dir: &Path, path: &Path) {
     }
 }
 
-/// `send_reports` as the config file holds it now, so turning sending off
-/// in the panel stops this thread before its next send.
-fn sending_on() -> bool {
-    crate::settings::Settings::load(&crate::settings::config_path())
-        .map(|settings| settings.send_reports == Some(true))
-        .unwrap_or(false)
-}
-
 /// The daemon's handle on the `sunoto-reports` thread, which starts only
-/// once there is somewhere to send and the user has chosen Send.
+/// when there is somewhere to send and a report the user chose to Send.
 pub(crate) struct Sender {
     dsn: Option<Dsn>,
     thread: Option<Thread>,
 }
 
 impl Sender {
-    pub(crate) fn new(send_reports: Option<bool>) -> Self {
+    pub(crate) fn new() -> Self {
         let mut sender = Self {
             dsn: Dsn::current(),
             thread: None,
         };
-        if send_reports == Some(true) {
+        // Reports left from an earlier run (offline, or quit before sending).
+        if !pending(&crate::report::reports_dir()).is_empty() {
             sender.start(FIRST_SEND_AFTER);
         }
         sender
@@ -448,10 +441,8 @@ impl Sender {
                 std::thread::park_timeout(first_after);
                 let mut retry = RETRY_FIRST;
                 loop {
-                    let failed = sending_on() && {
-                        let dir = crate::report::reports_dir();
-                        send_pending(&dir, &dsn, crate::history::now_ms(), post)
-                    };
+                    let dir = crate::report::reports_dir();
+                    let failed = send_pending(&dir, &dsn, crate::history::now_ms(), post);
                     std::thread::park_timeout(next_wait(failed, &mut retry));
                 }
             });

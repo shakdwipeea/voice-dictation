@@ -251,11 +251,6 @@ pub struct Settings {
     /// after 10 minutes without dictation; "notify" only logs that it is
     /// available; "off" never checks. Builds from a checkout never update.
     pub auto_update: String,
-    /// Upload the reports filed with This Was Wrong… to Sunoto's error
-    /// tracker (Sentry). Unset until the report panel first asks; it then
-    /// remembers the last choice, Send (`true`) or Keep on This Mac
-    /// (`false`). See docs/accuracy-reports-plan-2026-10-28.md.
-    pub send_reports: Option<bool>,
     /// Write transcripts and polish stages to the log. Off replaces the text
     /// with its length and a short hash.
     pub log_transcripts: bool,
@@ -343,7 +338,6 @@ impl Default for Settings {
             llm_polish_keepalive_always: false,
             capture_idle_stop_secs: 0,
             auto_update: "install".to_string(),
-            send_reports: None,
             log_transcripts: true,
             history_enabled: true,
             history_retention_days: 90,

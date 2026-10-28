@@ -73,8 +73,8 @@ is out. The update log is
 panel lists what it holds (versions, timings, microphone type, word-list
 counts, never the words on your screen) and the dictation's text only if
 you tick it. Send uploads it to Sunoto's error tracker (Sentry, with IP
-addresses not stored); Keep on This Mac only saves it. Either way you get a
-code such as `SUN-7F3A` to quote.
+addresses not stored) and shows a code such as `SUN-7F3A` to quote; Cancel
+sends nothing.
 
 Settings live in `~/Library/Application Support/sunoto/config.json`; for
 example `"shortcut"` picks another key. Every option is described in
