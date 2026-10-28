@@ -155,8 +155,8 @@ Updates (macOS release installs):
   Unset until the panel first asks; then it holds the last choice, `true`
   (Send: upload it to Sunoto's Sentry project) or `false` (Keep on This Mac).
   Sent reports wait in `accuracy-reports/pending/` next to the history until
-  they go (a background thread, at most 20 a day, retried hourly when
-  offline); kept ones stay in `accuracy-reports/kept/`; refused ones move to
+  they go (a background thread, at most 20 a day; after a failed send it
+  tries again in 1 minute, then 2, 4 ... up to hourly); kept ones stay in `accuracy-reports/kept/`; refused ones move to
   `accuracy-reports/failed/`. Builds without a DSN only save. For a test or
   self-hosted project set `SUNOTO_REPORT_DSN` (`launchctl setenv` for the
   installed app). The report holds counts, never the words on screen; the

@@ -109,7 +109,8 @@ shape (spool, `curl`, background thread), with no `sentry` crate.
   `send_reports` is `true` (30 s after launch, or at once from the panel),
   re-reads the setting before each run, and sends oldest first. 2xx deletes
   the file; 429 waits for `Retry-After` (an hour if missing); another 4xx
-  moves it to `failed/`; 5xx or no network keeps it and retries hourly.
+  moves it to `failed/`; 5xx or no network keeps it and tries again after
+  1 minute, then 2, 4, 8 ... up to hourly.
   At most 20 uploads a day (`state.json`).
 - **DSN:** compiled in from `SUNOTO_SENTRY_DSN`, which `release.yml` sets
   from the repository variable `SENTRY_DSN`; `SUNOTO_REPORT_DSN` overrides
@@ -120,8 +121,14 @@ shape (spool, `curl`, background thread), with no `sentry` crate.
   contexts, and with `user.geo` filled in from the sender's IP: "Prevent
   Storing of IP Addresses" must be on in the project's Security & Privacy
   settings.
-- **Still to do before shipping:** that IP setting, the `SENTRY_DSN`
-  repository variable, and the manual offline test in §6. Reports saved to `pending/` by step 2 builds are sent once the user
+- **Tried live 2026-10-29** on the installed app: Send (SUN-4C0C arrived
+  with counts only, `text_attached: no`); Keep on This Mac with the text
+  ticked (SUN-7E3B stayed in `kept/`, never in Sentry); offline, with the
+  app's HTTPS sent to a closed local proxy port (SUN-1E2E waited in
+  `pending/`, then went 60 s after the proxy came up, with no restart).
+  `SENTRY_DSN` is set as a repository variable.
+- **Still to do before shipping:** turn on "Prevent Storing of IP
+  Addresses" in the project. Reports saved to `pending/` by step 2 builds are sent once the user
   chooses Send.
 
 ### Step 4: find the cause
