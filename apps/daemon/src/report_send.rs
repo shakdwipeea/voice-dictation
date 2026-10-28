@@ -6,8 +6,9 @@
 //! `text.json` attachment only when the user ticked Include the text. A
 //! `sunoto-reports` thread sends them with `curl`, oldest first, while
 //! `send_reports` is `true`: when it starts, whenever the panel saves a
-//! report, and once an hour after a failure. Nothing here runs on the
-//! dictation path.
+//! report, and after a failed send: 1 minute later, then 2, 4, 8 ... up to
+//! once an hour, so a report filed offline goes soon after the network is
+//! back. Nothing here runs on the dictation path.
 //!
 //! What happens to a file after a send: 2xx deletes it; 429 keeps it and
 //! waits for `Retry-After`; another 4xx moves it to `failed/` (sending it
@@ -32,6 +33,11 @@ const DSN_ENV: &str = "SUNOTO_REPORT_DSN";
 const BUILT_IN_DSN: Option<&str> = option_env!("SUNOTO_SENTRY_DSN");
 /// Wait after launch before the first send, off the startup path.
 const FIRST_SEND_AFTER: Duration = Duration::from_secs(30);
+/// After a failed send (no network, server error) the wait starts here and
+/// doubles up to `RETRY_EVERY`. With no network, curl fails at once, so a
+/// try costs next to nothing.
+const RETRY_FIRST: Duration = Duration::from_secs(60);
+/// The longest wait between tries, and the wait when nothing failed.
 const RETRY_EVERY: Duration = Duration::from_secs(60 * 60);
 /// More than this many uploads in a day wait for the next day.
 const MAX_PER_DAY: u32 = 20;
@@ -300,9 +306,11 @@ fn pending(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Send what is waiting in `dir/pending/`, stopping at the first report
-/// that cannot go now. `send` is `post` outside tests.
-fn send_pending(dir: &Path, dsn: &Dsn, now_ms: u64, send: impl Fn(&[u8], &Dsn) -> Outcome) {
+/// that cannot go now. `send` is `post` outside tests. True when a send
+/// failed and the report waits for the next try.
+fn send_pending(dir: &Path, dsn: &Dsn, now_ms: u64, send: impl Fn(&[u8], &Dsn) -> Outcome) -> bool {
     let mut state = State::load(dir);
+    let mut failed = false;
     for path in pending(dir) {
         if !state.allows(now_ms) {
             break;
@@ -349,11 +357,26 @@ fn send_pending(dir: &Path, dsn: &Dsn, now_ms: u64, send: impl Fn(&[u8], &Dsn) -
                 logging::info(&format!(
                     "accuracy report {name} could not be sent; trying again later"
                 ));
+                failed = true;
                 break;
             }
         }
     }
     state.save(dir);
+    failed
+}
+
+/// The wait before the next run: `retry` after a failure, which then
+/// doubles up to an hour; an hour (and `retry` back to a minute) otherwise.
+fn next_wait(failed: bool, retry: &mut Duration) -> Duration {
+    if failed {
+        let wait = *retry;
+        *retry = (*retry * 2).min(RETRY_EVERY);
+        wait
+    } else {
+        *retry = RETRY_FIRST;
+        RETRY_EVERY
+    }
 }
 
 fn move_to_failed(dir: &Path, path: &Path) {
@@ -413,12 +436,13 @@ impl Sender {
             .name("sunoto-reports".to_string())
             .spawn(move || {
                 std::thread::park_timeout(first_after);
+                let mut retry = RETRY_FIRST;
                 loop {
-                    if sending_on() {
+                    let failed = sending_on() && {
                         let dir = crate::report::reports_dir();
-                        send_pending(&dir, &dsn, crate::history::now_ms(), post);
-                    }
-                    std::thread::park_timeout(RETRY_EVERY);
+                        send_pending(&dir, &dsn, crate::history::now_ms(), post)
+                    };
+                    std::thread::park_timeout(next_wait(failed, &mut retry));
                 }
             });
         match spawned {
@@ -579,6 +603,21 @@ mod tests {
     }
 
     #[test]
+    fn failed_sends_are_tried_again_soon_then_less_often() {
+        let mut retry = RETRY_FIRST;
+        let waits: Vec<u64> = (0..8)
+            .map(|_| next_wait(true, &mut retry).as_secs() / 60)
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60], "minutes");
+        assert_eq!(next_wait(false, &mut retry), RETRY_EVERY);
+        assert_eq!(
+            next_wait(true, &mut retry),
+            RETRY_FIRST,
+            "a success starts over"
+        );
+    }
+
+    #[test]
     fn sending_deletes_sent_files_and_keeps_the_rest_in_order() {
         let dir = temp_dir("order");
         for code in ["SUN-0001", "SUN-0002", "SUN-0003", "SUN-0004"] {
@@ -586,12 +625,13 @@ mod tests {
         }
         let answers = RefCell::new(vec![Outcome::Sent, Outcome::Rejected(400), Outcome::Retry]);
         let seen = RefCell::new(Vec::new());
-        send_pending(&dir, &dsn(), 10 * DAY_MS, |envelope, _| {
+        let failed = send_pending(&dir, &dsn(), 10 * DAY_MS, |envelope, _| {
             let event = &items(envelope)[2];
             seen.borrow_mut()
                 .push(event["tags"]["report_code"].as_str().unwrap().to_string());
             answers.borrow_mut().remove(0)
         });
+        assert!(failed, "the retry is reported, so the next try comes soon");
         assert_eq!(*seen.borrow(), ["SUN-0001", "SUN-0002", "SUN-0003"]);
         let left: Vec<_> = pending(&dir)
             .iter()
