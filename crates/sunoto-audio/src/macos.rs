@@ -686,6 +686,10 @@ pub(crate) fn input_info(device: &str) -> Option<crate::InputInfo> {
     })
 }
 
+pub(crate) fn default_input_info() -> Option<crate::InputInfo> {
+    input_info(&format!("coreaudio:{}", default_input_device().ok()?))
+}
+
 /// How many other processes are recording from any input now. `None` before
 /// macOS 14.2, which has no process objects.
 fn other_apps_recording() -> Option<u32> {
@@ -873,10 +877,10 @@ mod tests {
 
     #[test]
     fn the_default_input_has_a_kind_and_rate() {
-        let Ok(device) = default_input_device() else {
+        if default_input_device().is_err() {
             return; // no microphone on this machine
-        };
-        let info = input_info(&format!("coreaudio:{device}")).expect("device answers");
+        }
+        let info = default_input_info().expect("device answers");
         assert!(info.sample_rate >= 8_000, "{info:?}");
     }
 }
