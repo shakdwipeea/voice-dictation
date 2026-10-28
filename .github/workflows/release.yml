@@ -25,7 +25,12 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
             exit 1
           fi
+      # The Sentry DSN for This Was Wrong… reports
+      # (apps/daemon/src/report_send.rs). It only lets you send events, so
+      # it is a variable, not a secret. Unset, the app keeps reports local.
       - name: Build Sunoto.app
+        env:
+          SUNOTO_SENTRY_DSN: ${{ vars.SENTRY_DSN }}
         run: bash packaging/macos/build-app.sh
       # Installed apps update themselves only to a zip signed with this key
       # (public half: packaging/macos/release-signing.pub). The trusted

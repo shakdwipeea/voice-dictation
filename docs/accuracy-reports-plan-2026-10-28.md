@@ -3,9 +3,10 @@
 **Created:** 2026-10-28.
 **Status:** steps 1 and 2 implemented and tried live 2026-10-29
 (`apps/daemon/src/diag.rs`, `apps/daemon/src/report.rs`, the overlay's
-`ReportPanelController`). Send saves the report to
-`accuracy-reports/pending/`; uploading it (step 3) and the re-transcribe
-check (needs kept audio, open question 1) are not started.
+`ReportPanelController`). Step 3 implemented 2026-10-29
+(`apps/daemon/src/report_send.rs`, §4 step 3 "As built"); a sample report
+reached the `sunoto` Sentry project. The re-transcribe check (needs kept audio, open
+question 1) is not started.
 **Scope:** macOS. Builds on `docs/crash-reporting-plan-2026-10-17.md`
 (same Sentry project, same opt-in, same save-to-disk-then-send transport).
 
@@ -85,6 +86,43 @@ existing `word-list` thread or once per dictation after insertion.
   wait for the network.
 - Same opt-in as crash reports. If the user has not opted in, the panel
   asks once.
+
+**As built (2026-10-29).** Crash reporting was never implemented, so there
+was no transport to reuse; `report_send.rs` is a small one in the same
+shape (spool, `curl`, background thread), with no `sentry` crate.
+
+- **Opt-in:** a new setting `send_reports` (unset / `true` / `false`), meant
+  to be the shared opt-in when crash reports land. The panel has **Send**
+  and **Keep on This Mac**; the first time, a note says what Send does and
+  that the choice is remembered. After that the last choice is the default
+  button. Send saves to `pending/` and wakes the sender; Keep saves to
+  `kept/`, which nothing uploads. A build with no DSN shows only **Save**.
+- **Envelope:** one event (`platform: other`, `level: info`,
+  `release: sunoto@X.Y.Z`, `fingerprint: [accuracy, flagged]`), tags `kind`,
+  `subkind`, `report_code`, `sunoto_version`, `macos_version`, `mac_model`,
+  `asr_backend`, `mic`, `word_list`, `text_attached`; `contexts.sunoto` is
+  the report's allowlisted `dictation` object; `contexts.os` and
+  `contexts.device.model`. No `user`, `server_name`, `request`, `extra` or
+  breadcrumbs. The ticked text is a `text.json` attachment. Each report
+  carries a random `event_id` saved with it, so a resend is the same event.
+- **Sending:** the `sunoto-reports` thread starts only when a DSN exists and
+  `send_reports` is `true` (30 s after launch, or at once from the panel),
+  re-reads the setting before each run, and sends oldest first. 2xx deletes
+  the file; 429 waits for `Retry-After` (an hour if missing); another 4xx
+  moves it to `failed/`; 5xx or no network keeps it and retries hourly.
+  At most 20 uploads a day (`state.json`).
+- **DSN:** compiled in from `SUNOTO_SENTRY_DSN`, which `release.yml` sets
+  from the repository variable `SENTRY_DSN`; `SUNOTO_REPORT_DSN` overrides
+  it at run time for tests.
+- **Sentry project:** `antash-mishra/sunoto` (EU region, created
+  2026-10-29). A sample report (`send_a_sample_report`, an ignored test in
+  `report_send.rs`) arrived as SUNOTO-1 with the expected tags and
+  contexts, and with `user.geo` filled in from the sender's IP: "Prevent
+  Storing of IP Addresses" must be on in the project's Security & Privacy
+  settings.
+- **Still to do before shipping:** that IP setting, the `SENTRY_DSN`
+  repository variable, and the manual offline test in §6. Reports saved to `pending/` by step 2 builds are sent once the user
+  chooses Send.
 
 ### Step 4: find the cause
 

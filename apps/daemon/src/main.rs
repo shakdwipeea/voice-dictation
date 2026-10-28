@@ -15,6 +15,7 @@ mod logging;
 mod menu_bar;
 mod overlay;
 mod report;
+mod report_send;
 mod session;
 mod settings;
 mod setup;

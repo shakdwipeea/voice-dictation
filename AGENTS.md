@@ -347,8 +347,11 @@ muted; check System Settings → Sound → Input.
   dictation's history record carries `diag` counts (`apps/daemon/src/diag.rs`,
   logged as `session N: diag: …`). This Was Wrong… shows the report panel
   (`ReportPanelController`); Send saves `report::build`'s allowlisted report
-  to `accuracy-reports/pending/SUN-XXXX.json`. The dictation's text goes in
-  only when ticked, and only under `attachments`. Nothing uploads yet (step 3).
+  to `accuracy-reports/pending/SUN-XXXX.json` (Keep on This Mac: `kept/`).
+  The dictation's text goes in only when ticked, and only under
+  `attachments`. `report_send.rs` uploads `pending/` to Sentry with `curl`
+  on a `sunoto-reports` thread while `send_reports` is true (DSN compiled
+  in from `SUNOTO_SENTRY_DSN`; test with `SUNOTO_REPORT_DSN`).
 - On a Mac with a notch the pill is an island grown out of the notch
   (`IslandView`, `overlay_style: "auto"`, the default; design A of
   `docs/notch-island-designs.html`): the notch grows a short pill under the

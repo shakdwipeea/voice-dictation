@@ -2540,9 +2540,12 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
 // MARK: Report panel
 
 /// "This was wrong": what a report on one dictation holds, two boxes that
-/// are off by default (the text; the audio, when it was kept), and Send.
-/// The daemon builds the list from the history record and answers Send
-/// with `report_saved`, carrying the report's code.
+/// are off by default (the text; the audio, when it was kept), Send and
+/// Keep on This Mac. The daemon builds the list from the history record,
+/// says whether this build can send (`sending`), and answers with
+/// `report_saved`, carrying the report's code. The first time, a note says
+/// that the choice is remembered; after that the last choice is the default
+/// button. A build with nowhere to send shows only Save.
 private final class ReportPanelController: NSObject, NSWindowDelegate {
     private static let width: CGFloat = 460
     private static let inset: CGFloat = 24
@@ -2552,7 +2555,9 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
     private let textBox = NSButton(checkboxWithTitle: "Include the text of this dictation", target: nil, action: nil)
     private let audioBox = NSButton(checkboxWithTitle: "Include the audio", target: nil, action: nil)
     private let status = NSTextField(wrappingLabelWithString: "")
+    private let note = NSTextField(wrappingLabelWithString: "")
     private let sendButton = NSButton(title: "Send", target: nil, action: nil)
+    private let keepButton = NSButton(title: "Keep on This Mac", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var id: String?
     private var saved = false
@@ -2588,11 +2593,11 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
         ])
         panel.contentView = content
 
-        for button in [textBox, audioBox, sendButton, cancelButton] {
+        for button in [textBox, audioBox, sendButton, keepButton, cancelButton] {
             button.target = self
         }
         sendButton.action = #selector(send)
-        sendButton.keyEquivalent = "\r"
+        keepButton.action = #selector(keep)
         cancelButton.action = #selector(cancel)
         cancelButton.keyEquivalent = "\u{1b}"
         status.font = .systemFont(ofSize: 12)
@@ -2655,11 +2660,23 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
         audioBox.title = audioKept ? "Include the audio" : "Include the audio (not kept for this dictation)"
         stack.addArrangedSubview(audioBox)
 
+        // "unavailable" (nowhere to send), "ask" (never chosen), "on", "off".
+        let sending = message["sending"] as? String ?? "unavailable"
+        let canSend = sending != "unavailable"
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        note.preferredMaxLayoutWidth = Self.width - Self.inset * 2
+        note.stringValue = sending == "ask"
+            ? "Send uploads the report to Sunoto's error tracker (Sentry). Keep on This Mac only saves it here. Sunoto remembers your choice for the next report."
+            : "Send uploads the report to Sunoto's error tracker (Sentry). Keep on This Mac only saves it here."
+        note.isHidden = !canSend
+        stack.addArrangedSubview(note)
+
         status.stringValue = ""
         status.isHidden = true
         stack.addArrangedSubview(status)
 
-        let buttons = NSStackView(views: [cancelButton, sendButton])
+        let buttons = NSStackView(views: [cancelButton, keepButton, sendButton])
         buttons.orientation = .horizontal
         buttons.spacing = 10
         let row = NSStackView(views: [NSView(), buttons])
@@ -2670,8 +2687,13 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
         stack.addArrangedSubview(row)
         row.widthAnchor.constraint(equalToConstant: Self.width - Self.inset * 2).isActive = true
 
-        sendButton.title = "Send"
+        sendButton.title = canSend ? "Send" : "Save"
         sendButton.isEnabled = true
+        keepButton.isHidden = !canSend
+        keepButton.isEnabled = true
+        sendButton.keyEquivalent = sending == "off" ? "" : "\r"
+        keepButton.keyEquivalent = sending == "off" ? "\r" : ""
+        upload = canSend ? true : nil
         cancelButton.isHidden = false
         textBox.isEnabled = true
 
@@ -2689,14 +2711,20 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
         if let code = message["code"] as? String {
             saved = true
             status.textColor = .labelColor
-            status.stringValue = "Saved as \(code). If you write to us about it, quote this code."
+            status.stringValue = (message["sending"] as? Bool ?? false)
+                ? "Report \(code) is on its way. If you write to us about it, quote this code."
+                : "Saved on this Mac as \(code)."
+            note.isHidden = true
             sendButton.title = "Done"
             sendButton.isEnabled = true
+            sendButton.keyEquivalent = "\r"
+            keepButton.isHidden = true
             cancelButton.isHidden = true
         } else {
             status.textColor = .systemRed
             status.stringValue = (message["error"] as? String) ?? "The report could not be saved."
             sendButton.isEnabled = true
+            keepButton.isEnabled = true
             textBox.isEnabled = true
             audioBox.isEnabled = audioBox.title == "Include the audio"
         }
@@ -2704,20 +2732,37 @@ private final class ReportPanelController: NSObject, NSWindowDelegate {
         panel.setContentSize(stack.fittingSize)
     }
 
+    /// Send's answer to the daemon: true to upload, nil when this build
+    /// cannot send (Save).
+    private var upload: Bool?
+
     @objc private func send() {
+        submit(upload: upload)
+    }
+
+    @objc private func keep() {
+        submit(upload: false)
+    }
+
+    private func submit(upload: Bool?) {
         guard let id, !saved else {
             panel.orderOut(nil)
             return
         }
         sendButton.isEnabled = false
+        keepButton.isEnabled = false
         textBox.isEnabled = false
         audioBox.isEnabled = false
-        emit([
+        var message: [String: Any] = [
             "type": "send_report",
             "id": id,
             "include_text": textBox.state == .on,
             "include_audio": audioBox.state == .on,
-        ])
+        ]
+        if let upload {
+            message["upload"] = upload
+        }
+        emit(message)
     }
 
     @objc private func cancel() {
