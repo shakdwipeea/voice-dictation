@@ -231,7 +231,12 @@ pub(crate) fn spawn_snapshot(session_id: u64, device: Option<String>, events: Se
         .name("diag".into())
         .spawn(move || {
             let system = system_now();
-            let input = device.as_deref().and_then(sunoto_audio::input_info);
+            // Before capture has named its device (the first dictation
+            // with the microphone off), it is opening the default input.
+            let input = match device {
+                Some(device) => sunoto_audio::input_info(&device),
+                None => sunoto_audio::default_input_info(),
+            };
             let _ = events.send(DaemonEvent::Diag {
                 session_id,
                 system,

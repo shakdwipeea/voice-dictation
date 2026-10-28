@@ -140,7 +140,17 @@ pub(crate) fn envelope(report: &Value, dsn: &Dsn) -> Vec<u8> {
         ),
     );
 
-    let mut contexts = json!({ "sunoto": field("/dictation") });
+    let mut dictation = field("/dictation");
+    // Sentry's default data scrubber blanks any field whose name holds
+    // "token", so this count would arrive as null.
+    if let Some(asr) = dictation
+        .pointer_mut("/diag/asr")
+        .and_then(Value::as_object_mut)
+        && let Some(count) = asr.remove("boosted_tokens")
+    {
+        asr.insert("boost_changed_picks".into(), count);
+    }
+    let mut contexts = json!({ "sunoto": dictation });
     if let Some(macos) = text("/tags/macos_version") {
         contexts["os"] = json!({ "name": "macOS", "version": macos });
     }
@@ -556,6 +566,18 @@ mod tests {
         for absent in ["user", "server_name", "request", "extra", "breadcrumbs"] {
             assert!(!keys.contains(&absent), "{absent} must not be sent");
         }
+    }
+
+    #[test]
+    fn counts_named_like_secrets_are_renamed_for_the_scrubber() {
+        let mut sample = report(false);
+        sample["dictation"]["diag"]["asr"] = json!({"decode_ms": 120, "boosted_tokens": 0});
+        let event = &items(&envelope(&sample, &dsn()))[2];
+        assert_eq!(
+            event["contexts"]["sunoto"]["diag"]["asr"],
+            json!({"decode_ms": 120, "boost_changed_picks": 0})
+        );
+        assert!(!event.to_string().contains("token"));
     }
 
     #[test]

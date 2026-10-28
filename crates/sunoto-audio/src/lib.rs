@@ -153,6 +153,20 @@ pub fn input_info(device: &str) -> Option<InputInfo> {
     }
 }
 
+/// `input_info` of the system's default input, which capture opens when
+/// the device is "auto". For a press that comes before capture has named
+/// its device (the microphone is off between dictations).
+pub fn default_input_info() -> Option<InputInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::default_input_info()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Input lost to late capture callbacks since the process started.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputGaps {
