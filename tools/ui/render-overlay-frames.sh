@@ -33,6 +33,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 head -n "$((line - 1))" "$SRC" > "$work/render.swift"
 cat "$MAIN" >> "$work/render.swift"
-swiftc -O -o "$work/render" "$work/render.swift"
+cat "$ROOT/services/macos/user-settings.swift" "$ROOT/services/macos/menu-panel.swift" "$work/render.swift" > "$work/main.swift"
+swiftc -O -o "$work/render" "$work/main.swift"
 mkdir -p "$OUT"
 "$work/render" "$OUT" "$@"

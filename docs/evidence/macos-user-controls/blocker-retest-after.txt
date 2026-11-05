@@ -1,0 +1,36 @@
+practice {
+ "practice_after_resume": true,
+ "pasted_into_target": false,
+ "target_text": "",
+ "clipboard_is_sentinel": true,
+ "practice_results_added": 1
+}
+sleep {
+ "mid_session_cancelled_mic": "idle",
+ "practice_after_sleep": true,
+ "pasted_into_target": false,
+ "target_text": "",
+ "clipboard_is_sentinel": true,
+ "practice_results_added": 1
+}
+hold {
+ "first_press_while_warming": {
+  "ready": false,
+  "session": "idle"
+ },
+ "next_press_records": true,
+ "pasted": true,
+ "target_text": "Meeting is on Thursday at 10.",
+ "clipboard_restored": true,
+ "config_restored": true
+}
+quit {
+ "quit_ms_after_paste": 67,
+ "exit_s_after_quit": 0.34,
+ "daemon_gone": true,
+ "clipboard": "sunoto-clipboard-sentinel",
+ "clipboard_restored": true,
+ "target_text": "Meeting is on Thursday at 10.",
+ "processes_left": "",
+ "relaunched_ready": true
+}

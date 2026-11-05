@@ -153,12 +153,12 @@ pub(crate) fn spawn_hotkey_thread(
 }
 
 pub(crate) fn spawn_capture_thread(
-    settings: &Settings,
+    device: Arc<std::sync::Mutex<String>>,
     events: Sender<DaemonEvent>,
     stop: Arc<AtomicBool>,
     wanted: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
 ) -> Result<JoinHandle<()>, Box<dyn Error>> {
-    let device = settings.microphone.clone();
     Ok(std::thread::spawn(move || {
         // Retry capture startup with a backoff. On macOS the first attempt
         // may fail until Microphone TCC permission is granted (the prompt
@@ -177,16 +177,21 @@ pub(crate) fn spawn_capture_thread(
                     h.stop();
                     attempt = 0;
                 }
+                active.store(false, Ordering::SeqCst);
                 std::thread::park_timeout(Duration::from_millis(250));
                 continue;
             }
             if capture.is_none() {
+                active.store(true, Ordering::SeqCst);
+                if !wanted.load(Ordering::SeqCst) { active.store(false, Ordering::SeqCst); continue; }
                 match start_capture(CaptureConfig {
-                    device: device.clone(),
+                    device: device.lock().unwrap().clone(),
                     ..CaptureConfig::default()
                 }) {
                     Ok(handle) => capture = Some(handle),
                     Err(error) => {
+                        active.store(false, Ordering::SeqCst);
+                        let _ = events.send(DaemonEvent::Audio(sunoto_audio::AudioEvent::Stopped { reason: error.to_string() }));
                         logging::warn(&format!(
                             "microphone capture unavailable: {error}; retrying"
                         ));
@@ -226,5 +231,69 @@ pub(crate) fn spawn_capture_thread(
         if let Some(h) = capture.take() {
             h.stop();
         }
+        active.store(false, Ordering::SeqCst);
     }))
+}
+
+/// Prepared listeners remain silent until the event loop commits the settings.
+pub(crate) struct PreparedBindings {
+    pub stop: Arc<AtomicBool>,
+    pub active: Arc<AtomicBool>,
+    pub handles: Vec<JoinHandle<()>>,
+}
+
+pub(crate) fn prepare_bindings(
+    settings: &Settings,
+    events: Sender<DaemonEvent>,
+) -> Result<PreparedBindings, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let active = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+    let mut bindings = vec![(SessionMode::Dictation, settings.shortcut.as_str())];
+    if settings.system_mode_enabled {
+        bindings.push((SessionMode::System, &settings.system_shortcut));
+    }
+    for (mode, name) in bindings {
+        let shortcut = Shortcut::parse(name).map_err(|e| e.to_string())?;
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let stopped = stop.clone();
+        let enabled = active.clone();
+        let sink = events.clone();
+        handles.push(std::thread::spawn(move || {
+            let listener = match HotkeyListener::open(&shortcut) {
+                Ok(listener) => {
+                    #[cfg(target_os = "macos")]
+                    if let Err(error) = listener.verify_delivery(Duration::from_secs(3)) {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                    let _ = ready_tx.send(Ok(()));
+                    listener
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            while !stopped.load(Ordering::SeqCst) {
+                if let Some(edge) = listener.wait(Duration::from_millis(100))
+                    && enabled.load(Ordering::SeqCst)
+                {
+                    let _ = sink.send(DaemonEvent::Hotkey(ModeHotkeyEvent { mode, edge }));
+                }
+            }
+        }));
+        if let Err(error) = ready_rx.recv().unwrap_or_else(|e| Err(e.to_string())) {
+            stop.store(true, Ordering::SeqCst);
+            for handle in handles {
+                let _ = handle.join();
+            }
+            return Err(error);
+        }
+    }
+    Ok(PreparedBindings {
+        stop,
+        active,
+        handles,
+    })
 }

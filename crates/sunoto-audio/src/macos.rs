@@ -246,6 +246,13 @@ fn configured_input_device(config: &CaptureConfig) -> Result<AudioObjectID, Audi
     if config.device == "auto" {
         return default_input_device();
     }
+    if let Some(uid) = config.device.strip_prefix("uid:") {
+        return input_devices()
+            .into_iter()
+            .find(|device| device.uid == uid)
+            .map(|device| device.id)
+            .ok_or(AudioError::NoMicrophone);
+    }
     let raw = config
         .device
         .strip_prefix("coreaudio:")
@@ -699,7 +706,8 @@ fn other_apps_recording() -> Option<u32> {
     if status != 0 {
         return None;
     }
-    let mut processes: Vec<AudioObjectID> = vec![0; size as usize / std::mem::size_of::<AudioObjectID>()];
+    let mut processes: Vec<AudioObjectID> =
+        vec![0; size as usize / std::mem::size_of::<AudioObjectID>()];
     let status = unsafe {
         AudioObjectGetPropertyData(
             1,
@@ -766,6 +774,12 @@ pub fn start_capture_macos(config: CaptureConfig) -> Result<CaptureHandle, Audio
         let mut backoff_index = 0usize;
         while !stop_for_thread.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(50));
+            if config.device != "auto" && !device_has_input_streams(device) {
+                let _ = tx.send(AudioEvent::Stopped {
+                    reason: "Selected microphone disconnected".into(),
+                });
+                break;
+            }
             if config.device != "auto" || Instant::now() < next_recheck {
                 continue;
             }
@@ -883,4 +897,85 @@ mod tests {
         let info = default_input_info().expect("device answers");
         assert!(info.sample_rate >= 8_000, "{info:?}");
     }
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringGetCString(
+        value: *const c_void,
+        buffer: *mut i8,
+        size: isize,
+        encoding: u32,
+    ) -> bool;
+    fn CFRelease(value: *const c_void);
+}
+
+fn device_string(device: u32, selector: u32) -> Option<String> {
+    let property = addr(selector, SCOPE_GLOBAL);
+    let mut value: *const c_void = std::ptr::null();
+    let mut size = std::mem::size_of_val(&value) as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device,
+            &property,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut value as *mut _ as *mut c_void,
+        )
+    };
+    if status != 0 || value.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0i8; 4096];
+    let ok = unsafe {
+        CFStringGetCString(
+            value,
+            buffer.as_mut_ptr(),
+            buffer.len() as isize,
+            0x08000100,
+        )
+    };
+    unsafe {
+        CFRelease(value);
+    }
+    ok.then(|| {
+        unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+pub(crate) fn input_devices() -> Vec<crate::InputDevice> {
+    let property = addr(SEL_DEVICES, SCOPE_GLOBAL);
+    let mut size = 0;
+    if unsafe { AudioObjectGetPropertyDataSize(1, &property, 0, std::ptr::null(), &mut size) } != 0
+    {
+        return vec![];
+    }
+    let mut ids = vec![0u32; size as usize / 4];
+    if unsafe {
+        AudioObjectGetPropertyData(
+            1,
+            &property,
+            0,
+            std::ptr::null(),
+            &mut size,
+            ids.as_mut_ptr() as *mut c_void,
+        )
+    } != 0
+    {
+        return vec![];
+    }
+    ids.into_iter()
+        .filter(|id| device_has_input_streams(*id))
+        .filter_map(|id| {
+            Some(crate::InputDevice {
+                id,
+                uid: device_string(id, fourcc(b'u', b'i', b'd', b' '))?,
+                name: device_string(id, fourcc(b'l', b'n', b'a', b'm'))
+                    .unwrap_or_else(|| format!("Input {id}")),
+            })
+        })
+        .collect()
 }

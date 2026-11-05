@@ -303,6 +303,8 @@ struct Draft {
 /// dropped at `finish`; the loop calls every method unconditionally.
 pub(crate) struct HistoryRecorder {
     writer: Option<SyncSender<Box<Record>>>,
+    writer_handle: Option<std::thread::JoinHandle<()>>,
+    retention_days: u32,
     exclude_apps: Vec<String>,
     asr: Asr,
     draft: Option<Draft>,
@@ -321,7 +323,8 @@ impl HistoryRecorder {
         }
         let root = history_dir();
         match spawn_writer(&root, settings.history_retention_days) {
-            Ok(writer) => {
+            Ok((writer, handle)) => {
+                recorder.writer_handle = Some(handle);
                 let kept = match settings.history_retention_days {
                     0 => "kept until deleted".to_string(),
                     days => format!("kept {days} days"),
@@ -359,6 +362,8 @@ impl HistoryRecorder {
         });
         Self {
             writer,
+            writer_handle: None,
+            retention_days: settings.history_retention_days,
             exclude_apps: settings.history_exclude_apps.clone(),
             asr: Asr {
                 backend: settings.backend.clone(),
@@ -388,10 +393,27 @@ impl HistoryRecorder {
 
     /// Delete every saved dictation, as `sunoto history clear --yes` does.
     /// Returns the number of day files removed.
+    pub(crate) fn flush(&mut self) {
+        self.writer.take();
+        if let Some(handle) = self.writer_handle.take() {
+            let _ = handle.join();
+        }
+    }
+
     pub(crate) fn clear(&mut self) -> io::Result<usize> {
-        self.recent.clear();
+        let enabled = self.writer.is_some();
+        self.flush();
+        let result = crate::history_cli::clear(&dictations_dir(&history_dir()));
+        self.recent =
+            crate::history_cli::recent_dictations(&dictations_dir(&history_dir()), RECENT_COUNT)?
+                .into();
         self.recent_changed = true;
-        crate::history_cli::clear(&dictations_dir(&history_dir()))
+        if enabled {
+            let (writer, handle) = spawn_writer(&history_dir(), self.retention_days)?;
+            self.writer = Some(writer);
+            self.writer_handle = Some(handle);
+        }
+        result
     }
 
     /// A dictation started. System mode is never recorded, so the loop calls
@@ -591,12 +613,21 @@ fn recent_entry(record: &Record) -> Option<RecentDictation> {
     })
 }
 
+impl Drop for HistoryRecorder {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
 /// Create `root/dictations` (mode 0700) and start the writer thread, which
 /// also deletes expired day files at start and once a day.
-fn spawn_writer(root: &Path, retention_days: u32) -> io::Result<SyncSender<Box<Record>>> {
+fn spawn_writer(
+    root: &Path,
+    retention_days: u32,
+) -> io::Result<(SyncSender<Box<Record>>, std::thread::JoinHandle<()>)> {
     let dir = prepare_dir(root)?;
     let (tx, rx) = mpsc::sync_channel::<Box<Record>>(CHANNEL_CAPACITY);
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("history-writer".into())
         .spawn(move || {
             prune_logged(&dir, retention_days);
@@ -619,7 +650,7 @@ fn spawn_writer(root: &Path, retention_days: u32) -> io::Result<SyncSender<Box<R
                 }
             }
         })?;
-    Ok(tx)
+    Ok((tx, handle))
 }
 
 /// `root/dictations`, created private to this user.
@@ -1026,8 +1057,9 @@ mod tests {
     fn the_writer_thread_saves_finished_dictations() {
         let root = temp_dir("writer");
         let settings = Settings::default();
-        let writer = spawn_writer(&root, settings.history_retention_days).unwrap();
+        let (writer, handle) = spawn_writer(&root, settings.history_retention_days).unwrap();
         let mut history = HistoryRecorder::new(Some(writer), &settings);
+        history.writer_handle = Some(handle);
         history.begin(5);
         history.transcript(5, "hello there", None);
         history.inserted(5, "Hello there.", false);

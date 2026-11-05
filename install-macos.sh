@@ -51,7 +51,7 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/Cargo.toml" ] && [ "${SUNOTO_INSTAL
         warn "SUNOTO_SKIP_BUILD=1: using existing binaries"
     else
         (cd "$SCRIPT_DIR" && cargo build --release -p sunoto-daemon)
-        swiftc -O "$SCRIPT_DIR/services/macos/sunoto-overlay.swift" -o "$OVERLAY_BIN"
+        bash "$SCRIPT_DIR/services/macos/build-overlay.sh" "$OVERLAY_BIN"
     fi
     [ -x "$DAEMON_BIN" ] || fail "missing $DAEMON_BIN"
     ok "built daemon and overlay"

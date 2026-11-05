@@ -1,0 +1,754 @@
+python3 -m unittest discover -s tests/phase0 -v
+test_capture_validates_generated_wav (test_audio_probe.AudioProbeTest.test_capture_validates_generated_wav) ... ok
+test_percentile_uses_sorted_values (test_macos_measure.MacosMeasureHelperTests.test_percentile_uses_sorted_values) ... ok
+test_word_error_rate_handles_substitution (test_macos_measure.MacosMeasureHelperTests.test_word_error_rate_handles_substitution) ... ok
+test_word_error_rate_normalizes_case_and_punctuation (test_macos_measure.MacosMeasureHelperTests.test_word_error_rate_normalizes_case_and_punctuation) ... ok
+test_create_manifest_omits_missing_reference (test_nemotron_benchmark.NemotronBenchmarkTest.test_create_manifest_omits_missing_reference) ... ok
+test_inspect_wav_accepts_required_format (test_nemotron_benchmark.NemotronBenchmarkTest.test_inspect_wav_accepts_required_format) ... ok
+test_inspect_wav_rejects_stereo (test_nemotron_benchmark.NemotronBenchmarkTest.test_inspect_wav_rejects_stereo) ... ok
+test_model_argument_uses_pretrained_name_for_repository_id (test_nemotron_benchmark.NemotronBenchmarkTest.test_model_argument_uses_pretrained_name_for_repository_id) ... ok
+test_module_available_handles_missing_parent_package (test_nemotron_benchmark.NemotronBenchmarkTest.test_module_available_handles_missing_parent_package) ... ok
+test_parse_profiles_deduplicates_in_order (test_nemotron_benchmark.NemotronBenchmarkTest.test_parse_profiles_deduplicates_in_order) ... ok
+test_parse_profiles_rejects_unknown_profile (test_nemotron_benchmark.NemotronBenchmarkTest.test_parse_profiles_rejects_unknown_profile) ... ok
+test_parse_streaming_metrics_extracts_transcription_and_timing (test_nemotron_benchmark.NemotronBenchmarkTest.test_parse_streaming_metrics_extracts_transcription_and_timing) ... ok
+test_preflight_reports_missing_runtime_without_crashing (test_nemotron_benchmark.NemotronBenchmarkTest.test_preflight_reports_missing_runtime_without_crashing) ... ok
+test_preflight_warns_about_mismatched_cuda_bindings (test_nemotron_benchmark.NemotronBenchmarkTest.test_preflight_warns_about_mismatched_cuda_bindings) ... ok
+test_run_captures_missing_command (test_system_probe.SystemProbeTest.test_run_captures_missing_command) ... ok
+test_run_captures_success (test_system_probe.SystemProbeTest.test_run_captures_success) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.041s
+
+OK
+cargo test --workspace --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/lib.rs (target/debug/deps/sunoto_audio-e9cfcc967baa935d)
+
+running 9 tests
+test tests::errors_render_with_display_and_source ... ok
+test tests::default_config_matches_phase0_capture_settings ... ok
+test tests::source_description_matches_the_named_source ... ok
+test macos::tests::a_jump_in_sample_time_counts_as_a_gap ... ok
+test tests::resolve_errors_when_pactl_is_missing ... ok
+test tests::resolve_uses_non_monitor_default_source ... ok
+test tests::resolve_reports_no_microphone_when_only_monitors_exist ... ok
+test tests::resolve_skips_monitor_default_and_uses_source_list ... ok
+test macos::tests::the_default_input_has_a_kind_and_rate ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.62s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_core-087761a4e715af0e)
+
+running 17 tests
+test tests::gestures::a_forgotten_recording_expires ... ok
+test tests::gestures::a_tap_starts_and_the_next_tap_finishes ... ok
+test tests::gestures::a_tap_that_was_refused_starts_again_next_time ... ok
+test tests::gestures::escape_cancels_only_the_recording_mode ... ok
+test tests::gestures::hold_press_the_daemon_refused_does_not_block_the_next_press ... ok
+test tests::gestures::cancelled_session_cannot_finalize_after_next_session_starts ... ok
+test tests::failure_returns_to_idle_so_the_next_press_works ... ok
+test tests::gestures::hold_recording_that_ended_while_held_leaves_the_next_press_working ... ok
+test tests::gestures::hold_repeats_release_and_interrupt_do_not_stick ... ok
+test tests::gestures::holding_the_key_is_still_just_a_tap ... ok
+test tests::gestures::typing_a_chord_with_the_key_does_nothing ... ok
+test tests::partials_are_accepted_only_for_the_current_session ... ok
+test tests::pre_roll_keeps_only_latest_samples ... ok
+test tests::push_to_talk_transitions_are_idempotent ... ok
+test tests::session_ids_keep_increasing_after_failures ... ok
+test tests::stale_final_result_is_ignored ... ok
+test tests::session_mode_is_stable_until_the_session_ends ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/sunoto_daemon-96a481c8f4f92120)
+
+running 170 tests
+test daemon::onboarding_tests::microphone_grant_survives_idle_and_reopen_but_not_capture_failure ... ok
+test daemon::practice_tests::only_closing_the_window_or_quitting_ends_practice ... ok
+test daemon::onboarding_tests::the_pill_counts_the_download_in_whole_percent ... ok
+test bench::tests::parses_valid_wav ... ok
+test bench::tests::percentiles_pick_expected_ranks ... ok
+test bench::tests::post_asr_llm_percentiles_ignore_failed_llm_sessions ... ok
+test bench::tests::rejects_wrong_formats ... ok
+test daemon::onboarding_tests::publishes_the_latched_permission_state ... ok
+test diag::tests::changed_words_counts_what_the_fix_replaced ... ok
+test eval::tests::evaluation_counts_matches_and_improvements ... ok
+test eval::tests::corpus_manifest_parses_with_defaults ... ok
+test eval::tests::regressions_and_digit_changes_are_detected ... ok
+test diag::tests::diag_holds_only_counts_and_fixed_names ... ok
+test diag::tests::diag_fields_match_the_plan ... ok
+test first_open::tests::the_login_item_route_round_trips_and_ignores_junk ... ok
+test health::tests::blocked_hotkey_outranks_everything_else ... ok
+test health::tests::captions_fit_the_overlay_chip ... ok
+test health::tests::monitor_reports_transitions_only ... ok
+test control::tests::a_reply_stream_cannot_block_the_event_loop_forever ... ok
+test diag::tests::summary_is_one_line_of_counts ... ok
+test health::tests::startup_order_is_asr_then_polish_then_mic_then_ready ... ok
+test first_open::tests::the_disk_image_is_the_volume_the_app_came_from ... ok
+test first_open::tests::only_an_app_outside_applications_is_moved ... ok
+test history::tests::dates_round_trip_across_month_ends_leap_days_and_years ... ok
+test history::tests::history_overhead_per_dictation ... ignored
+test history::tests::day_files_are_named_in_utc_and_parse_back ... ok
+test daemon::system_mode_integration_tests::voice_spotlight_project_and_editor_route_through_one_time_palette_and_runner ... ok
+test history::tests::a_new_press_writes_an_open_draft_as_abandoned ... ok
+test history::tests::a_full_writer_drops_records_without_blocking ... ok
+test history::tests::disabled_history_records_nothing ... ok
+test history::tests::each_session_produces_exactly_one_record ... ok
+test history::tests::reap_ends_a_session_lost_before_its_transcript ... ok
+test history::tests::recent_dictations_follow_what_was_saved_with_text ... ok
+test history::tests::inserted_dictation_records_every_stage ... ok
+test daemon::system_mode_integration_tests::compound_system_route_requires_palette_selection_then_observes_selected_browser_url ... ok
+test history_cli::tests::list_lines_show_outcome_app_time_and_text ... ok
+test history::tests::password_fields_and_excluded_apps_keep_no_text ... ok
+test llm_polish::tests::parses_polish_chunk_with_ttft_on_first_sequence ... ok
+test history_cli::tests::a_record_is_found_by_its_id_in_its_day_file ... ok
+test llm_polish::tests::parses_warmed_response_with_per_request_diagnostics ... ok
+test llm_polish::tests::parses_two_step_polished_response_with_nested_diagnostics ... ok
+test llm_polish::tests::polished_event_carries_streaming_diagnostics ... ok
+test menu_bar::tests::reasons_read_as_sentences ... ok
+test menu_bar::tests::the_menu_carries_status_hint_switch_and_history ... ok
+test overlay::tests::a_paste_is_confirmed_before_the_pill_closes ... ok
+test history::tests::records_append_to_private_day_files ... ok
+test overlay::tests::transcribing_reaches_the_pill_instead_of_a_stale_partial ... ok
+test report::tests::codes_look_like_sun_and_four_hex_digits ... ok
+test report::tests::a_report_without_the_box_ticked_holds_no_text ... ok
+test report::tests::event_ids_are_32_random_hex_digits ... ok
+test report::tests::the_panel_lists_counts_in_plain_words ... ok
+test report::tests::ticking_the_box_adds_the_text_as_an_attachment_only ... ok
+test history_cli::tests::unreadable_lines_and_other_files_are_skipped ... ok
+test history_cli::tests::recent_dictations_are_newest_first_and_skip_those_without_text ... ok
+test report_send::tests::answers_map_to_what_happens_to_the_file ... ok
+test report_send::tests::counts_named_like_secrets_are_renamed_for_the_scrubber ... ok
+test history::tests::prune_deletes_only_day_files_past_the_limit ... ok
+test report_send::tests::failed_sends_are_tried_again_soon_then_less_often ... ok
+test report_send::tests::dsns_parse_into_the_envelope_endpoint ... ok
+test report_send::tests::send_a_sample_report ... ignored, sends to a real Sentry project
+test history_cli::tests::forget_removes_exactly_one_dictation ... ok
+test history::tests::the_writer_thread_saves_finished_dictations ... ok
+test report::tests::saved_reports_are_private_files_named_by_code ... ok
+test report_send::tests::the_event_holds_tags_and_counts_and_no_text ... ok
+test report_send::tests::ticked_text_travels_only_as_an_attachment ... ok
+test report_send::tests::old_reports_get_an_event_id_kept_for_resends ... ok
+test settings::tests::auto_update_defaults_to_install_and_rejects_unknown_values ... ok
+test settings::tests::control_socket_path_prefers_explicit_env ... ok
+test settings::tests::dictation_history_is_on_by_default ... ok
+test settings::tests::enabled_system_mode_requires_a_distinct_shortcut ... ok
+test settings::tests::explicit_transcript_logging_preference_survives ... ok
+test settings::tests::insertion_sanitizer_neutralizes_control_characters ... ok
+test settings::tests::invalid_settings_files_are_rejected ... ok
+test settings::tests::llm_polish_command_explicit_path_overrides_profile ... ok
+test settings::tests::llm_polish_command_resolves_gemma4_e2b_profile ... ok
+test settings::tests::atomic_settings_failure_preserves_destination ... ok
+test settings::tests::llm_polish_defaults_to_off_with_the_phi4_mini_sidecar ... ok
+test settings::tests::llm_polish_stream_insert_pushes_env_when_on ... ok
+test settings::tests::llm_polish_mode_defaults_to_constrained_one_call_and_validates ... ok
+test settings::tests::macos_overlay_backend_uses_native_sidecar ... ok
+test settings::tests::loaded_config_without_model_field_defaults_to_phi4_mini ... ok
+test settings::tests::macos_overlay_gets_the_style_in_its_environment ... ok
+test settings::tests::missing_settings_file_yields_defaults ... ok
+test settings::tests::mock_overlay_backend_is_headless_and_explicit ... ok
+test report_send::tests::no_server_means_try_again_later ... ok
+test settings::tests::overlay_command_runs_the_ui_module_with_pythonpath ... ok
+test settings::tests::a_first_start_downloads_only_when_no_model_is_anywhere ... ok
+test settings::tests::overlay_backend_can_force_gdk_backend ... ok
+test settings::tests::overlay_style_defaults_to_the_notch_and_accepts_only_auto_or_pill ... ok
+test settings::tests::parakeet_model_prefers_config_then_local_copy_then_stopgap_then_hub ... ok
+test settings::tests::quiet_idle_defaults ... ok
+test settings::tests::shortcut_defaults_to_right_option_on_macos ... ok
+test settings::tests::shortcut_labels_read_like_macos_menus ... ok
+test settings::tests::sidecar_command_passes_asr_device_to_offline_backend ... ok
+test settings::tests::sidecar_command_passes_asr_device_to_streaming_backend ... ok
+test settings::tests::sidecar_command_selects_backend_defaults ... ok
+test settings::tests::sidecar_command_supports_nemotron_offline ... ok
+test settings::tests::sidecar_command_supports_parakeet_mlx_model_override ... ok
+test settings::tests::sidecar_command_supports_parakeet_mlx_offline_default_model ... ok
+test settings::tests::sidecar_command_supports_parakeet_mlx_streaming_default_model ... ok
+test report_send::tests::curl_posts_the_envelope_and_reads_the_answer ... ok
+test settings::tests::an_updated_install_runs_its_old_model_until_the_new_copy_is_in ... ok
+test settings::tests::system_mode_defaults_are_safe_and_do_not_claim_the_hotkey ... ok
+test settings::tests::system_search_roots_are_bounded_and_resolve_below_home ... ok
+test settings::tests::transcript_for_log_is_verbatim_or_length_and_hash ... ok
+test settings::tests::user_preferences_preserve_engine_and_case_distinctions ... ok
+test settings::tests::settings_round_trip_and_partial_files_work ... ok
+test settings::tests::validation_accepts_macos_overlay_backend ... ok
+test settings::tests::validation_accepts_backend_specific_asr_devices ... ok
+test settings::tests::validation_rejects_asr_device_for_parakeet_mlx_backend ... ok
+test settings::tests::validation_rejects_stream_insert_with_non_constrained_mode ... ok
+test settings::tests::validation_rejects_unknown_llm_polish_mode_name ... ok
+test settings::tests::validation_rejects_unknown_llm_polish_model_name ... ok
+test settings::tests::validation_rejects_unknown_overlay_backend ... ok
+test settings::tests::validation_rejects_zero_llm_polish_timeout_when_enabled ... ok
+test settings::tests::vocabulary_limits_preserve_spelling ... ok
+test setup::tests::info_plist_names_the_daemon_as_the_executable ... ok
+test setup::tests::launching_the_app_never_passes_on_a_bundle_path ... ok
+test setup::tests::old_defaults_are_retired_and_chosen_values_kept ... ok
+test setup::tests::only_the_old_default_shortcut_is_migrated ... ok
+test setup::tests::parses_matching_valid_signing_identity ... ok
+test setup::tests::download_progress_counts_finished_files_and_the_part_being_written ... ok
+test setup::tests::set_config_value_changes_only_that_key ... ok
+test setup::tests::setup_args_parse_flags_and_reject_unknown ... ok
+test setup::tests::uninstall_runs_only_on_known_arguments ... ok
+test settings::tests::save_changes_writes_only_chosen_keys ... ok
+test system_mode::tests::clean_no_match_hands_off_to_llm_without_executing ... ok
+test system_mode::tests::disabled_llm_fallback_leaves_a_clean_no_match_inert ... ok
+test system_mode::tests::live_preview_reports_a_match_without_claiming_execution ... ok
+test system_mode::tests::matched_command_stops_at_candidate_resolution ... ok
+test system_mode::tests::project_editor_plan_uses_unified_target_find_without_native_ids ... ok
+test setup::tests::set_config_value_creates_a_missing_config ... ok
+test system_mode::tests::unsafe_input_is_rejected_instead_of_reinterpreted ... ok
+test tests::parses_post_asr_llm_bench_flag ... ok
+test settings::tests::only_the_models_sunoto_retired_are_listed_for_deletion ... ok
+test system_mode::tests::web_routes_are_read_only_validated_capability_steps ... ok
+test setup::tests::a_bundle_uses_its_own_runtime ... ok
+test update::tests::modes_follow_the_setting ... ok
+test update::tests::release_reply_needs_the_zip_and_its_signature ... ok
+test update::tests::a_changed_download_or_another_key_is_refused ... ok
+test update::tests::the_release_key_is_a_minisign_public_key ... ok
+test update::tests::the_switch_is_shared_with_the_checker ... ok
+test update::tests::versions_parse_and_order ... ok
+test update::tests::a_signed_release_verifies_only_as_its_own_version ... ok
+test update::tests::a_forged_trusted_comment_breaks_the_signature ... ok
+test vocabulary::tests::keep_rare_lists_rare_english_words_too ... ok
+test vocabulary::tests::english_knows_plurals_and_verb_forms ... ok
+test vocabulary::tests::lowercase_names_keep_a_capital_at_sentence_start ... ok
+test vocabulary::tests::merged_spellings_keep_the_strongest_list_and_the_deliberate_case ... ok
+test vocabulary::tests::near_miss_ties_are_left_alone ... ok
+test vocabulary::tests::longer_joins_and_sound_matching_by_default ... ok
+test vocabulary::tests::near_misses_never_touch_english_words_or_short_names ... ok
+test vocabulary::tests::near_misses_become_the_listed_word ... ok
+test vocabulary::tests::one_word_in_two_lists_is_not_a_tie ... ok
+test vocabulary::tests::only_words_the_model_would_misspell_are_unusual ... ok
+test vocabulary::tests::possessives_and_contractions_stay_whole ... ok
+test vocabulary::tests::collect_puts_screen_words_first_and_extra_words_on_screen ... ok
+test vocabulary::tests::sound_keys_match_names_heard_differently ... ok
+test vocabulary::tests::two_words_spelling_a_listed_word_join ... ok
+test vocabulary::tests::unusual_words_ranks_by_frequency_and_dedups_case ... ok
+test vocabulary::tests::word_parts_split_like_people_say_them ... ok
+test vocabulary::tests::project_comes_from_document_title_path_or_known_name ... ok
+test vocabulary::tests::more_sources_add_documents_folders_recent_files_and_contacts ... ok
+test vocabulary::tests::project_names_skip_build_output_and_hidden_folders ... ok
+test report_send::tests::a_rate_limit_waits_and_the_daily_cap_holds ... ok
+test report_send::tests::sending_deletes_sent_files_and_keeps_the_rest_in_order ... ok
+test control::tests::a_client_that_sends_a_moment_after_connecting_is_still_heard ... ok
+test setup::tests::a_background_download_stops_when_the_app_quits ... ok
+test control::tests::a_client_that_never_sends_cannot_hold_the_thread ... ok
+test system_mode::tests::unknown_open_query_returns_unified_no_match_without_execution ... ok
+
+test result: ok. 168 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.33s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_desktop-c897539e29afc659)
+
+running 2 tests
+test tests::outcome_and_event_enums_have_the_shared_variants ... ok
+test tests::platform_types_satisfy_the_contracts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_ipc-cfc979dbcdd7e665)
+
+running 9 tests
+test tests::protocol_round_trip_is_typed_json ... ok
+test tests::final_reads_with_and_without_diag ... ok
+test tests::menu_bar_protocol_is_typed_json ... ok
+test tests::overlay_protocol_round_trip_is_typed_json ... ok
+test tests::user_settings_protocol_round_trip ... ok
+test tests::sidecar_exit_is_reported_as_closed ... ok
+test tests::garbage_lines_are_reported_not_fatal ... ok
+test tests::managed_mock_sidecar_completes_session ... ok
+test tests::mock_sidecar_streams_partials_between_requests ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_linux-0b7fcb314e1a2eef)
+
+running 2 tests
+test wayland::tests::warning_is_handed_over_once ... ok
+test wayland::tests::terminal_classes_are_matched_case_insensitively ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_macos-1e3ff448c19cf1d3)
+
+running 23 tests
+test appkit::tests::live_snapshot_write_restore_round_trip ... ignored, touches the real clipboard
+test appkit::tests::live_trash_and_translocation_lookup ... ignored, puts a folder in the Trash
+test hotkey::tests::missing_accessibility_stops_before_event_tap_creation ... ok
+test hotkey::tests::probe_reports_available_as_soon_as_the_event_is_seen ... ok
+test hotkey::tests::a_rearm_storm_cannot_postpone_the_verdict ... ok
+test hotkey::tests::a_recent_real_key_event_overrides_a_missing_probe ... ok
+test hotkey::tests::left_option_does_not_trigger_right_option ... ok
+test hotkey::tests::probe_reports_blocked_after_the_deadline_and_only_on_transitions ... ok
+test hotkey::tests::right_option_after_another_modifier_is_someone_elses_shortcut ... ok
+test hotkey::tests::right_option_alone_presses_and_releases ... ok
+test hotkey::tests::maps_configured_hotkey_targets ... ok
+test hotkey::tests::bare_escape_cancels_but_modified_escape_does_not ... ok
+test hotkey::tests::maps_modifier_flags_to_left_modifier_keycodes ... ok
+test hotkey::tests::matcher_releases_when_modifier_state_clears_first ... ok
+test hotkey::tests::parses_right_hand_modifiers_as_single_key_shortcuts ... ok
+test hotkey::tests::typing_with_right_option_held_is_a_chord_not_a_tap ... ok
+test system::tests::live_default_and_selected_chrome_navigation ... ignored, opens harmless URLs through native macOS browser APIs
+test system::tests::live_disposable_file_folder_and_reveal ... ignored, opens and reveals disposable file/folder fixtures
+test system::tests::live_project_in_selected_editor ... ignored, opens the real who-else-is-free project in the selected VS Code
+test system::tests::discovery_finds_bundles_without_descending_into_them ... ok
+test system::tests::unified_provider_finds_project_and_rejects_disappearing_target_before_open ... ok
+test diag::tests::probes_answer_on_this_mac ... ok
+test system::tests::current_host_known_workspace_finds_real_project_when_present ... ok
+
+test result: ok. 18 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_polish-a99737fa1752a3b4)
+
+running 26 tests
+test tests::disabled_stages_leave_normalized_text ... ok
+test tests::fillers_do_not_match_inside_words ... ok
+test tests::dictionary_does_not_match_partial_words ... ok
+test tests::multi_word_fillers_are_supported ... ok
+test tests::canonical_swap_correction ... ok
+test tests::detokenize_keeps_intra_token_periods_intact ... ok
+test tests::no_wait_marker_swaps ... ok
+test tests::normalize_does_not_split_intra_token_periods ... ok
+test tests::normalize_fixes_whitespace_and_punctuation_spacing ... ok
+test tests::fillers_are_removed_with_adjacent_commas ... ok
+test tests::normalize_preserves_numbers_and_ellipses ... ok
+test tests::dictionary_replaces_whole_phrases_case_insensitively ... ok
+test tests::normalize_still_splits_sentence_final_period_before_uppercase ... ok
+test tests::polish_preserves_filename_through_full_pipeline ... ok
+test tests::style_rules_first_match_wins_and_empty_needles_are_skipped ... ok
+test tests::style_rules_match_window_classes ... ok
+test tests::serde_round_trip_for_config ... ok
+test tests::snippet_expands_whole_utterance_and_preserves_newlines ... ok
+test tests::restart_marker_drops_the_previous_sentence ... ok
+test tests::swap_requires_shape_compatibility ... ok
+test tests::trace_records_only_changing_stages_in_order ... ok
+test tests::swap_defers_unequal_rewording_to_llm ... ok
+test tests::swap_corrections_must_pass_examples ... ok
+test tests::pipeline_is_idempotent ... ok
+test tests::styles_adjust_only_the_edges ... ok
+test tests::never_panics_on_strange_inputs ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_system-f69d2dc37d419993)
+
+running 56 tests
+test action::tests::application_ids_cannot_be_empty ... ok
+test capability::tests::application_observations_are_classified_as_untrusted_environment_data ... ok
+test capability::tests::open_contract_requires_an_opaque_target_not_a_platform_application_id ... ok
+test action::tests::aliases_are_data_driven_and_deduplicated ... ok
+test capability::tests::catalog_has_only_typed_native_capabilities ... ok
+test dispatcher::tests::discovery_observation_is_ranked_and_bounded_to_the_query ... ok
+test dispatcher::tests::discovery_observations_do_not_expose_the_platform_application_id ... ok
+test dispatcher::tests::expired_target_store_rejects_selection_without_execution ... ok
+test dispatcher::tests::combined_project_and_editor_is_one_explicit_typed_selection ... ok
+test dispatcher::tests::cancellation_is_checked_before_the_executor_receives_an_action ... ok
+test dispatcher::tests::launcher_request_without_running_application_evidence_is_not_success ... ok
+test dispatcher::tests::discovery_without_explicit_selection_never_executes ... ok
+test dispatcher::tests::a_new_discovery_invalidates_old_selected_targets ... ok
+test parser::tests::clean_no_match_requests_the_llm_router ... ok
+test fixtures::tests::open_chrome_requires_selection_before_the_fixture_executor_runs ... ok
+test dispatcher::tests::selected_target_runs_through_the_bounded_runner_once ... ok
+test parser::tests::empty_slots_do_not_match ... ok
+test parser::tests::preserves_target_spelling_while_matching_case_insensitively ... ok
+test dispatcher::tests::unified_target_find_selects_and_opens_project_once ... ok
+test parser::tests::unsafe_or_multi_action_input_fails_before_llm ... ok
+test policy::tests::every_current_intent_is_suggestion_only ... ok
+test parser::tests::routes_every_version_one_intent_family ... ok
+test runner::tests::duplicate_step_ids_are_rejected ... ok
+test runner::tests::cancellation_runs_no_action ... ok
+test runner::tests::future_dependency_is_rejected ... ok
+test runner::tests::planner_cannot_raise_system_owned_limits ... ok
+test runner::tests::browser_result_binds_only_to_the_url_browser_argument ... ok
+test dispatcher::tests::selected_browser_id_is_consumed_and_passed_to_native_url_execution ... ok
+test runner::tests::planner_failure_is_rejected_without_dispatch ... ok
+test runner::tests::failed_observation_stops_the_plan ... ok
+test runner::tests::missing_bound_candidate_fails_without_dispatching_the_later_step ... ok
+test runner::tests::serialized_plan_references_a_prior_step_not_a_native_target ... ok
+test runner::tests::local_target_result_binds_only_to_target_open ... ok
+test runner::tests::target_binding_requires_an_explicit_dependency ... ok
+test selection::tests::explicit_selection_yields_one_typed_action ... ok
+test runner::tests::recording_plan_observes_before_and_after_execution ... ok
+test selection::tests::serialized_rows_never_expose_native_target_ids ... ok
+test selection::tests::stale_and_invented_selections_never_produce_an_action ... ok
+test runner::tests::target_binding_uses_the_resolved_id_from_the_source_observation ... ok
+test suggestion::tests::every_voice_spotlight_target_kind_maps_to_a_palette_action ... ok
+test suggestion::tests::exact_alias_ranks_before_prefix_match ... ok
+test suggestion::tests::exact_cross_kind_matches_remain_visible_and_recency_breaks_only_ties ... ok
+test suggestion::tests::incompatible_candidate_types_are_removed ... ok
+test suggestion::tests::json_contains_no_executable_command_field ... ok
+test suggestion::tests::ranking_never_discards_ambiguous_exact_candidates ... ok
+test suggestion::tests::unrelated_query_returns_no_match ... ok
+test url::tests::encodes_search_as_data ... ok
+test url::tests::rejects_unsafe_or_malformed_urls ... ok
+test url::tests::normalizes_spoken_explicit_and_idna_domains ... ok
+test runner::tests::per_step_deadline_marks_a_slow_dispatch_as_timed_out ... ok
+test runner::tests::whole_plan_deadline_caps_the_current_step ... ok
+test targets::tests::invalid_roots_and_unbounded_queries_fail_closed ... ok
+test targets::tests::finds_projects_and_safe_files_only_inside_approved_root ... ok
+test targets::tests::fixture_quality_gate_has_full_top_five_recall_zero_false_actions_and_bounded_latency ... ok
+test targets::tests::symlink_escape_executables_and_target_mutation_fail_closed ... ok
+test targets::tests::bounded_search_honors_cancellation_and_result_caps ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/routing_corpus.rs (target/debug/deps/routing_corpus-4aa63430469d448e)
+
+running 3 tests
+test unsafe_inputs_fail_closed_before_the_llm ... ok
+test natural_no_matches_are_the_only_inputs_offered_to_the_llm ... ok
+test supported_phrases_produce_the_expected_typed_intent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_audio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_desktop
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_ipc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_linux
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_macos
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_polish
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_system
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo clippy --workspace --offline --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+python3 -m unittest discover -s tests/phase1 -v
+test_first_ping_fires_immediately_when_the_window_opens (test_llm_polish_sidecar.KeepaliveTests.test_first_ping_fires_immediately_when_the_window_opens)
+After keepalive_start the first ping must not wait a full ... ok
+test_handle_request_rejects_unknown_and_returns_false_on_shutdown (test_llm_polish_sidecar.KeepaliveTests.test_handle_request_rejects_unknown_and_returns_false_on_shutdown) ... ok
+test_keepalive_always_env_keeps_the_window_open (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_always_env_keeps_the_window_open) ... ok
+test_keepalive_interval_bad_value_falls_back (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_interval_bad_value_falls_back) ... ok
+test_keepalive_interval_defaults_to_1s (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_interval_defaults_to_1s) ... ok
+test_keepalive_interval_env_override (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_interval_env_override) ... ok
+test_keepalive_loop_exits_on_stop (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_loop_exits_on_stop)
+Setting _keepalive_stop must wake the loop and let the thread exit ... ok
+test_keepalive_loop_is_silent_until_a_session_starts (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_loop_is_silent_until_a_session_starts)
+With no session in flight the loop must not touch the GPU at all; ... ok
+test_keepalive_loop_skips_when_lock_held (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_loop_skips_when_lock_held)
+keepalive_loop must SKIP a ping (not block) when the main thread ... ok
+test_keepalive_runs_after_warmup_and_does_not_emit_stdout (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_runs_after_warmup_and_does_not_emit_stdout)
+After warmup, keepalive fires the LLM but never emits on stdout. ... ok
+test_keepalive_skipped_until_first_request (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_skipped_until_first_request)
+keepalive() must not call the LLM before warmup/polish has run. ... ok
+test_keepalive_suffix_is_monotonic_and_never_repeats (test_llm_polish_sidecar.KeepaliveTests.test_keepalive_suffix_is_monotonic_and_never_repeats)
+Each keepalive must append a fresh counter so the prompt is never a ... ok
+test_constrained_one_call_edit_passes_through_without_validator (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_one_call_edit_passes_through_without_validator) ... ok
+test_constrained_one_call_edit_strips_control_prefix (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_one_call_edit_strips_control_prefix) ... ok
+test_constrained_one_call_identical_edit_is_unchanged (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_one_call_identical_edit_is_unchanged) ... ok
+test_constrained_one_call_malformed_output_is_reported (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_one_call_malformed_output_is_reported) ... ok
+test_constrained_one_call_meaningful_marker_edit_passes_through (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_one_call_meaningful_marker_edit_passes_through) ... ok
+test_constrained_one_call_ok_returns_original_transcript (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_one_call_ok_returns_original_transcript) ... ok
+test_constrained_prompt_and_few_shot_can_be_overridden_for_eval (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_prompt_and_few_shot_can_be_overridden_for_eval) ... ok
+test_constrained_prompt_recognizes_disfluencies_as_a_class (test_llm_polish_sidecar.LlmPolishWarmupTests.test_constrained_prompt_recognizes_disfluencies_as_a_class)
+The constrained authority is merge-only of DISFLUENT speech, and must ... ok
+test_content_loss_guard_allows_legit_restart_merge (test_llm_polish_sidecar.LlmPolishWarmupTests.test_content_loss_guard_allows_legit_restart_merge) ... ok
+test_content_loss_guard_falls_back_to_raw_on_topic_drop (test_llm_polish_sidecar.LlmPolishWarmupTests.test_content_loss_guard_falls_back_to_raw_on_topic_drop) ... ok
+test_llama_runtime_config_defaults_and_env_overrides (test_llm_polish_sidecar.LlmPolishWarmupTests.test_llama_runtime_config_defaults_and_env_overrides) ... ok
+test_minimal_edited_output_strips_control_prefix (test_llm_polish_sidecar.LlmPolishWarmupTests.test_minimal_edited_output_strips_control_prefix) ... ok
+test_minimal_unchanged_output_returns_original_transcript (test_llm_polish_sidecar.LlmPolishWarmupTests.test_minimal_unchanged_output_returns_original_transcript) ... ok
+test_two_step_decision_edit_runs_rewrite (test_llm_polish_sidecar.LlmPolishWarmupTests.test_two_step_decision_edit_runs_rewrite) ... ok
+test_two_step_decision_unchanged_returns_original_transcript (test_llm_polish_sidecar.LlmPolishWarmupTests.test_two_step_decision_unchanged_returns_original_transcript) ... ok
+test_two_step_email_reformat_passes_through_without_validator (test_llm_polish_sidecar.LlmPolishWarmupTests.test_two_step_email_reformat_passes_through_without_validator) ... ok
+test_two_step_malformed_decision_falls_back_to_rewrite (test_llm_polish_sidecar.LlmPolishWarmupTests.test_two_step_malformed_decision_falls_back_to_rewrite) ... ok
+test_warmup_uses_production_completion_path (test_llm_polish_sidecar.LlmPolishWarmupTests.test_warmup_uses_production_completion_path) ... ok
+test_accept_audio_converts_sidecar_float32_to_i16 (test_nemotron_offline_sidecar.BufferEngineTest.test_accept_audio_converts_sidecar_float32_to_i16) ... [nemotron-sidecar] finish: 4 samples (0.00s audio), wav_write 1ms, total 1ms
+ok
+test_backend_label_distinguishes_offline (test_nemotron_offline_sidecar.BufferEngineTest.test_backend_label_distinguishes_offline) ... ok
+test_cancel_drops_buffered_audio (test_nemotron_offline_sidecar.BufferEngineTest.test_cancel_drops_buffered_audio) ... ok
+test_empty_session_finishes_empty_string_without_transcribing (test_nemotron_offline_sidecar.BufferEngineTest.test_empty_session_finishes_empty_string_without_transcribing) ... ok
+test_finish_clears_the_buffer_for_the_next_session (test_nemotron_offline_sidecar.BufferEngineTest.test_finish_clears_the_buffer_for_the_next_session) ... [nemotron-sidecar] finish: 3 samples (0.00s audio), wav_write 0ms, total 0ms
+[nemotron-sidecar] finish: 2 samples (0.00s audio), wav_write 0ms, total 0ms
+ok
+test_lifecycle_buffers_then_transcribes_once_on_finish (test_nemotron_offline_sidecar.BufferEngineTest.test_lifecycle_buffers_then_transcribes_once_on_finish) ... [nemotron-sidecar] finish: 7 samples (0.00s audio), wav_write 0ms, total 0ms
+ok
+test_write_wav_is_16khz_mono_s16le (test_nemotron_offline_sidecar.BufferEngineTest.test_write_wav_is_16khz_mono_s16le) ... ok
+test_defaults_target_cpu_and_nemotron_model (test_nemotron_offline_sidecar.CliTest.test_defaults_target_cpu_and_nemotron_model) ... ok
+test_device_is_overridable_to_mps (test_nemotron_offline_sidecar.CliTest.test_device_is_overridable_to_mps) ... ok
+test_module_imports_without_nemo_or_numpy (test_nemotron_offline_sidecar.CliTest.test_module_imports_without_nemo_or_numpy) ... ok
+test_cancel_matches_the_streaming_contract (test_nemotron_offline_sidecar.OfflineProtocolTest.test_cancel_matches_the_streaming_contract) ... ok
+test_health_reports_offline_backend (test_nemotron_offline_sidecar.OfflineProtocolTest.test_health_reports_offline_backend) ... ok
+test_profile_ms_is_accepted_but_ignored (test_nemotron_offline_sidecar.OfflineProtocolTest.test_profile_ms_is_accepted_but_ignored) ... ok
+test_serve_writes_compact_json_lines (test_nemotron_offline_sidecar.OfflineProtocolTest.test_serve_writes_compact_json_lines) ... [nemotron-sidecar] finish: 4 samples (0.00s audio), wav_write 0ms, total 0ms
+[nemotron-sidecar] stdin closed; exiting
+ok
+test_session_emits_no_partials_and_one_final (test_nemotron_offline_sidecar.OfflineProtocolTest.test_session_emits_no_partials_and_one_final) ... [nemotron-sidecar] finish: 9 samples (0.00s audio), wav_write 0ms, total 0ms
+ok
+test_audio_for_wrong_session_is_an_error (test_nemotron_sidecar_protocol.ProtocolTest.test_audio_for_wrong_session_is_an_error) ... ok
+test_audio_samples_must_be_an_array (test_nemotron_sidecar_protocol.ProtocolTest.test_audio_samples_must_be_an_array) ... ok
+test_blank_lines_are_ignored (test_nemotron_sidecar_protocol.ProtocolTest.test_blank_lines_are_ignored) ... ok
+test_cancel_session_matches_mock_contract (test_nemotron_sidecar_protocol.ProtocolTest.test_cancel_session_matches_mock_contract) ... ok
+test_engine_failure_is_reported_not_fatal (test_nemotron_sidecar_protocol.ProtocolTest.test_engine_failure_is_reported_not_fatal) ... [nemotron-sidecar] engine failure on 'audio_chunk': RuntimeError('CUDA exploded')
+ok
+test_health_reports_engine_backend (test_nemotron_sidecar_protocol.ProtocolTest.test_health_reports_engine_backend) ... ok
+test_malformed_json_yields_error_event (test_nemotron_sidecar_protocol.ProtocolTest.test_malformed_json_yields_error_event) ... ok
+test_new_session_supersedes_active_one (test_nemotron_sidecar_protocol.ProtocolTest.test_new_session_supersedes_active_one) ... ok
+test_non_object_json_yields_error_event (test_nemotron_sidecar_protocol.ProtocolTest.test_non_object_json_yields_error_event) ... ok
+test_serve_writes_compact_json_lines (test_nemotron_sidecar_protocol.ProtocolTest.test_serve_writes_compact_json_lines) ... [nemotron-sidecar] stdin closed; exiting
+ok
+test_session_lifecycle (test_nemotron_sidecar_protocol.ProtocolTest.test_session_lifecycle) ... ok
+test_start_session_requires_valid_fields (test_nemotron_sidecar_protocol.ProtocolTest.test_start_session_requires_valid_fields) ... ok
+test_unknown_request_type_is_an_error (test_nemotron_sidecar_protocol.ProtocolTest.test_unknown_request_type_is_an_error) ... ok
+test_flush_padding_lands_on_frame_boundaries (test_nemotron_sidecar_protocol.StreamingMathTest.test_flush_padding_lands_on_frame_boundaries) ... ok
+test_module_import_does_not_require_numpy (test_nemotron_sidecar_protocol.StreamingMathTest.test_module_import_does_not_require_numpy) ... ok
+test_profile_contexts_match_the_published_lookaheads (test_nemotron_sidecar_protocol.StreamingMathTest.test_profile_contexts_match_the_published_lookaheads) ... ok
+test_samples_convert_to_unit_floats (test_nemotron_sidecar_protocol.StreamingMathTest.test_samples_convert_to_unit_floats) ... ok
+test_stable_frames_never_cover_the_stft_guard (test_nemotron_sidecar_protocol.StreamingMathTest.test_stable_frames_never_cover_the_stft_guard) ... ok
+test_streaming_parser_accepts_cpu_device_for_macos (test_nemotron_sidecar_protocol.StreamingMathTest.test_streaming_parser_accepts_cpu_device_for_macos) ... ok
+test_accept_audio_converts_sidecar_float32_to_i16 (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_accept_audio_converts_sidecar_float32_to_i16) ... [nemotron-sidecar] finish: 4 samples (0.00s audio), wav_write 0ms, total 0ms
+ok
+test_backend_label_distinguishes_parakeet_mlx (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_backend_label_distinguishes_parakeet_mlx) ... ok
+test_cancel_drops_buffered_audio (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_cancel_drops_buffered_audio) ... ok
+test_empty_session_finishes_empty_string_without_transcribing (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_empty_session_finishes_empty_string_without_transcribing) ... ok
+test_lifecycle_buffers_then_transcribes_once_on_finish (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_lifecycle_buffers_then_transcribes_once_on_finish) ... [nemotron-sidecar] finish: 3 samples (0.00s audio), wav_write 0ms, total 0ms
+ok
+test_parakeet_chunking_finish_falls_back_to_wav_transcribe (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_parakeet_chunking_finish_falls_back_to_wav_transcribe) ... [nemotron-sidecar] finish: 2 samples (0.00s audio), wav_write 1ms, total 1ms
+ok
+test_parakeet_default_finish_uses_direct_pcm_path (test_parakeet_mlx_offline_sidecar.BufferContractTest.test_parakeet_default_finish_uses_direct_pcm_path) ... [nemotron-sidecar] piece 1: 0.0-0.0s decoded in 0ms
+[nemotron-sidecar] finish: 3 samples (0.00s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_defaults_target_v2_bf16 (test_parakeet_mlx_offline_sidecar.CliTest.test_defaults_target_v2_bf16) ... ok
+test_module_imports_without_parakeet_mlx (test_parakeet_mlx_offline_sidecar.CliTest.test_module_imports_without_parakeet_mlx) ... ok
+test_precision_model_and_chunking_are_overridable (test_parakeet_mlx_offline_sidecar.CliTest.test_precision_model_and_chunking_are_overridable) ... ok
+test_segment_flags_are_validated (test_parakeet_mlx_offline_sidecar.CliTest.test_segment_flags_are_validated) ... ok
+test_a_dip_that_is_not_a_pause_is_only_cut_when_forced (test_parakeet_mlx_offline_sidecar.FindCutTest.test_a_dip_that_is_not_a_pause_is_only_cut_when_forced) ... ok
+test_cuts_in_the_middle_of_the_quietest_pause (test_parakeet_mlx_offline_sidecar.FindCutTest.test_cuts_in_the_middle_of_the_quietest_pause) ... ok
+test_no_cut_without_a_full_window (test_parakeet_mlx_offline_sidecar.FindCutTest.test_no_cut_without_a_full_window) ... ok
+test_pauses_before_the_search_start_are_ignored (test_parakeet_mlx_offline_sidecar.FindCutTest.test_pauses_before_the_search_start_are_ignored) ... ok
+test_final_carries_the_engines_counts_when_it_has_them (test_parakeet_mlx_offline_sidecar.OfflineProtocolTest.test_final_carries_the_engines_counts_when_it_has_them) ... [nemotron-sidecar] finish: 3 samples (0.00s audio), wav_write 0ms, total 1ms
+ok
+test_health_reports_parakeet_mlx_backend (test_parakeet_mlx_offline_sidecar.OfflineProtocolTest.test_health_reports_parakeet_mlx_backend) ... ok
+test_profile_ms_is_accepted_but_ignored (test_parakeet_mlx_offline_sidecar.OfflineProtocolTest.test_profile_ms_is_accepted_but_ignored) ... ok
+test_serve_writes_compact_json_lines (test_parakeet_mlx_offline_sidecar.OfflineProtocolTest.test_serve_writes_compact_json_lines) ... [nemotron-sidecar] finish: 4 samples (0.00s audio), wav_write 0ms, total 0ms
+[nemotron-sidecar] stdin closed; exiting
+ok
+test_session_emits_no_partials_and_one_final (test_parakeet_mlx_offline_sidecar.OfflineProtocolTest.test_session_emits_no_partials_and_one_final) ... [nemotron-sidecar] finish: 9 samples (0.00s audio), wav_write 0ms, total 0ms
+ok
+test_a_long_silence_starts_only_one_pause_decode (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_a_long_silence_starts_only_one_pause_decode) ... [nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] finish: 44800 samples (2.80s audio), 1 piece(s), last one from the pause decode, release to text 0ms
+ok
+test_a_soft_last_word_after_the_pause_is_not_dropped (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_a_soft_last_word_after_the_pause_is_not_dropped) ... [nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] piece 1: 0.0-1.7s decoded in 0ms
+[nemotron-sidecar] finish: 27200 samples (1.70s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_cancel_drops_the_pause_decode (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_cancel_drops_the_pause_decode) ... [nemotron-sidecar] piece 1: 0.0-0.5s decoded in 0ms
+[nemotron-sidecar] finish: 8000 samples (0.50s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_finish_reports_pieces_and_pause_reuse_without_text (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_finish_reports_pieces_and_pause_reuse_without_text) ... [nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] finish: 20800 samples (1.30s audio), 1 piece(s), last one from the pause decode, release to text 0ms
+[nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] piece 1: 0.0-1.8s decoded in 0ms
+[nemotron-sidecar] finish: 28800 samples (1.80s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_no_cut_while_silent_after_a_pause_decode (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_no_cut_while_silent_after_a_pause_decode) ... [nemotron-sidecar] pause decode: 0.0-1.8s decoded in 0ms
+[nemotron-sidecar] pause decode: 1.5-3.3s decoded in 0ms
+[nemotron-sidecar] finish: 57600 samples (3.60s audio), 2 piece(s), last one from the pause decode, release to text 0ms
+ok
+test_speech_after_a_long_enough_pause_decode_makes_it_a_piece (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_speech_after_a_long_enough_pause_decode_makes_it_a_piece) ... [nemotron-sidecar] pause decode: 0.0-1.4s decoded in 0ms
+[nemotron-sidecar] piece 2: 1.1-2.5s decoded in 0ms
+[nemotron-sidecar] finish: 40000 samples (2.50s audio), 2 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_speech_after_the_pause_is_decoded_after_the_tap (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_speech_after_the_pause_is_decoded_after_the_tap) ... [nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] piece 1: 0.0-1.8s decoded in 0ms
+[nemotron-sidecar] finish: 28800 samples (1.80s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_tap_after_a_pause_reuses_the_pause_decode (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_tap_after_a_pause_reuses_the_pause_decode) ... [nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] finish: 20800 samples (1.30s audio), 1 piece(s), last one from the pause decode, release to text 0ms
+ok
+test_the_key_click_does_not_cut_a_long_piece_in_its_final_pause (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_the_key_click_does_not_cut_a_long_piece_in_its_final_pause) ... [nemotron-sidecar] pause decode: 0.0-1.4s decoded in 0ms
+[nemotron-sidecar] finish: 26880 samples (1.68s audio), 1 piece(s), last one from the pause decode, release to text 0ms
+ok
+test_the_key_click_right_before_the_tap_does_not_count_as_speech (test_parakeet_mlx_offline_sidecar.PauseDecodeTest.test_the_key_click_right_before_the_tap_does_not_count_as_speech) ... [nemotron-sidecar] pause decode: 0.0-1.0s decoded in 0ms
+[nemotron-sidecar] finish: 22400 samples (1.40s audio), 1 piece(s), last one from the pause decode, release to text 0ms
+ok
+test_cancel_drops_queued_pieces_and_starts_clean (test_parakeet_mlx_offline_sidecar.PiecesTest.test_cancel_drops_queued_pieces_and_starts_clean) ... [nemotron-sidecar] piece 1: 0.0-0.5s decoded in 0ms
+[nemotron-sidecar] finish: 8000 samples (0.50s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_long_dictation_is_cut_inside_a_pause_and_stitched (test_parakeet_mlx_offline_sidecar.PiecesTest.test_long_dictation_is_cut_inside_a_pause_and_stitched) ... [nemotron-sidecar] piece 1: 0.0-1.7s decoded in 0ms
+[nemotron-sidecar] piece 2: 1.4-3.1s decoded in 0ms
+[nemotron-sidecar] finish: 49600 samples (3.10s audio), 2 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_only_the_open_piece_and_its_overlap_stay_in_memory (test_parakeet_mlx_offline_sidecar.PiecesTest.test_only_the_open_piece_and_its_overlap_stay_in_memory) ... [nemotron-sidecar] piece 1: 0.0-1.3s decoded in 0ms
+[nemotron-sidecar] piece 2: 1.0-2.9s decoded in 0ms
+[nemotron-sidecar] piece 3: 2.6-4.5s decoded in 0ms
+[nemotron-sidecar] piece 4: 4.2-6.1s decoded in 0ms
+[nemotron-sidecar] piece 5: 5.8-7.7s decoded in 0ms
+[nemotron-sidecar] piece 6: 7.4-9.3s decoded in 0ms
+[nemotron-sidecar] piece 7: 9.0-10.9s decoded in 0ms
+[nemotron-sidecar] piece 8: 10.6-12.5s decoded in 0ms
+[nemotron-sidecar] piece 9: 12.2-12.8s decoded in 0ms
+[nemotron-sidecar] finish: 204800 samples (12.80s audio), 9 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_segment_min_zero_keeps_one_pass_on_release (test_parakeet_mlx_offline_sidecar.PiecesTest.test_segment_min_zero_keeps_one_pass_on_release) ... [nemotron-sidecar] piece 1: 0.0-3.1s decoded in 0ms
+[nemotron-sidecar] finish: 49600 samples (3.10s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_short_dictation_is_one_whole_pass (test_parakeet_mlx_offline_sidecar.PiecesTest.test_short_dictation_is_one_whole_pass) ... [nemotron-sidecar] piece 1: 0.0-0.9s decoded in 0ms
+[nemotron-sidecar] finish: 14400 samples (0.90s audio), 1 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_without_a_pause_the_cut_lands_on_the_quietest_moment (test_parakeet_mlx_offline_sidecar.PiecesTest.test_without_a_pause_the_cut_lands_on_the_quietest_moment) ... [nemotron-sidecar] piece 1: 0.0-1.3s decoded in 0ms
+[nemotron-sidecar] piece 2: 1.0-3.0s decoded in 0ms
+[nemotron-sidecar] finish: 48000 samples (3.00s audio), 2 piece(s), last one decoded after the tap, release to text 0ms
+ok
+test_a_clean_decode_is_kept_without_a_retry (test_parakeet_mlx_offline_sidecar.SpecialTokenGuardTest.test_a_clean_decode_is_kept_without_a_retry) ... ok
+test_a_glitched_decode_is_decoded_again (test_parakeet_mlx_offline_sidecar.SpecialTokenGuardTest.test_a_glitched_decode_is_decoded_again) ... [nemotron-sidecar] decode emitted special tokens (<unk>); decoding again
+ok
+test_defaults_target_v2_streaming (test_parakeet_mlx_streaming_sidecar.CliTest.test_defaults_target_v2_streaming) ... ok
+test_module_imports_without_parakeet_mlx (test_parakeet_mlx_streaming_sidecar.CliTest.test_module_imports_without_parakeet_mlx) ... ok
+test_tuning_flags_are_overridable (test_parakeet_mlx_streaming_sidecar.CliTest.test_tuning_flags_are_overridable) ... ok
+test_accept_audio_buffers_until_chunk_size_then_emits_changed_partials (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_accept_audio_buffers_until_chunk_size_then_emits_changed_partials) ... [nemotron-sidecar] finish: streaming chunks=2, final_text_chars=5, total 0ms
+ok
+test_audio_is_kept_as_float32_not_python_floats (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_audio_is_kept_as_float32_not_python_floats) ... ok
+test_backend_label (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_backend_label) ... ok
+test_cancel_closes_stream_and_drops_pending_audio (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_cancel_closes_stream_and_drops_pending_audio) ... ok
+test_empty_session_finishes_empty_string_without_chunks (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_empty_session_finishes_empty_string_without_chunks) ... ok
+test_finish_drops_tiny_residual_after_streaming_chunks (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_finish_drops_tiny_residual_after_streaming_chunks) ... [nemotron-sidecar] finish: dropping tiny streaming tail 1 samples (0.000s)
+[nemotron-sidecar] finish: streaming chunks=1, final_text_chars=7, total 0ms
+ok
+test_finish_flushes_pending_audio_and_optional_trailing_silence (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_finish_flushes_pending_audio_and_optional_trailing_silence) ... [nemotron-sidecar] finish: streaming chunks=2, final_text_chars=5, total 0ms
+ok
+test_finish_mlx_synchronize_is_opt_in (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_finish_mlx_synchronize_is_opt_in) ... [nemotron-sidecar] finish: streaming chunks=1, final_text_chars=5, total 0ms
+[nemotron-sidecar] finish: MLX final synchronize 0ms
+[nemotron-sidecar] finish: streaming chunks=1, final_text_chars=5, mlx_sync=0ms, total 0ms
+ok
+test_invalid_profile_is_rejected (test_parakeet_mlx_streaming_sidecar.StreamingEngineTest.test_invalid_profile_is_rejected) ... ok
+test_health_reports_streaming_backend (test_parakeet_mlx_streaming_sidecar.StreamingProtocolTest.test_health_reports_streaming_backend) ... ok
+test_serve_writes_compact_json_lines (test_parakeet_mlx_streaming_sidecar.StreamingProtocolTest.test_serve_writes_compact_json_lines) ... [nemotron-sidecar] finish: streaming chunks=2, final_text_chars=5, total 0ms
+[nemotron-sidecar] stdin closed; exiting
+ok
+test_session_emits_partials_and_final (test_parakeet_mlx_streaming_sidecar.StreamingProtocolTest.test_session_emits_partials_and_final) ... [nemotron-sidecar] finish: streaming chunks=2, final_text_chars=5, total 0ms
+ok
+test_a_busy_screen_counts_past_its_top_words_like_project_words (test_word_boost.BoosterTest.test_a_busy_screen_counts_past_its_top_words_like_project_words) ... ok
+test_a_match_follows_the_word_and_ends_with_it (test_word_boost.BoosterTest.test_a_match_follows_the_word_and_ends_with_it) ... ok
+test_a_space_inside_a_word_only_at_its_parts (test_word_boost.BoosterTest.test_a_space_inside_a_word_only_at_its_parts) ... ok
+test_index_skips_special_and_punctuation_pieces (test_word_boost.BoosterTest.test_index_skips_special_and_punctuation_pieces) ... ok
+test_respell_joins_parts_and_keeps_sentence_case (test_word_boost.BoosterTest.test_respell_joins_parts_and_keeps_sentence_case) ... ok
+test_start_bonus_is_a_share_scaled_by_piece_length (test_word_boost.BoosterTest.test_start_bonus_is_a_share_scaled_by_piece_length) ... ok
+test_start_bonus_never_beats_silence_or_a_longer_start (test_word_boost.BoosterTest.test_start_bonus_never_beats_silence_or_a_longer_start) ... ok
+test_strongest_tier_wins_and_short_words_drop (test_word_boost.BoosterTest.test_strongest_tier_wins_and_short_words_drop) ... ok
+test_a_non_finite_step_falls_back_to_the_stock_choice (test_word_boost.DecodeLoopTest.test_a_non_finite_step_falls_back_to_the_stock_choice) ... skipped 'needs MLX'
+test_bonus_carries_a_started_word_through (test_word_boost.DecodeLoopTest.test_bonus_carries_a_started_word_through) ... skipped 'needs MLX'
+test_start_bonus_leaves_a_longer_start_and_silence_alone (test_word_boost.DecodeLoopTest.test_start_bonus_leaves_a_longer_start_and_silence_alone) ... skipped 'needs MLX'
+test_parts_match_the_daemon (test_word_boost.PartsTest.test_parts_match_the_daemon) ... ok
+test_session_words_reach_the_engine_quietly (test_word_boost.ProtocolTest.test_session_words_reach_the_engine_quietly) ... ok
+test_stale_session_words_are_dropped (test_word_boost.ProtocolTest.test_stale_session_words_are_dropped) ... ok
+
+----------------------------------------------------------------------
+Ran 131 tests in 1.379s
+
+OK (skipped=3)
+cargo test -p sunoto-polish --offline
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/sunoto_polish-8f9716de06df3ccb)
+
+running 26 tests
+test tests::detokenize_keeps_intra_token_periods_intact ... ok
+test tests::disabled_stages_leave_normalized_text ... ok
+test tests::no_wait_marker_swaps ... ok
+test tests::dictionary_does_not_match_partial_words ... ok
+test tests::canonical_swap_correction ... ok
+test tests::multi_word_fillers_are_supported ... ok
+test tests::fillers_do_not_match_inside_words ... ok
+test tests::normalize_fixes_whitespace_and_punctuation_spacing ... ok
+test tests::normalize_does_not_split_intra_token_periods ... ok
+test tests::normalize_preserves_numbers_and_ellipses ... ok
+test tests::dictionary_replaces_whole_phrases_case_insensitively ... ok
+test tests::normalize_still_splits_sentence_final_period_before_uppercase ... ok
+test tests::fillers_are_removed_with_adjacent_commas ... ok
+test tests::polish_preserves_filename_through_full_pipeline ... ok
+test tests::style_rules_first_match_wins_and_empty_needles_are_skipped ... ok
+test tests::style_rules_match_window_classes ... ok
+test tests::snippet_expands_whole_utterance_and_preserves_newlines ... ok
+test tests::serde_round_trip_for_config ... ok
+test tests::restart_marker_drops_the_previous_sentence ... ok
+test tests::trace_records_only_changing_stages_in_order ... ok
+test tests::swap_requires_shape_compatibility ... ok
+test tests::swap_defers_unequal_rewording_to_llm ... ok
+test tests::swap_corrections_must_pass_examples ... ok
+test tests::pipeline_is_idempotent ... ok
+test tests::styles_adjust_only_the_edges ... ok
+test tests::never_panics_on_strange_inputs ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests sunoto_polish
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+python3 -m unittest discover -s tests/phase2 -v
+test_edit_prefix_newline_separator (test_llm_polish_stream_parser.PrefixStateEditTests.test_edit_prefix_newline_separator) ... skipped 'llama-cpp-python / sidecar not importable'
+test_edit_prefix_single_delta (test_llm_polish_stream_parser.PrefixStateEditTests.test_edit_prefix_single_delta) ... skipped 'llama-cpp-python / sidecar not importable'
+test_edit_prefix_split_across_deltas (test_llm_polish_stream_parser.PrefixStateEditTests.test_edit_prefix_split_across_deltas) ... skipped 'llama-cpp-python / sidecar not importable'
+test_empty_delta_after_edit_forwarded_as_none (test_llm_polish_stream_parser.PrefixStateEditTests.test_empty_delta_after_edit_forwarded_as_none) ... skipped 'llama-cpp-python / sidecar not importable'
+test_ok_fast_path_emits_no_chunks (test_llm_polish_stream_parser.PrefixStateOkTests.test_ok_fast_path_emits_no_chunks) ... skipped 'llama-cpp-python / sidecar not importable'
+test_ok_then_more_deltas_stay_done (test_llm_polish_stream_parser.PrefixStateOkTests.test_ok_then_more_deltas_stay_done) ... skipped 'llama-cpp-python / sidecar not importable'
+test_ok_with_trailing_punctuation (test_llm_polish_stream_parser.PrefixStateOkTests.test_ok_with_trailing_punctuation) ... skipped 'llama-cpp-python / sidecar not importable'
+test_mock_sidecar_fills_raw_fields (test_transcribe_corpus.TranscribeCorpusTest.test_mock_sidecar_fills_raw_fields) ... /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:615: ResourceWarning: unclosed file <_io.TextIOWrapper name=5 encoding='utf-8'>
+  result = method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_unknown_backend_is_rejected (test_transcribe_corpus.TranscribeCorpusTest.test_unknown_backend_is_rejected) ... ok
+test_wav_format_is_validated (test_transcribe_corpus.TranscribeCorpusTest.test_wav_format_is_validated) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.061s
+
+OK (skipped=7)
+sidecar ready: mock
+case-a: 'Sunoto Phase 1 insertion works.'
+[skip] missing: no recording at /var/folders/l5/m24_clr52blb89xh9bvr9x8c0000gp/T/sunoto-phase2-dz8xa0xl/missing.wav
+python3 -m unittest discover -s tests/ui -v
+test_bad_field_types_are_not_fatal (test_ui_sidecar.DispatchTest.test_bad_field_types_are_not_fatal) ... bad fields in {'type': 'recording', 'peak': 'loud'}
+ok
+test_recording_defaults_missing_fields (test_ui_sidecar.DispatchTest.test_recording_defaults_missing_fields) ... ok
+test_recording_maps_fields (test_ui_sidecar.DispatchTest.test_recording_maps_fields) ... ok
+test_show_hide (test_ui_sidecar.DispatchTest.test_show_hide) ... ok
+test_shutdown_stops_loop_without_calling_overlay (test_ui_sidecar.DispatchTest.test_shutdown_stops_loop_without_calling_overlay) ... ok
+test_state_maps_name_and_detail (test_ui_sidecar.DispatchTest.test_state_maps_name_and_detail) ... ok
+test_status_segment_clear (test_ui_sidecar.DispatchTest.test_status_segment_clear) ... ok
+test_system_palette_and_dismiss_map_typed_fields (test_ui_sidecar.DispatchTest.test_system_palette_and_dismiss_map_typed_fields) ... ok
+test_unknown_op_is_skipped (test_ui_sidecar.DispatchTest.test_unknown_op_is_skipped) ... unknown op: 'explode'
+unknown op: None
+ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.001s
+
+OK

@@ -23,6 +23,13 @@ use crate::llm_report::llm_diagnostics_json;
 use crate::logging;
 use crate::settings::{self, Settings};
 
+/// How long a client gets to send its one line. Connections are served one at
+/// a time, and shutdown joins this thread, so a silent client must not hold it.
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(1);
+/// The event loop writes replies on these streams and must never wait on a
+/// client that stopped reading. A reply that fits the socket buffer never waits.
+const CONTROL_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+
 pub(crate) fn spawn_control_thread(
     events: Sender<DaemonEvent>,
     stop: Arc<AtomicBool>,
@@ -65,7 +72,20 @@ pub(crate) fn spawn_control_thread(
     }))
 }
 
+/// On macOS a connection inherits the listener's non-blocking flag, so reading
+/// before the client has sent fails and the client gets dropped. Bounded
+/// blocking waits for it instead, and keeps its stream safe for the event loop.
+fn prepare_control_stream(stream: &UnixStream) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(CONTROL_READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(CONTROL_WRITE_TIMEOUT))
+}
+
 pub(crate) fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEvent>) -> bool {
+    if let Err(error) = prepare_control_stream(&stream) {
+        logging::warn(&format!("cannot configure a control connection: {error}"));
+        return true;
+    }
     let mut line = String::new();
     let mut reader = BufReader::new(stream);
     if reader.read_line(&mut line).is_err() {
@@ -82,6 +102,15 @@ pub(crate) fn handle_control_stream(stream: UnixStream, events: &Sender<DaemonEv
             edge: HotkeyEvent::Released,
         }),
         other => match serde_json::from_str::<ControlCommand>(other) {
+            Ok(ControlCommand::UserControl { action, confirmed }) => {
+                if !confirmed && matches!(action.as_str(), "pause" | "quit") { crate::insertion::suspend_insertion(); }
+                if confirmed && matches!(action.as_str(), "pause" | "quit") {
+                    crate::insertion::allow_insertion(false);
+                }
+                let queued = events.send(DaemonEvent::Overlay(sunoto_ipc::SidecarMessage::Event(sunoto_ipc::SidecarEvent::UserControl { action, confirmed }))).is_ok();
+                let _ = reader.get_mut().write_all(if queued { b"{\"queued\":true}\n" } else { b"{\"queued\":false}\n" });
+                return queued;
+            }
             Ok(ControlCommand::Polish { text }) => {
                 return events
                     .send(DaemonEvent::ControlPolish {
@@ -222,4 +251,65 @@ pub(crate) fn control_polish_response(
         "total_latency_ms": started.elapsed().as_millis(),
         "llm": llm_report,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A server end as `accept` hands it over on macOS, where a connection
+    /// inherits the non-blocking flag of its listener.
+    fn accepted_pair() -> (UnixStream, UnixStream) {
+        let (client, server) = UnixStream::pair().expect("socket pair");
+        server.set_nonblocking(true).expect("non-blocking");
+        (client, server)
+    }
+
+    #[test]
+    fn a_client_that_sends_a_moment_after_connecting_is_still_heard() {
+        let (mut client, server) = accepted_pair();
+        let (tx, rx) = mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            client.write_all(b"press\n").expect("send");
+            client
+        });
+        assert!(handle_control_stream(server, &tx));
+        let _client = sender.join().expect("sender");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                edge: HotkeyEvent::Pressed,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn a_client_that_never_sends_cannot_hold_the_thread() {
+        let (_client, server) = accepted_pair();
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        assert!(handle_control_stream(server, &tx));
+        assert!(started.elapsed() < CONTROL_READ_TIMEOUT * 2);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_reply_stream_cannot_block_the_event_loop_forever() {
+        let (mut client, server) = accepted_pair();
+        client.write_all(b"{\"type\":\"status\"}\n").expect("send");
+        let (tx, rx) = mpsc::channel();
+        assert!(handle_control_stream(server, &tx));
+        match rx.try_recv() {
+            Ok(DaemonEvent::ControlStatus { response }) => {
+                assert_eq!(
+                    response.write_timeout().expect("timeout"),
+                    Some(CONTROL_WRITE_TIMEOUT)
+                );
+            }
+            _ => panic!("expected a status request"),
+        }
+    }
 }

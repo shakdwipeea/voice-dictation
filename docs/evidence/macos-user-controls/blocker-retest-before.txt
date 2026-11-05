@@ -1,0 +1,24 @@
+hold {
+ "first_press_while_warming": {
+  "ready": false,
+  "session": "idle"
+ },
+ "next_press_records": false
+}
+practice {
+ "practice_after_resume": false,
+ "pasted_into_target": true,
+ "target_text": "Meeting is on Thursday.",
+ "clipboard_is_sentinel": false,
+ "practice_results_added": 0
+}
+quit {
+ "quit_ms_after_paste": 29,
+ "exit_s_after_quit": 0.53,
+ "daemon_gone": true,
+ "clipboard": "Meeting is on Thursday at 10.",
+ "clipboard_restored": false,
+ "target_text": "Meeting is on Thursday at 10.",
+ "processes_left": "",
+ "relaunched_ready": true
+}

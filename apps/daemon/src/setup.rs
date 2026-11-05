@@ -259,7 +259,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     if !overlay.is_file() {
         return Err(format!(
-            "overlay binary missing at {}; build it with: swiftc -O services/macos/sunoto-overlay.swift -o {}",
+            "overlay binary missing at {}; build it with: bash services/macos/build-overlay.sh {}",
             overlay.display(),
             overlay.display()
         )
@@ -297,6 +297,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             config_path.display()
         ));
     } else {
+        loaded.setup_completed = false;
         loaded.save_changes(&config_path)?;
         ok(&format!("config:  created {}", config_path.display()));
     }
@@ -336,11 +337,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         // A new identity would reset this app's permissions, for the old
         // copy as well, and the updater could not roll back to a working app.
         require_installed_identity(&home)?;
-    } else {
-        // It may talk to System Events, which an update started by the app
-        // itself may not be allowed to do.
-        remove_legacy_login_item(&home);
     }
+    // Preserve legacy registrations. Their removal belongs to the user's
+    // Login Items pane and must not trigger an Automation prompt during setup.
     stop_running_daemons();
     let same_place = staging
         .canonicalize()
@@ -451,7 +450,7 @@ fn login_item(args: &Args, installed_before: bool, app: &Path) -> Result<(), Box
         ok("kept the Login Item an earlier setup added");
     } else {
         note(&format!(
-            "{APP_NAME} adds itself to Login Items when it starts"
+            "{APP_NAME} asks whether to open at login during setup"
         ));
     }
     Ok(())

@@ -1,0 +1,4 @@
+  PID  %CPU    RSS     ELAPSED COMM
+36573   0.7   4272 06-23:15:33 /Users/antash/Applications/Sunoto.app/Contents/MacOS/sunoto-daemon
+36574   0.0  10496 06-23:15:33 /Users/antash/Applications/Sunoto.app/Contents/MacOS/sunoto-overlay
+36658   0.0    560 06-23:15:05 /Users/antash/Applications/Sunoto.app/Contents/Resources/root/.venv-nemotron-mac/bin/python

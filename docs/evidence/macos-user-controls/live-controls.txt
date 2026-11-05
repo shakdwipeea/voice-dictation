@@ -1,0 +1,10 @@
+PASS: Ready after installed restart
+PASS: Opening Settings leaves microphone idle
+PASS: Explicit test starts the daemon microphone
+PASS: Test remains outside dictation session
+PASS: Closing Settings stops test and microphone
+PASS: Pause stops microphone test
+PASS: Paused app refuses microphone test
+PASS: Resume restores ready without opening microphone
+PASS: Microphone test automatically expires
+PASS: Preview tests create no history files or entries

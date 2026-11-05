@@ -32,7 +32,7 @@ class Sunoto < Formula
     # The daemon lands in libexec/bin first (cargo's layout), then moves next
     # to the overlay so the daemon finds it as a sibling.
     system "cargo", "install", *std_cargo_args(root: libexec, path: "apps/daemon")
-    system "swiftc", "-O", "services/macos/sunoto-overlay.swift", "-o", "sunoto-overlay"
+    system "bash", "services/macos/build-overlay.sh", "sunoto-overlay"
     (libexec/"target/release").install "sunoto-overlay"
     (libexec/"target/release").install libexec/"bin/sunoto-daemon"
     rm_r(libexec/"bin")

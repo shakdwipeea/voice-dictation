@@ -1,0 +1,1 @@
+PASS: real practice capture/ASR result; clipboard unchanged; history unchanged.

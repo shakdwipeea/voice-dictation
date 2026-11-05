@@ -109,27 +109,50 @@ fn create_settings() {
     if path.exists() {
         return;
     }
-    match Settings::default().save_changes(&path) {
+    let settings = Settings {
+        setup_completed: false,
+        ..Settings::default()
+    };
+    match settings.save_changes(&path) {
         Ok(()) => logging::info(&format!("created the settings file {}", path.display())),
         Err(error) => logging::warn(&format!("could not create the settings file: {error}")),
     }
 }
 
 fn add_login_item_once() {
-    if login_item_route().is_some() {
-        return;
+    // An absent route is an unanswered choice, never implicit consent.
+}
+
+pub fn login_status_text() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let status = match sunoto_desktop::login_item_status() {
+            Some(sunoto_desktop::LoginItemStatus::Enabled) => "Enabled",
+            Some(sunoto_desktop::LoginItemStatus::NotRegistered) => "Disabled",
+            Some(sunoto_desktop::LoginItemStatus::RequiresApproval) => "Requires approval in System Settings > General > Login Items",
+            _ => "Unavailable — run the installed Sunoto app",
+        };
+        if login_item_route() == Some(LoginItemRoute::Legacy) {
+            format!("{status}. Legacy registration may also exist; remove it in System Settings > General > Login Items.")
+        } else { status.into() }
     }
-    match set_login_item(true) {
-        Ok(()) => {
-            logging::info("added Sunoto to Login Items; it starts when you log in");
-            if let Err(error) = set_login_item_route(LoginItemRoute::App) {
-                logging::warn(&format!("could not note the Login Item: {error}"));
-            }
-        }
-        Err(error) => logging::warn(&format!(
-            "could not add Sunoto to Login Items ({error}); trying again at the next start"
-        )),
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Unavailable on this platform".into()
     }
+}
+
+pub fn change_login(on: bool) -> Result<(), String> {
+    if login_item_route() == Some(LoginItemRoute::Legacy) {
+        return Err(login_status_text());
+    }
+    set_login_item(on)?;
+    set_login_item_route(if on {
+        LoginItemRoute::App
+    } else {
+        LoginItemRoute::Off
+    })
+    .map_err(|e| format!("Login registration changed, but could not save the choice: {e}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -374,6 +397,17 @@ fn stop_app_at(bundle: &Path) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while running() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+pub fn contacts_status_text() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        sunoto_desktop::contacts_access_status().into()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Unavailable".into()
     }
 }
 

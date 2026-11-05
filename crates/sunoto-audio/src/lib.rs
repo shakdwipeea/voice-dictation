@@ -924,3 +924,21 @@ mod tests {
         assert!(begin.elapsed() < Duration::from_secs(2));
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDevice {
+    pub id: u32,
+    pub uid: String,
+    pub name: String,
+}
+
+pub fn input_devices() -> Vec<InputDevice> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::input_devices()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}

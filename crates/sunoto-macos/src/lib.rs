@@ -20,7 +20,7 @@ mod types;
 
 pub use accessibility::{FocusSnapshot, SnapshotOptions, WindowWalk, app_snapshot, focus_snapshot};
 pub use appkit::{
-    EnglishVocabulary, LoginItemStatus, PasteboardSnapshot, contact_names, keep_process_responsive,
+    EnglishVocabulary, LoginItemStatus, PasteboardSnapshot, contact_names, contacts_access_status, keep_process_responsive,
     login_item_status, move_to_trash, set_login_item, thermal_state, translocated_original,
 };
 pub use diag::{

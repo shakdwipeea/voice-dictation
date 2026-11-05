@@ -1,0 +1,618 @@
+[
+  {
+    "check": "Ready after installed restart",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.0,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 6,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Opening Settings leaves microphone idle",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.0,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 6,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Explicit test starts the daemon microphone",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "capturing",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": true,
+      "preview_peak": 0.01190185546875,
+      "ready": false,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 7,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Test remains outside dictation session",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "capturing",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": true,
+      "preview_peak": 0.999969482421875,
+      "ready": false,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 8,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Closing Settings stops test and microphone",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.999969482421875,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 8,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Pause stops microphone test",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "paused",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": true,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.081298828125,
+      "ready": false,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 9,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Paused app refuses microphone test",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "paused",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": true,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.081298828125,
+      "ready": false,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 9,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Resume restores ready without opening microphone",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.081298828125,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 9,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Microphone test automatically expires",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.13372802734375,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 39,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Preview tests create no history files or entries",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.13372802734375,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 40,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Pause keeps the practice destination",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "paused",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": true,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": true,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.13372802734375,
+      "ready": false,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 40,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Resume stays in practice",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": true,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.13372802734375,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 40,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Sleep keeps the practice destination",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": true,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.13372802734375,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 40,
+      "version": "0.1.15"
+    }
+  },
+  {
+    "check": "Closing practice ends it",
+    "passed": true,
+    "state": {
+      "asr": "ready",
+      "asr_backend": "parakeet_mlx_offline",
+      "detail": "",
+      "health": "ready",
+      "history": "off",
+      "hotkey": "verified",
+      "hotkey_reason": "",
+      "input_devices": [
+        {
+          "name": "MacBook Pro Microphone",
+          "uid": "BuiltInMicrophoneDevice"
+        },
+        {
+          "name": "ZoomAudioDevice",
+          "uid": "zoom.us.zoomaudiodevice.001"
+        }
+      ],
+      "interaction": "toggle",
+      "microphone": "idle",
+      "model_download_percent": null,
+      "ok": true,
+      "overlay": "ready",
+      "paused": false,
+      "pid": 87878,
+      "polish": "disabled",
+      "practice": false,
+      "practice_results": 0,
+      "preview": false,
+      "preview_peak": 0.13372802734375,
+      "ready": true,
+      "session": "idle",
+      "settings_pending": false,
+      "settings_revision": 0,
+      "shortcut": "RightOption",
+      "type": "status",
+      "updates": "off (this copy of Sunoto was built from source; update it with git pull and install-macos.sh)",
+      "uptime_s": 41,
+      "version": "0.1.15"
+    }
+  }
+]

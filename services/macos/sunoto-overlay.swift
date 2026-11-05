@@ -2303,23 +2303,37 @@ private final class OnboardingController: NSObject, NSWindowDelegate {
 /// automatic updates switch. The daemon sends the contents as `menu`
 /// messages and the answers to Check for Updates as `alert`; picks go back
 /// through `emit`.
-private final class MenuBarController: NSObject, NSMenuDelegate {
+private final class MenuBarController: NSObject {
     private var item: NSStatusItem?
-    private let menu = NSMenu()
-    private var state: [String: Any] = [:]
+    lazy var settingsWindow = UserSettingsController(emit: emit)
+    private lazy var panel = MenuPanelController(actions: .init(
+        settings: { [weak self] in self?.settingsWindow.open() },
+        togglePause: { [weak self] in
+            guard let self else { return }
+            self.settingsWindow.action(self.paused ? "resume" : "pause")
+        },
+        quit: { [weak self] in self?.settingsWindow.action("quit") },
+        checkUpdates: { [weak self] in self?.emit(["type": "check_updates"]) },
+        setAutomaticUpdates: { [weak self] on in self?.emit(["type": "set_auto_update", "on": on]) },
+        flag: { [weak self] id in self?.emit(["type": "flag_dictation", "id": id]) },
+        clearHistory: { [weak self] in self?.clearHistory() }
+    ))
+    private var paused = false
+    func controls(_ message: [String: Any]) {
+        if message["type"] as? String == "controls_state" {
+            paused = message["paused"] as? Bool ?? false
+            panel.update(paused: paused)
+            // A dictation has started: get out of the way of the pill.
+            if message["busy"] as? Bool == true { panel.close() }
+        }
+        settingsWindow.receive(message)
+    }
     private var alertOpen = false
     private let emit: ([String: Any]) -> Void
-    private let relative: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter
-    }()
 
     init(emit: @escaping ([String: Any]) -> Void) {
         self.emit = emit
         super.init()
-        menu.delegate = self
-        menu.autoenablesItems = false
     }
 
     /// Put the icon in the menu bar, once the app has launched.
@@ -2328,12 +2342,24 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
         item.button?.image = MenuBarController.glyph()
         item.button?.toolTip = "Sunoto"
         item.button?.setAccessibilityLabel("Sunoto")
-        item.menu = menu
+        item.button?.target = self
+        item.button?.action = #selector(iconClicked)
+        item.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
         self.item = item
     }
 
+    @objc private func iconClicked() {
+        if let button = item?.button { panel.toggle(from: button) }
+    }
+
     func update(_ message: [String: Any]) {
-        state = message
+        panel.update(state: message)
+    }
+
+    /// One line, at most 48 characters.
+    static func preview(_ text: String) -> String {
+        let line = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return line.count > 48 ? String(line.prefix(47)) + "…" : line
     }
 
     /// Five rounded bars, a template image that macOS tints for a light or
@@ -2353,158 +2379,14 @@ private final class MenuBarController: NSObject, NSMenuDelegate {
         return image
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let status = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        status.attributedTitle = NSAttributedString(
-            string: state["status"] as? String ?? "Sunoto is starting…",
-            attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
-        )
-        status.image = MenuBarController.dot(
-            (state["ready"] as? Bool ?? false) ? .systemGreen : .systemOrange
-        )
-        status.isEnabled = false
-        menu.addItem(status)
-        if let hint = state["hint"] as? String {
-            menu.addItem(note(hint))
-        }
-        menu.addItem(.separator())
-
-        let recent = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")
-        recent.submenu = recentMenu()
-        menu.addItem(recent)
-        menu.addItem(.separator())
-
-        let checking = state["checking"] as? Bool ?? false
-        let check = action(checking ? "Checking for Updates…" : "Check for Updates…", #selector(checkForUpdates))
-        check.isEnabled = !checking
-        menu.addItem(check)
-        if let line = state["update_note"] as? String {
-            menu.addItem(note(line))
-        }
-        let blocked = state["update_blocked"] as? String
-        let automatic = action("Install Updates Automatically", #selector(toggleAutomaticUpdates))
-        automatic.state = (state["auto_update"] as? Bool ?? false) && blocked == nil ? .on : .off
-        automatic.isEnabled = blocked == nil && !state.isEmpty
-        automatic.toolTip = blocked
-        menu.addItem(automatic)
-        menu.addItem(.separator())
-        let version = (state["version"] as? String).map { "Sunoto \($0)" } ?? "Sunoto"
-        menu.addItem(note(version))
-    }
-
-    private func recentMenu() -> NSMenu {
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        let rows = (state["recent"] as? [[String: Any]]) ?? []
-        guard state["history_enabled"] as? Bool ?? false else {
-            submenu.addItem(note("History is off"))
-            return submenu
-        }
-        guard !rows.isEmpty else {
-            submenu.addItem(note("No dictations yet"))
-            return submenu
-        }
-        let now = Date()
-        for row in rows {
-            guard let text = row["text"] as? String else { continue }
-            let item = action(MenuBarController.preview(text), #selector(copyDictation(_:)))
-            item.representedObject = text
-            item.toolTip = "Click to copy"
-            if let id = row["id"] as? String, !id.isEmpty {
-                // A row with a submenu cannot also be clicked, so Copy moves
-                // into it next to This was wrong.
-                let actions = NSMenu()
-                actions.autoenablesItems = false
-                let copy = action("Copy", #selector(copyDictation(_:)))
-                copy.representedObject = text
-                actions.addItem(copy)
-                let wrong = action("This Was Wrong…", #selector(flagDictation(_:)))
-                wrong.representedObject = id
-                actions.addItem(wrong)
-                item.action = nil
-                item.toolTip = nil
-                item.submenu = actions
-            }
-            if let ms = (row["at_ms"] as? NSNumber)?.doubleValue {
-                let when = relative.localizedString(for: Date(timeIntervalSince1970: ms / 1000), relativeTo: now)
-                let title = NSMutableAttributedString(
-                    string: item.title,
-                    attributes: [.font: NSFont.menuFont(ofSize: 0)]
-                )
-                title.append(NSAttributedString(
-                    string: "   \(when)",
-                    attributes: [
-                        .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                        .foregroundColor: NSColor.secondaryLabelColor,
-                    ]
-                ))
-                item.attributedTitle = title
-            }
-            submenu.addItem(item)
-        }
-        submenu.addItem(.separator())
-        submenu.addItem(action("Clear History…", #selector(clearHistory)))
-        return submenu
-    }
-
-    /// One line, at most 48 characters.
-    static func preview(_ text: String) -> String {
-        let line = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        return line.count > 48 ? String(line.prefix(47)) + "…" : line
-    }
-
-    private static func dot(_ color: NSColor) -> NSImage {
-        NSImage(size: NSSize(width: 8, height: 8), flipped: false) { rect in
-            color.setFill()
-            NSBezierPath(ovalIn: rect).fill()
-            return true
-        }
-    }
-
-    private func note(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
-    }
-
-    private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-        item.target = self
-        return item
-    }
-
-    @objc private func copyDictation(_ sender: NSMenuItem) {
-        guard let text = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    @objc private func flagDictation(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        emit(["type": "flag_dictation", "id": id])
-    }
-
-    @objc private func checkForUpdates() {
-        state["checking"] = true
-        emit(["type": "check_updates"])
-    }
-
-    @objc private func toggleAutomaticUpdates() {
-        let on = !(state["auto_update"] as? Bool ?? false)
-        state["auto_update"] = on
-        emit(["type": "set_auto_update", "on": on])
-    }
-
-    @objc private func clearHistory() {
+    private func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "Delete all dictation history?"
-        alert.informativeText = "This removes every dictation Sunoto kept on this Mac. It can't be undone."
+        alert.informativeText = "This removes saved dictation history on this Mac. It does not remove separately saved reports or diagnostic logs. It cannot be undone."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
         if present(alert) == .alertFirstButtonReturn {
-            state["recent"] = []
             emit(["type": "clear_history"])
         }
     }
@@ -2949,6 +2831,16 @@ private final class OverlayApp: NSObject, NSApplicationDelegate {
             if let sessionID = uint64(message["session_id"]) {
                 palette.dismiss(sessionID: sessionID)
             }
+        case "controls_state", "controls_result", "preview_level", "practice_result", "input_devices":
+            menuBar.controls(message)
+            return
+        case "open_settings":
+            menuBar.settingsWindow.open()
+            if message["setup"] as? Bool == true { menuBar.settingsWindow.replaySetup() }
+            return
+        case "settings_state":
+            menuBar.settingsWindow.receive(message)
+            return
         case "menu":
             menuBar.update(message)
             return

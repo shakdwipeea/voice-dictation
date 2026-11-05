@@ -39,9 +39,63 @@ fn is_false(value: &bool) -> bool {
 
 /// Commands for the GTK overlay UI sidecar (ui_sidecar.py). Same NDJSON
 /// transport as the ASR protocol; the overlay answers only with `Ready`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserPreferences {
+    pub shortcut: String,
+    pub interaction: String,
+    pub microphone: String,
+    pub history_enabled: bool,
+    pub history_retention_days: u32,
+    pub history_exclude_apps: Vec<String>,
+
+    pub word_list: Vec<String>,
+    pub word_list_enabled: bool,
+    pub word_list_documents: bool,
+    pub word_list_contacts: bool,
+    pub log_transcripts: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OverlayRequest {
+    OpenSettings {
+        setup: bool,
+    },
+    InputDevices {
+        devices: Vec<(String, String)>,
+    },
+    ControlsState {
+        status: String,
+        paused: bool,
+        busy: bool,
+        preview: bool,
+        practice: bool,
+        microphone: bool,
+        accessibility: bool,
+        login: String,
+        contacts: String,
+    },
+    ControlsResult {
+        action: String,
+        error: Option<String>,
+        confirmation: bool,
+    },
+    PreviewLevel {
+        peak: f64,
+        rms: f64,
+    },
+    PracticeResult {
+        text: String,
+    },
+
+    SettingsState {
+        request_id: String,
+        revision: u64,
+        preferences: UserPreferences,
+        error: Option<String>,
+    },
+
     Show,
     Hide,
     /// The dictation was pasted at the cursor. Sent just before `Hide`; the
@@ -225,6 +279,21 @@ pub struct AsrDiag {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SidecarEvent {
+    UserControl {
+        action: String,
+        #[serde(default)]
+        confirmed: bool,
+    },
+
+    GetSettings {
+        request_id: String,
+    },
+    ApplySettings {
+        request_id: String,
+        revision: u64,
+        preferences: UserPreferences,
+    },
+
     Ready {
         backend: String,
     },
@@ -458,6 +527,34 @@ mod tests {
             SidecarMessage::Event(event) => event,
             other => panic!("expected protocol event, received {other:?}"),
         }
+    }
+
+    #[test]
+    fn user_settings_protocol_round_trip() {
+        let event = SidecarEvent::ApplySettings {
+            request_id: "draft-2".into(),
+            revision: 3,
+            preferences: UserPreferences {
+                shortcut: "RightOption".into(),
+                interaction: "toggle".into(),
+                microphone: "auto".into(),
+                history_enabled: true,
+                history_retention_days: 90,
+                history_exclude_apps: vec![],
+                word_list: vec!["Sunoto".into()],
+                word_list_enabled: true,
+                word_list_documents: false,
+                word_list_contacts: false,
+                log_transcripts: false,
+            },
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SidecarEvent>(&encoded).unwrap(),
+            event
+        );
+        assert!(!encoded.contains("sidecar"));
+        assert!(serde_json::from_str::<UserPreferences>(r#"{"word_list":[],"word_list_enabled":true,"word_list_documents":false,"word_list_contacts":false,"log_transcripts":false,"sidecar_path":"bad"}"#).is_err());
     }
 
     #[test]

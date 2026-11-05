@@ -334,15 +334,20 @@ muted; check System Settings → Sound → Input.
   a start hint that fades once you start talking (3 s at most). After the
   second tap it shows words only if the wait passes 1.5 s, and a check mark
   confirms the paste.
-- The menu bar item (`MenuBarController` in the overlay, a waveform
-  template image) builds its menu from the daemon's `menu` message
-  (`apps/daemon/src/menu_bar.rs`, sent only when its content changes):
-  status, Recent Dictations (the last 10 kept in history; each has Copy and
-  This Was Wrong…, which opens the report panel; Clear History…), Check for Updates… (`update::spawn_check_now`, answered
-  with an `alert`) and Install Updates Automatically (writes `auto_update`,
-  applied live through `update::ModeSwitch`). The overlay never logs or
-  stores the dictation text it is sent. The app icon comes from
-  `tools/ui/make-app-icon.swift` → `packaging/macos/AppIcon.icns`.
+- The menu bar item (`MenuBarController` in the overlay, a waveform template
+  image) opens `MenuPanelController` (`services/macos/menu-panel.swift`), a
+  non-activating panel, so the app you were writing in keeps focus. It draws
+  the daemon's `menu` message (`apps/daemon/src/menu_bar.rs`, sent only when its
+  content changes): status, the last 10 dictations kept in history (click to
+  copy; This Was Wrong… opens the report panel; Clear…), Pause, Settings…,
+  Check for Updates… (`update::spawn_check_now`, answered with an `alert`),
+  Install Updates Automatically (writes `auto_update`, applied live through
+  `update::ModeSwitch`; a copy that cannot update itself, such as a source
+  build, shows the switch off and greyed with `update::install_blocker`'s reason
+  as its tooltip) and Quit. Settings is `services/macos/user-settings.swift`.
+  Render both with `tools/ui/render-settings-evidence.sh OUT [--light|--dark]`.
+  The overlay never logs or stores the dictation text it is sent. The app icon
+  comes from `tools/ui/make-app-icon.swift` → `packaging/macos/AppIcon.icns`.
 - Accuracy reports (docs/accuracy-reports-plan-2026-10-28.md): every
   dictation's history record carries `diag` counts (`apps/daemon/src/diag.rs`,
   logged as `session N: diag: …`). This Was Wrong… shows the report panel

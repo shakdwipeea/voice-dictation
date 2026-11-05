@@ -147,7 +147,9 @@ unsafe extern "C" fn tap_callback(
         // macOS disabled the tap (idle timeout or a transient permission
         // hiccup). Re-arm it immediately; otherwise the tap stays inert and
         // no hotkey ever fires again until the daemon restarts.
-        let state = unsafe { &*(user_info as *const TapState) };
+        let state = unsafe { &mut *(user_info as *mut TapState) };
+        state.key_down = false;
+        let _ = state.tx.send(HotkeyEvent::Interrupted);
         if !state.tap.is_null() {
             unsafe { ffi::CGEventTapEnable(state.tap, 1) };
             state.rearmed.store(true, Ordering::SeqCst);

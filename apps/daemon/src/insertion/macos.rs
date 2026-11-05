@@ -145,3 +145,18 @@ impl MacosUi {
     #[cfg(not(target_os = "macos"))]
     fn drop_snapshot(&mut self) {}
 }
+
+/// Quit can land right after a paste. The target app still gets its delay to
+/// read the pasteboard, then the user's clipboard comes back; left to `pump`,
+/// the dictated text would stay on the clipboard for good.
+impl Drop for MacosUi {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some((snapshot, due)) = self.pending_restore.take() {
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            if !self.adapter.restore_clipboard(&snapshot) {
+                logging::info("clipboard not restored: it changed after the paste");
+            }
+        }
+    }
+}

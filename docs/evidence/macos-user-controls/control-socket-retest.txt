@@ -1,0 +1,13 @@
+gap 0 ok True
+gap 0.001 ok True
+gap 0.01 ok True
+gap 0.05 ok True
+gap 0.1 ok True
+gap 0.1 ok True
+gap 0.1 ok True
+gap 0.3 ok True
+gap 0.5 ok True
+gap 0.9 ok True
+status behind a silent client 1.05 s
+gap 1.5 dropped: BrokenPipeError
+exit with a silent client connected 1.08 s

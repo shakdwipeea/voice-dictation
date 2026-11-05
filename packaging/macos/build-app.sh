@@ -48,7 +48,7 @@ done
 
 bold "build daemon and overlay"
 (cd "$ROOT" && cargo build --release -p sunoto-daemon)
-swiftc -O "$ROOT/services/macos/sunoto-overlay.swift" -o "$ROOT/target/release/sunoto-overlay"
+bash "$ROOT/services/macos/build-overlay.sh" "$ROOT/target/release/sunoto-overlay"
 ok "target/release/sunoto-daemon, sunoto-overlay"
 
 bold "embedded Python runtime"

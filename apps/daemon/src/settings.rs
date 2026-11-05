@@ -3,6 +3,35 @@ use std::path::{Path, PathBuf};
 
 use sunoto_polish::PolishConfig;
 
+/// Replace settings only after the complete payload has reached disk.
+/// A unique sibling file keeps rename atomic and avoids clobbering other writers.
+fn atomic_write_settings(path: &Path, payload: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let temporary = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(payload.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| format!("cannot save {}: {error}", path.display()))
+}
+
 /// The speech model: Parakeet TDT 0.6B v2, English. It beat the
 /// multilingual v3 on every English test at the same speed and memory
 /// (tools/vocab, 2026-10-18), so it is the only model the app offers.
@@ -253,6 +282,8 @@ pub struct Settings {
     pub auto_update: String,
     /// Write transcripts and polish stages to the log. Off replaces the text
     /// with its length and a short hash.
+    pub setup_completed: bool,
+    pub interaction: String,
     pub log_transcripts: bool,
     /// Keep a private history of dictations on this machine: one JSON line
     /// per dictation under `history/dictations/` next to the config (macOS)
@@ -338,7 +369,9 @@ impl Default for Settings {
             llm_polish_keepalive_always: false,
             capture_idle_stop_secs: 0,
             auto_update: "install".to_string(),
-            log_transcripts: true,
+            setup_completed: true,
+            interaction: "toggle".into(),
+            log_transcripts: false,
             history_enabled: true,
             history_retention_days: 90,
             history_exclude_apps: crate::history::default_exclude_apps(),
@@ -386,8 +419,7 @@ impl Settings {
                 .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
         }
         let payload = serde_json::to_string_pretty(self).expect("settings serialize");
-        std::fs::write(path, payload + "\n")
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))
+        atomic_write_settings(path, &(payload + "\n"))
     }
 
     /// Write only what the user chose: keys that differ from the defaults,
@@ -419,8 +451,7 @@ impl Settings {
                 .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
         }
         let payload = serde_json::to_string_pretty(&file).expect("settings serialize");
-        std::fs::write(path, payload + "\n")
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))
+        atomic_write_settings(path, &(payload + "\n"))
     }
 
     pub fn sidecar_command(&self) -> Result<(String, Vec<String>), String> {
@@ -607,7 +638,90 @@ impl Settings {
         (python, vec![script], envs)
     }
 
+    pub fn user_preferences(&self) -> sunoto_ipc::UserPreferences {
+        sunoto_ipc::UserPreferences {
+            shortcut: self.shortcut.clone(),
+            interaction: self.interaction.clone(),
+            microphone: self.microphone.clone(),
+            history_enabled: self.history_enabled,
+            history_retention_days: self.history_retention_days,
+            history_exclude_apps: self.history_exclude_apps.clone(),
+            word_list: self.word_list.clone(),
+            word_list_enabled: self.word_list_enabled,
+            word_list_documents: self.word_list_documents,
+            word_list_contacts: self.word_list_contacts,
+            log_transcripts: self.log_transcripts,
+        }
+    }
+
+    /// Persist only the UI contract. Concurrent changes to unrelated implementation
+    /// preferences must not be overwritten by an older in-memory snapshot.
+    pub fn save_user_preferences(&self, path: &Path) -> Result<(), String> {
+        let mut file = match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text).map_err(|e| e.to_string())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+            Err(error) => return Err(error.to_string()),
+        };
+        let serde_json::Value::Object(patch) = serde_json::to_value(self.user_preferences()).map_err(|e| e.to_string())? else { unreachable!() };
+        file.extend(patch);
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+        atomic_write_settings(path, &(serde_json::to_string_pretty(&file).map_err(|e| e.to_string())? + "\n"))
+    }
+
+    pub fn with_user_preferences(
+        &self,
+        preferences: sunoto_ipc::UserPreferences,
+    ) -> Result<Self, String> {
+        let mut candidate = self.clone();
+        candidate.shortcut = preferences.shortcut;
+        candidate.interaction = preferences.interaction;
+        candidate.microphone = preferences.microphone;
+        candidate.history_enabled = preferences.history_enabled;
+        candidate.history_retention_days = preferences.history_retention_days;
+        candidate.history_exclude_apps = preferences.history_exclude_apps;
+        for app in crate::history::default_exclude_apps() {
+            if !candidate.history_exclude_apps.contains(&app) {
+                candidate.history_exclude_apps.push(app);
+            }
+        }
+        candidate.word_list = preferences.word_list;
+        let mut seen = std::collections::HashSet::new();
+        candidate.word_list.retain(|term| seen.insert(term.clone()));
+        candidate.word_list_enabled = preferences.word_list_enabled;
+        candidate.word_list_documents = preferences.word_list_documents;
+        candidate.word_list_contacts = preferences.word_list_contacts;
+        candidate.log_transcripts = preferences.log_transcripts;
+        candidate.validate()?;
+        Ok(candidate)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.interaction.as_str(), "toggle" | "hold") {
+            return Err("Choose toggle or hold interaction.".into());
+        }
+        sunoto_desktop::Shortcut::parse(&self.shortcut).map_err(|e| e.to_string())?;
+        if [
+            "cmd+space",
+            "command+space",
+            "alt+tab",
+            "cmd+tab",
+            "command+tab",
+        ]
+        .contains(&self.shortcut.to_ascii_lowercase().as_str())
+        {
+            return Err("This shortcut is reserved by the operating system.".into());
+        }
+
+        if self.word_list.len() > 1000
+            || self.word_list.iter().any(|term| {
+                term.trim().is_empty()
+                    || term.chars().count() > 128
+                    || term.chars().any(char::is_control)
+            })
+        {
+            return Err("Personal vocabulary allows up to 1000 nonempty terms, each at most 128 characters without control characters".into());
+        }
+
         if self.system_mode_enabled && self.system_shortcut.trim().is_empty() {
             return Err("system_shortcut must not be empty when System mode is enabled".into());
         }
@@ -780,12 +894,16 @@ impl Settings {
             if binary.is_file() {
                 return (binary.to_string_lossy().into_owned(), vec![], envs);
             }
+            // The overlay is several Swift files, so a checkout builds it once.
             return (
-                "swift".to_string(),
+                "bash".to_string(),
                 vec![
-                    root.join("services/macos/sunoto-overlay.swift")
+                    "-c".to_string(),
+                    "bash \"$0\" \"$1\" && exec \"$1\"".to_string(),
+                    root.join("services/macos/build-overlay.sh")
                         .to_string_lossy()
                         .into_owned(),
+                    binary.to_string_lossy().into_owned(),
                 ],
                 envs,
             );
@@ -1052,6 +1170,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn user_preferences_preserve_engine_and_case_distinctions() {
+        let original = Settings::default();
+        let mut preferences = original.user_preferences();
+        preferences.word_list = vec!["Sunoto".into(), "Sunoto".into(), "sunoto".into()];
+        let candidate = original.with_user_preferences(preferences).unwrap();
+        assert_eq!(candidate.word_list, vec!["Sunoto", "sunoto"]);
+        assert_eq!(candidate.backend, original.backend);
+        assert_eq!(candidate.shortcut, original.shortcut);
+        assert_eq!(candidate.history_enabled, original.history_enabled);
+        assert!(original.word_list.is_empty());
+    }
+
+    #[test]
+    fn explicit_transcript_logging_preference_survives() {
+        let explicit: Settings = serde_json::from_str(r#"{"log_transcripts":true}"#).unwrap();
+        assert!(explicit.log_transcripts);
+        let absent: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!absent.log_transcripts);
+    }
+
+    #[test]
+    fn atomic_settings_failure_preserves_destination() {
+        let root = std::env::temp_dir().join(format!("sunoto-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let destination = root.join("config.json");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("sentinel"), "unchanged").unwrap();
+        assert!(atomic_write_settings(&destination, "{}").is_err());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("sentinel")).unwrap(),
+            "unchanged"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vocabulary_limits_preserve_spelling() {
+        let mut settings = Settings {
+            word_list: vec!["Sunoto".into(), "sunoto".into()],
+            ..Settings::default()
+        };
+        assert!(settings.validate().is_ok());
+        assert_eq!(settings.word_list[0], "Sunoto");
+        settings.word_list.push("bad\nterm".into());
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
     fn transcript_for_log_is_verbatim_or_length_and_hash() {
         assert_eq!(transcript_for_log("hello there", true), "\"hello there\"");
         let redacted = transcript_for_log("hello there", false);
@@ -1095,7 +1262,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.capture_idle_stop_secs, 0);
         assert!(!settings.llm_polish_keepalive_always);
-        assert!(settings.log_transcripts);
+        assert!(!settings.log_transcripts);
         assert!(settings.clipboard_restore);
         assert!(
             !settings
@@ -1876,10 +2043,11 @@ mod tests {
             ..Settings::default()
         };
         let (command, args, envs) = settings.overlay_command();
-        assert!(command.ends_with("sunoto-overlay") || command == "swift");
-        if command == "swift" {
-            assert_eq!(args.len(), 1);
-            assert!(args[0].ends_with("services/macos/sunoto-overlay.swift"));
+        assert!(command.ends_with("sunoto-overlay") || command == "bash");
+        if command == "bash" {
+            assert_eq!(args.len(), 4);
+            assert!(args[2].ends_with("services/macos/build-overlay.sh"));
+            assert!(args[3].ends_with("sunoto-overlay"));
         } else {
             assert!(args.is_empty());
         }

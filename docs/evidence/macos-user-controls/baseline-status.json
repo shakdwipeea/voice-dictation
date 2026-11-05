@@ -1,0 +1,22 @@
+{
+  "asr": "ready",
+  "asr_backend": "parakeet_mlx_offline",
+  "detail": "",
+  "health": "ready",
+  "history": "on",
+  "hotkey": "verified",
+  "hotkey_reason": "",
+  "microphone": "idle",
+  "model_download_percent": null,
+  "ok": true,
+  "overlay": "ready",
+  "pid": 36573,
+  "polish": "disabled",
+  "ready": true,
+  "session": "idle",
+  "shortcut": "RightOption",
+  "type": "status",
+  "updates": "install (checked daily)",
+  "uptime_s": 333573,
+  "version": "0.1.15"
+}

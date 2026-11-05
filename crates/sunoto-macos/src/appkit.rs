@@ -294,6 +294,15 @@ impl EnglishVocabulary {
 /// raises the permission dialog: `None` unless access was already granted.
 /// With `ask` true and no answer yet, the read itself makes macOS ask (the
 /// names arrive on a later call, once the user allows it).
+pub fn contacts_access_status() -> &'static str {
+    let Some(_pool) = Pool::new() else { return "Unavailable"; };
+    let Some(class) = objc_class("CNContactStore") else { return "Unavailable"; };
+    let Some(selector) = sel("authorizationStatusForEntityType:") else { return "Unavailable"; };
+    match unsafe { send_usize_usize(class, selector, 0) } {
+        0 => "Not requested", 1 => "Restricted", 2 => "Denied", 3 => "Allowed", 4 => "Limited", _ => "Unknown"
+    }
+}
+
 pub fn contact_names(max: usize, ask: bool) -> Option<Vec<String>> {
     const CN_ENTITY_TYPE_CONTACTS: usize = 0;
     const CN_NOT_DETERMINED: usize = 0;

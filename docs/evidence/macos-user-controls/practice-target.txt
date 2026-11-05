@@ -1,0 +1,2 @@
+There has been no change in the accessibility tree for Window: "Untitled".
+The focused UI element is 355 text entry area (settable) ID: First Text View, Value: Sunoto disposable verification field.

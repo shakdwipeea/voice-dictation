@@ -241,6 +241,47 @@ impl TriggerGestures {
         Self::default()
     }
 
+    /// Hold mode shares the same lifecycle actions and recording timeout.
+    pub fn route_hold(
+        &mut self,
+        mode: SessionMode,
+        input: TriggerInput,
+        recording: Option<SessionMode>,
+        now: Instant,
+    ) -> TriggerAction {
+        match input {
+            TriggerInput::Press if self.pending_tap != Some(mode) && recording.is_none() => {
+                self.pending_tap = Some(mode);
+                self.started = Some((mode, now));
+                TriggerAction::Start
+            }
+            // The key is up whether or not a recording came of this press: the
+            // daemon refuses a Start while it is still transcribing or not
+            // ready, and the next press has to work regardless.
+            TriggerInput::Release => {
+                if self.pending_tap == Some(mode) {
+                    self.pending_tap = None;
+                }
+                if recording == Some(mode) {
+                    self.started = None;
+                    TriggerAction::Finish
+                } else {
+                    TriggerAction::Ignore
+                }
+            }
+            TriggerInput::Cancel | TriggerInput::Interrupt => {
+                self.pending_tap = None;
+                self.started = None;
+                if recording == Some(mode) {
+                    TriggerAction::Cancel
+                } else {
+                    TriggerAction::Ignore
+                }
+            }
+            _ => TriggerAction::Ignore,
+        }
+    }
+
     /// Route one edge. `recording` is the mode of the session currently
     /// recording, if any.
     pub fn route(
@@ -338,6 +379,125 @@ mod tests {
                 TriggerAction::Ignore
             );
             gestures.route(mode, TriggerInput::Release, recording, at)
+        }
+
+        #[test]
+        fn hold_press_the_daemon_refused_does_not_block_the_next_press() {
+            let mut router = TriggerGestures::new();
+            let now = Instant::now();
+            // Pressed while the last dictation transcribes: routed as a Start,
+            // which the session machine refuses, so nothing is recording.
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Press, None, now),
+                TriggerAction::Start
+            );
+            // Key repeat while held must not start again.
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Press, None, now),
+                TriggerAction::Ignore
+            );
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Release, None, now),
+                TriggerAction::Ignore
+            );
+            for _ in 0..3 {
+                assert_eq!(
+                    router.route_hold(DICTATION, TriggerInput::Press, None, now),
+                    TriggerAction::Start
+                );
+                assert_eq!(
+                    router.route_hold(DICTATION, TriggerInput::Release, Some(DICTATION), now),
+                    TriggerAction::Finish
+                );
+            }
+        }
+
+        #[test]
+        fn hold_recording_that_ended_while_held_leaves_the_next_press_working() {
+            let mut router = TriggerGestures::new();
+            let now = Instant::now();
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Press, None, now),
+                TriggerAction::Start
+            );
+            // The recording failed or timed out with the key still down: no
+            // new recording until the key has come up.
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Press, None, now),
+                TriggerAction::Ignore
+            );
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Release, None, now),
+                TriggerAction::Ignore
+            );
+            assert_eq!(
+                router.route_hold(DICTATION, TriggerInput::Press, None, now),
+                TriggerAction::Start
+            );
+        }
+
+        #[test]
+        fn hold_repeats_release_and_interrupt_do_not_stick() {
+            let mut router = TriggerGestures::new();
+            let now = Instant::now();
+            assert_eq!(
+                router.route_hold(SessionMode::Dictation, TriggerInput::Press, None, now),
+                TriggerAction::Start
+            );
+            assert_eq!(
+                router.route_hold(
+                    SessionMode::Dictation,
+                    TriggerInput::Press,
+                    Some(SessionMode::Dictation),
+                    now
+                ),
+                TriggerAction::Ignore
+            );
+            assert_eq!(
+                router.route_hold(
+                    SessionMode::Dictation,
+                    TriggerInput::Release,
+                    Some(SessionMode::Dictation),
+                    now
+                ),
+                TriggerAction::Finish
+            );
+            assert_eq!(
+                router.route_hold(SessionMode::Dictation, TriggerInput::Release, None, now),
+                TriggerAction::Ignore
+            );
+            assert_eq!(
+                router.route_hold(SessionMode::Dictation, TriggerInput::Press, None, now),
+                TriggerAction::Start
+            );
+            assert_eq!(
+                router.route_hold(
+                    SessionMode::Dictation,
+                    TriggerInput::Interrupt,
+                    Some(SessionMode::Dictation),
+                    now
+                ),
+                TriggerAction::Cancel
+            );
+            assert_eq!(
+                router.route_hold(SessionMode::Dictation, TriggerInput::Release, None, now),
+                TriggerAction::Ignore
+            );
+        }
+
+        #[test]
+        fn cancelled_session_cannot_finalize_after_next_session_starts() {
+            let mut machine = SessionMachine::default();
+            let SessionAction::Started { session_id, .. } = machine.press() else {
+                panic!()
+            };
+            machine.release();
+            machine.fail("pause");
+            machine.press();
+            assert_eq!(
+                machine.finalize(session_id, "late text".into()),
+                SessionAction::None
+            );
         }
 
         #[test]

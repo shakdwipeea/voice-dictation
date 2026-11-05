@@ -1,0 +1,2 @@
+UI foreground verified: true
+PASS: reusable Settings window; isolated draft; Apply acknowledgement; stale feedback; all four panes rendered; denied permissions; guided setup; practice view waits for the daemon, reports pause, and closes when practice ends.

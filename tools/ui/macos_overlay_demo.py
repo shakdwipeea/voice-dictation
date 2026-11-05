@@ -36,7 +36,7 @@ def overlay_binary(path):
         return str(built)
     out = Path(tempfile.mkdtemp()) / "sunoto-overlay"
     print(f"building {out} ...", file=sys.stderr)
-    subprocess.run(["swiftc", "-O", str(ROOT / "services/macos/sunoto-overlay.swift"), "-o", str(out)], check=True)
+    subprocess.run(["bash", str(ROOT / "services/macos/build-overlay.sh"), str(out)], check=True)
     return str(out)
 
 

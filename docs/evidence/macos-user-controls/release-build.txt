@@ -1,0 +1,5 @@
+   Compiling sunoto-ipc v0.1.15 (/Users/antash/workspace/voice-dictation/crates/sunoto-ipc)
+   Compiling sunoto-macos v0.1.15 (/Users/antash/workspace/voice-dictation/crates/sunoto-macos)
+   Compiling sunoto-desktop v0.1.15 (/Users/antash/workspace/voice-dictation/crates/sunoto-desktop)
+   Compiling sunoto-daemon v0.1.15 (/Users/antash/workspace/voice-dictation/apps/daemon)
+    Finished `release` profile [optimized] target(s) in 10.05s

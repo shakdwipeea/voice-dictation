@@ -89,7 +89,12 @@ fn menu_request(inputs: &MenuInputs, checking: bool, history: &HistoryRecorder) 
         },
         ready: inputs.health.is_ready(),
         hint: format!(
-            "Tap {} to dictate",
+            "{} {} to dictate",
+            if inputs.settings.interaction == "hold" {
+                "Hold"
+            } else {
+                "Tap"
+            },
             settings::shortcut_label(&inputs.settings.shortcut)
         ),
         version: env!("CARGO_PKG_VERSION").to_string(),

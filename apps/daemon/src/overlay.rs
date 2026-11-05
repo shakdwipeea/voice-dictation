@@ -35,6 +35,18 @@ pub(crate) fn spawn_overlay(
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
     let mut client = SidecarClient::spawn_with_env(&python, &arg_refs, &env_refs, move |message| {
+        if let sunoto_ipc::SidecarMessage::Event(sunoto_ipc::SidecarEvent::UserControl {
+            action,
+            confirmed,
+        }) = &message
+            && matches!(action.as_str(), "pause" | "quit")
+        {
+            if *confirmed {
+                crate::insertion::allow_insertion(false);
+            } else {
+                crate::insertion::suspend_insertion();
+            }
+        }
         events.send(DaemonEvent::Overlay(message)).is_ok()
     })
     .map_err(|error| format!("cannot start overlay UI sidecar: {error}"))?;

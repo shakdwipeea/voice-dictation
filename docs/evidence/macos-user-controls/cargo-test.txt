@@ -1,0 +1,422 @@
+   Compiling sunoto-core v0.1.15 (/Users/antash/workspace/voice-dictation/crates/sunoto-core)
+   Compiling sunoto-daemon v0.1.15 (/Users/antash/workspace/voice-dictation/apps/daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.44s
+     Running unittests src/lib.rs (target/debug/deps/sunoto_audio-e9cfcc967baa935d)
+
+running 9 tests
+test macos::tests::a_jump_in_sample_time_counts_as_a_gap ... ok
+test tests::default_config_matches_phase0_capture_settings ... ok
+test tests::source_description_matches_the_named_source ... ok
+test tests::errors_render_with_display_and_source ... ok
+test tests::resolve_errors_when_pactl_is_missing ... ok
+test tests::resolve_uses_non_monitor_default_source ... ok
+test tests::resolve_skips_monitor_default_and_uses_source_list ... ok
+test tests::resolve_reports_no_microphone_when_only_monitors_exist ... ok
+test macos::tests::the_default_input_has_a_kind_and_rate ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_core-087761a4e715af0e)
+
+running 15 tests
+test tests::gestures::a_tap_that_was_refused_starts_again_next_time ... ok
+test tests::gestures::a_forgotten_recording_expires ... ok
+test tests::failure_returns_to_idle_so_the_next_press_works ... ok
+test tests::gestures::a_tap_starts_and_the_next_tap_finishes ... ok
+test tests::gestures::escape_cancels_only_the_recording_mode ... ok
+test tests::gestures::cancelled_session_cannot_finalize_after_next_session_starts ... ok
+test tests::gestures::holding_the_key_is_still_just_a_tap ... ok
+test tests::gestures::hold_repeats_release_and_interrupt_do_not_stick ... ok
+test tests::gestures::typing_a_chord_with_the_key_does_nothing ... ok
+test tests::partials_are_accepted_only_for_the_current_session ... ok
+test tests::pre_roll_keeps_only_latest_samples ... ok
+test tests::push_to_talk_transitions_are_idempotent ... ok
+test tests::session_ids_keep_increasing_after_failures ... ok
+test tests::session_mode_is_stable_until_the_session_ends ... ok
+test tests::stale_final_result_is_ignored ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/sunoto_daemon-96a481c8f4f92120)
+
+running 166 tests
+test daemon::onboarding_tests::microphone_grant_survives_idle_and_reopen_but_not_capture_failure ... ok
+test daemon::onboarding_tests::the_pill_counts_the_download_in_whole_percent ... ok
+test bench::tests::rejects_wrong_formats ... ok
+test daemon::onboarding_tests::publishes_the_latched_permission_state ... ok
+test diag::tests::changed_words_counts_what_the_fix_replaced ... ok
+test bench::tests::parses_valid_wav ... ok
+test bench::tests::percentiles_pick_expected_ranks ... ok
+test bench::tests::post_asr_llm_percentiles_ignore_failed_llm_sessions ... ok
+test first_open::tests::the_disk_image_is_the_volume_the_app_came_from ... ok
+test eval::tests::evaluation_counts_matches_and_improvements ... ok
+test eval::tests::regressions_and_digit_changes_are_detected ... ok
+test diag::tests::diag_holds_only_counts_and_fixed_names ... ok
+test first_open::tests::the_login_item_route_round_trips_and_ignores_junk ... ok
+test first_open::tests::only_an_app_outside_applications_is_moved ... ok
+test health::tests::captions_fit_the_overlay_chip ... ok
+test health::tests::blocked_hotkey_outranks_everything_else ... ok
+test diag::tests::summary_is_one_line_of_counts ... ok
+test health::tests::monitor_reports_transitions_only ... ok
+test eval::tests::corpus_manifest_parses_with_defaults ... ok
+test diag::tests::diag_fields_match_the_plan ... ok
+test health::tests::startup_order_is_asr_then_polish_then_mic_then_ready ... ok
+test history::tests::dates_round_trip_across_month_ends_leap_days_and_years ... ok
+test history::tests::day_files_are_named_in_utc_and_parse_back ... ok
+test history::tests::history_overhead_per_dictation ... ignored
+test history::tests::disabled_history_records_nothing ... ok
+test history::tests::reap_ends_a_session_lost_before_its_transcript ... ok
+test history::tests::a_full_writer_drops_records_without_blocking ... ok
+test history::tests::a_new_press_writes_an_open_draft_as_abandoned ... ok
+test history::tests::each_session_produces_exactly_one_record ... ok
+test history::tests::password_fields_and_excluded_apps_keep_no_text ... ok
+test daemon::system_mode_integration_tests::compound_system_route_requires_palette_selection_then_observes_selected_browser_url ... ok
+test daemon::system_mode_integration_tests::voice_spotlight_project_and_editor_route_through_one_time_palette_and_runner ... ok
+test history::tests::inserted_dictation_records_every_stage ... ok
+test history::tests::recent_dictations_follow_what_was_saved_with_text ... ok
+test history_cli::tests::list_lines_show_outcome_app_time_and_text ... ok
+test llm_polish::tests::parses_polish_chunk_with_ttft_on_first_sequence ... ok
+test llm_polish::tests::polished_event_carries_streaming_diagnostics ... ok
+test llm_polish::tests::parses_warmed_response_with_per_request_diagnostics ... ok
+test llm_polish::tests::parses_two_step_polished_response_with_nested_diagnostics ... ok
+test menu_bar::tests::reasons_read_as_sentences ... ok
+test menu_bar::tests::the_menu_carries_status_hint_switch_and_history ... ok
+test overlay::tests::a_paste_is_confirmed_before_the_pill_closes ... ok
+test overlay::tests::transcribing_reaches_the_pill_instead_of_a_stale_partial ... ok
+test report::tests::codes_look_like_sun_and_four_hex_digits ... ok
+test history_cli::tests::a_record_is_found_by_its_id_in_its_day_file ... ok
+test report::tests::a_report_without_the_box_ticked_holds_no_text ... ok
+test report::tests::event_ids_are_32_random_hex_digits ... ok
+test history::tests::records_append_to_private_day_files ... ok
+test report::tests::the_panel_lists_counts_in_plain_words ... ok
+test report_send::tests::answers_map_to_what_happens_to_the_file ... ok
+test report::tests::ticking_the_box_adds_the_text_as_an_attachment_only ... ok
+test report_send::tests::dsns_parse_into_the_envelope_endpoint ... ok
+test report_send::tests::counts_named_like_secrets_are_renamed_for_the_scrubber ... ok
+test report_send::tests::failed_sends_are_tried_again_soon_then_less_often ... ok
+test history_cli::tests::recent_dictations_are_newest_first_and_skip_those_without_text ... ok
+test history_cli::tests::unreadable_lines_and_other_files_are_skipped ... ok
+test report_send::tests::send_a_sample_report ... ignored, sends to a real Sentry project
+test history::tests::prune_deletes_only_day_files_past_the_limit ... ok
+test report_send::tests::the_event_holds_tags_and_counts_and_no_text ... ok
+test report_send::tests::ticked_text_travels_only_as_an_attachment ... ok
+test history::tests::the_writer_thread_saves_finished_dictations ... ok
+test history_cli::tests::forget_removes_exactly_one_dictation ... ok
+test report::tests::saved_reports_are_private_files_named_by_code ... ok
+test settings::tests::control_socket_path_prefers_explicit_env ... ok
+test settings::tests::auto_update_defaults_to_install_and_rejects_unknown_values ... ok
+test settings::tests::dictation_history_is_on_by_default ... ok
+test settings::tests::enabled_system_mode_requires_a_distinct_shortcut ... ok
+test settings::tests::insertion_sanitizer_neutralizes_control_characters ... ok
+test settings::tests::explicit_transcript_logging_preference_survives ... ok
+test settings::tests::llm_polish_command_explicit_path_overrides_profile ... ok
+test settings::tests::llm_polish_command_resolves_gemma4_e2b_profile ... ok
+test settings::tests::llm_polish_defaults_to_off_with_the_phi4_mini_sidecar ... ok
+test report_send::tests::old_reports_get_an_event_id_kept_for_resends ... ok
+test settings::tests::invalid_settings_files_are_rejected ... ok
+test settings::tests::llm_polish_mode_defaults_to_constrained_one_call_and_validates ... ok
+test settings::tests::llm_polish_stream_insert_pushes_env_when_on ... ok
+test settings::tests::macos_overlay_backend_uses_native_sidecar ... ok
+test settings::tests::macos_overlay_gets_the_style_in_its_environment ... ok
+test settings::tests::loaded_config_without_model_field_defaults_to_phi4_mini ... ok
+test settings::tests::missing_settings_file_yields_defaults ... ok
+test settings::tests::mock_overlay_backend_is_headless_and_explicit ... ok
+test settings::tests::overlay_backend_can_force_gdk_backend ... ok
+test settings::tests::overlay_command_runs_the_ui_module_with_pythonpath ... ok
+test settings::tests::parakeet_model_prefers_config_then_local_copy_then_stopgap_then_hub ... ok
+test settings::tests::overlay_style_defaults_to_the_notch_and_accepts_only_auto_or_pill ... ok
+test settings::tests::quiet_idle_defaults ... ok
+test settings::tests::atomic_settings_failure_preserves_destination ... ok
+test settings::tests::shortcut_defaults_to_right_option_on_macos ... ok
+test settings::tests::shortcut_labels_read_like_macos_menus ... ok
+test settings::tests::sidecar_command_passes_asr_device_to_offline_backend ... ok
+test settings::tests::sidecar_command_passes_asr_device_to_streaming_backend ... ok
+test settings::tests::sidecar_command_selects_backend_defaults ... ok
+test settings::tests::sidecar_command_supports_nemotron_offline ... ok
+test settings::tests::settings_round_trip_and_partial_files_work ... ok
+test settings::tests::sidecar_command_supports_parakeet_mlx_model_override ... ok
+test settings::tests::sidecar_command_supports_parakeet_mlx_offline_default_model ... ok
+test settings::tests::system_mode_defaults_are_safe_and_do_not_claim_the_hotkey ... ok
+test settings::tests::sidecar_command_supports_parakeet_mlx_streaming_default_model ... ok
+test settings::tests::transcript_for_log_is_verbatim_or_length_and_hash ... ok
+test settings::tests::system_search_roots_are_bounded_and_resolve_below_home ... ok
+test settings::tests::user_preferences_preserve_engine_and_case_distinctions ... ok
+test settings::tests::validation_accepts_backend_specific_asr_devices ... ok
+test settings::tests::validation_accepts_macos_overlay_backend ... ok
+test settings::tests::validation_rejects_stream_insert_with_non_constrained_mode ... ok
+test settings::tests::validation_rejects_asr_device_for_parakeet_mlx_backend ... ok
+test settings::tests::validation_rejects_unknown_llm_polish_mode_name ... ok
+test settings::tests::validation_rejects_unknown_llm_polish_model_name ... ok
+test settings::tests::validation_rejects_unknown_overlay_backend ... ok
+test settings::tests::validation_rejects_zero_llm_polish_timeout_when_enabled ... ok
+test settings::tests::vocabulary_limits_preserve_spelling ... ok
+test report_send::tests::no_server_means_try_again_later ... ok
+test settings::tests::a_first_start_downloads_only_when_no_model_is_anywhere ... ok
+test setup::tests::info_plist_names_the_daemon_as_the_executable ... ok
+test setup::tests::launching_the_app_never_passes_on_a_bundle_path ... ok
+test setup::tests::old_defaults_are_retired_and_chosen_values_kept ... ok
+test setup::tests::only_the_old_default_shortcut_is_migrated ... ok
+test setup::tests::parses_matching_valid_signing_identity ... ok
+test settings::tests::save_changes_writes_only_chosen_keys ... ok
+test setup::tests::set_config_value_changes_only_that_key ... ok
+test setup::tests::setup_args_parse_flags_and_reject_unknown ... ok
+test setup::tests::uninstall_runs_only_on_known_arguments ... ok
+test setup::tests::set_config_value_creates_a_missing_config ... ok
+test system_mode::tests::clean_no_match_hands_off_to_llm_without_executing ... ok
+test system_mode::tests::disabled_llm_fallback_leaves_a_clean_no_match_inert ... ok
+test system_mode::tests::live_preview_reports_a_match_without_claiming_execution ... ok
+test system_mode::tests::matched_command_stops_at_candidate_resolution ... ok
+test system_mode::tests::project_editor_plan_uses_unified_target_find_without_native_ids ... ok
+test setup::tests::download_progress_counts_finished_files_and_the_part_being_written ... ok
+test system_mode::tests::unsafe_input_is_rejected_instead_of_reinterpreted ... ok
+test tests::parses_post_asr_llm_bench_flag ... ok
+test system_mode::tests::web_routes_are_read_only_validated_capability_steps ... ok
+test settings::tests::an_updated_install_runs_its_old_model_until_the_new_copy_is_in ... ok
+test update::tests::a_changed_download_or_another_key_is_refused ... ok
+test update::tests::modes_follow_the_setting ... ok
+test update::tests::a_forged_trusted_comment_breaks_the_signature ... ok
+test update::tests::release_reply_needs_the_zip_and_its_signature ... ok
+test update::tests::the_release_key_is_a_minisign_public_key ... ok
+test update::tests::the_switch_is_shared_with_the_checker ... ok
+test update::tests::versions_parse_and_order ... ok
+test vocabulary::tests::english_knows_plurals_and_verb_forms ... ok
+test vocabulary::tests::keep_rare_lists_rare_english_words_too ... ok
+test vocabulary::tests::longer_joins_and_sound_matching_by_default ... ok
+test settings::tests::only_the_models_sunoto_retired_are_listed_for_deletion ... ok
+test vocabulary::tests::lowercase_names_keep_a_capital_at_sentence_start ... ok
+test vocabulary::tests::merged_spellings_keep_the_strongest_list_and_the_deliberate_case ... ok
+test vocabulary::tests::collect_puts_screen_words_first_and_extra_words_on_screen ... ok
+test vocabulary::tests::near_miss_ties_are_left_alone ... ok
+test vocabulary::tests::near_misses_never_touch_english_words_or_short_names ... ok
+test update::tests::a_signed_release_verifies_only_as_its_own_version ... ok
+test vocabulary::tests::near_misses_become_the_listed_word ... ok
+test vocabulary::tests::one_word_in_two_lists_is_not_a_tie ... ok
+test vocabulary::tests::only_words_the_model_would_misspell_are_unusual ... ok
+test vocabulary::tests::possessives_and_contractions_stay_whole ... ok
+test vocabulary::tests::sound_keys_match_names_heard_differently ... ok
+test setup::tests::a_bundle_uses_its_own_runtime ... ok
+test vocabulary::tests::unusual_words_ranks_by_frequency_and_dedups_case ... ok
+test vocabulary::tests::two_words_spelling_a_listed_word_join ... ok
+test vocabulary::tests::word_parts_split_like_people_say_them ... ok
+test vocabulary::tests::project_comes_from_document_title_path_or_known_name ... ok
+test vocabulary::tests::project_names_skip_build_output_and_hidden_folders ... ok
+test vocabulary::tests::more_sources_add_documents_folders_recent_files_and_contacts ... ok
+test report_send::tests::a_rate_limit_waits_and_the_daily_cap_holds ... ok
+test report_send::tests::curl_posts_the_envelope_and_reads_the_answer ... ok
+test report_send::tests::sending_deletes_sent_files_and_keeps_the_rest_in_order ... ok
+test setup::tests::a_background_download_stops_when_the_app_quits ... ok
+test system_mode::tests::unknown_open_query_returns_unified_no_match_without_execution ... ok
+
+test result: ok. 164 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.31s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_desktop-c897539e29afc659)
+
+running 2 tests
+test tests::platform_types_satisfy_the_contracts ... ok
+test tests::outcome_and_event_enums_have_the_shared_variants ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_ipc-cfc979dbcdd7e665)
+
+running 9 tests
+test tests::protocol_round_trip_is_typed_json ... ok
+test tests::user_settings_protocol_round_trip ... ok
+test tests::final_reads_with_and_without_diag ... ok
+test tests::overlay_protocol_round_trip_is_typed_json ... ok
+test tests::menu_bar_protocol_is_typed_json ... ok
+test tests::sidecar_exit_is_reported_as_closed ... ok
+test tests::garbage_lines_are_reported_not_fatal ... ok
+test tests::managed_mock_sidecar_completes_session ... ok
+test tests::mock_sidecar_streams_partials_between_requests ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_linux-0b7fcb314e1a2eef)
+
+running 2 tests
+test wayland::tests::terminal_classes_are_matched_case_insensitively ... ok
+test wayland::tests::warning_is_handed_over_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_macos-1e3ff448c19cf1d3)
+
+running 23 tests
+test appkit::tests::live_snapshot_write_restore_round_trip ... ignored, touches the real clipboard
+test appkit::tests::live_trash_and_translocation_lookup ... ignored, puts a folder in the Trash
+test hotkey::tests::missing_accessibility_stops_before_event_tap_creation ... ok
+test hotkey::tests::probe_reports_available_as_soon_as_the_event_is_seen ... ok
+test hotkey::tests::a_recent_real_key_event_overrides_a_missing_probe ... ok
+test hotkey::tests::a_rearm_storm_cannot_postpone_the_verdict ... ok
+test hotkey::tests::maps_configured_hotkey_targets ... ok
+test hotkey::tests::matcher_releases_when_modifier_state_clears_first ... ok
+test hotkey::tests::maps_modifier_flags_to_left_modifier_keycodes ... ok
+test hotkey::tests::parses_right_hand_modifiers_as_single_key_shortcuts ... ok
+test hotkey::tests::bare_escape_cancels_but_modified_escape_does_not ... ok
+test hotkey::tests::left_option_does_not_trigger_right_option ... ok
+test hotkey::tests::right_option_after_another_modifier_is_someone_elses_shortcut ... ok
+test hotkey::tests::probe_reports_blocked_after_the_deadline_and_only_on_transitions ... ok
+test hotkey::tests::right_option_alone_presses_and_releases ... ok
+test hotkey::tests::typing_with_right_option_held_is_a_chord_not_a_tap ... ok
+test system::tests::live_default_and_selected_chrome_navigation ... ignored, opens harmless URLs through native macOS browser APIs
+test system::tests::live_disposable_file_folder_and_reveal ... ignored, opens and reveals disposable file/folder fixtures
+test system::tests::live_project_in_selected_editor ... ignored, opens the real who-else-is-free project in the selected VS Code
+test system::tests::discovery_finds_bundles_without_descending_into_them ... ok
+test system::tests::unified_provider_finds_project_and_rejects_disappearing_target_before_open ... ok
+test diag::tests::probes_answer_on_this_mac ... ok
+test system::tests::current_host_known_workspace_finds_real_project_when_present ... ok
+
+test result: ok. 18 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 1.11s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_polish-a99737fa1752a3b4)
+
+running 26 tests
+test tests::disabled_stages_leave_normalized_text ... ok
+test tests::fillers_do_not_match_inside_words ... ok
+test tests::dictionary_does_not_match_partial_words ... ok
+test tests::detokenize_keeps_intra_token_periods_intact ... ok
+test tests::multi_word_fillers_are_supported ... ok
+test tests::canonical_swap_correction ... ok
+test tests::fillers_are_removed_with_adjacent_commas ... ok
+test tests::no_wait_marker_swaps ... ok
+test tests::dictionary_replaces_whole_phrases_case_insensitively ... ok
+test tests::pipeline_is_idempotent ... ok
+test tests::normalize_does_not_split_intra_token_periods ... ok
+test tests::normalize_fixes_whitespace_and_punctuation_spacing ... ok
+test tests::normalize_preserves_numbers_and_ellipses ... ok
+test tests::normalize_still_splits_sentence_final_period_before_uppercase ... ok
+test tests::polish_preserves_filename_through_full_pipeline ... ok
+test tests::serde_round_trip_for_config ... ok
+test tests::restart_marker_drops_the_previous_sentence ... ok
+test tests::snippet_expands_whole_utterance_and_preserves_newlines ... ok
+test tests::style_rules_first_match_wins_and_empty_needles_are_skipped ... ok
+test tests::style_rules_match_window_classes ... ok
+test tests::styles_adjust_only_the_edges ... ok
+test tests::swap_corrections_must_pass_examples ... ok
+test tests::swap_defers_unequal_rewording_to_llm ... ok
+test tests::swap_requires_shape_compatibility ... ok
+test tests::trace_records_only_changing_stages_in_order ... ok
+test tests::never_panics_on_strange_inputs ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/sunoto_system-f69d2dc37d419993)
+
+running 56 tests
+test action::tests::application_ids_cannot_be_empty ... ok
+test capability::tests::application_observations_are_classified_as_untrusted_environment_data ... ok
+test action::tests::aliases_are_data_driven_and_deduplicated ... ok
+test capability::tests::open_contract_requires_an_opaque_target_not_a_platform_application_id ... ok
+test capability::tests::catalog_has_only_typed_native_capabilities ... ok
+test dispatcher::tests::discovery_observation_is_ranked_and_bounded_to_the_query ... ok
+test dispatcher::tests::expired_target_store_rejects_selection_without_execution ... ok
+test dispatcher::tests::discovery_observations_do_not_expose_the_platform_application_id ... ok
+test dispatcher::tests::combined_project_and_editor_is_one_explicit_typed_selection ... ok
+test dispatcher::tests::cancellation_is_checked_before_the_executor_receives_an_action ... ok
+test parser::tests::clean_no_match_requests_the_llm_router ... ok
+test dispatcher::tests::launcher_request_without_running_application_evidence_is_not_success ... ok
+test dispatcher::tests::discovery_without_explicit_selection_never_executes ... ok
+test dispatcher::tests::a_new_discovery_invalidates_old_selected_targets ... ok
+test parser::tests::preserves_target_spelling_while_matching_case_insensitively ... ok
+test parser::tests::empty_slots_do_not_match ... ok
+test parser::tests::unsafe_or_multi_action_input_fails_before_llm ... ok
+test fixtures::tests::open_chrome_requires_selection_before_the_fixture_executor_runs ... ok
+test policy::tests::every_current_intent_is_suggestion_only ... ok
+test parser::tests::routes_every_version_one_intent_family ... ok
+test runner::tests::duplicate_step_ids_are_rejected ... ok
+test dispatcher::tests::selected_target_runs_through_the_bounded_runner_once ... ok
+test dispatcher::tests::unified_target_find_selects_and_opens_project_once ... ok
+test runner::tests::cancellation_runs_no_action ... ok
+test runner::tests::future_dependency_is_rejected ... ok
+test runner::tests::failed_observation_stops_the_plan ... ok
+test runner::tests::planner_cannot_raise_system_owned_limits ... ok
+test runner::tests::planner_failure_is_rejected_without_dispatch ... ok
+test runner::tests::serialized_plan_references_a_prior_step_not_a_native_target ... ok
+test runner::tests::missing_bound_candidate_fails_without_dispatching_the_later_step ... ok
+test runner::tests::local_target_result_binds_only_to_target_open ... ok
+test runner::tests::browser_result_binds_only_to_the_url_browser_argument ... ok
+test runner::tests::target_binding_requires_an_explicit_dependency ... ok
+test selection::tests::serialized_rows_never_expose_native_target_ids ... ok
+test runner::tests::recording_plan_observes_before_and_after_execution ... ok
+test selection::tests::explicit_selection_yields_one_typed_action ... ok
+test dispatcher::tests::selected_browser_id_is_consumed_and_passed_to_native_url_execution ... ok
+test runner::tests::target_binding_uses_the_resolved_id_from_the_source_observation ... ok
+test selection::tests::stale_and_invented_selections_never_produce_an_action ... ok
+test suggestion::tests::exact_alias_ranks_before_prefix_match ... ok
+test suggestion::tests::every_voice_spotlight_target_kind_maps_to_a_palette_action ... ok
+test suggestion::tests::exact_cross_kind_matches_remain_visible_and_recency_breaks_only_ties ... ok
+test suggestion::tests::incompatible_candidate_types_are_removed ... ok
+test suggestion::tests::json_contains_no_executable_command_field ... ok
+test suggestion::tests::ranking_never_discards_ambiguous_exact_candidates ... ok
+test suggestion::tests::unrelated_query_returns_no_match ... ok
+test url::tests::encodes_search_as_data ... ok
+test url::tests::rejects_unsafe_or_malformed_urls ... ok
+test url::tests::normalizes_spoken_explicit_and_idna_domains ... ok
+test runner::tests::per_step_deadline_marks_a_slow_dispatch_as_timed_out ... ok
+test runner::tests::whole_plan_deadline_caps_the_current_step ... ok
+test targets::tests::invalid_roots_and_unbounded_queries_fail_closed ... ok
+test targets::tests::finds_projects_and_safe_files_only_inside_approved_root ... ok
+test targets::tests::fixture_quality_gate_has_full_top_five_recall_zero_false_actions_and_bounded_latency ... ok
+test targets::tests::symlink_escape_executables_and_target_mutation_fail_closed ... ok
+test targets::tests::bounded_search_honors_cancellation_and_result_caps ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/routing_corpus.rs (target/debug/deps/routing_corpus-4aa63430469d448e)
+
+running 3 tests
+test natural_no_matches_are_the_only_inputs_offered_to_the_llm ... ok
+test unsafe_inputs_fail_closed_before_the_llm ... ok
+test supported_phrases_produce_the_expected_typed_intent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_audio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_desktop
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_ipc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_linux
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_macos
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_polish
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests sunoto_system
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

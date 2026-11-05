@@ -1,0 +1,22 @@
+== preflight ==
+  ✓ daemon:  /Users/antash/workspace/voice-dictation/target/release/sunoto-daemon
+  ✓ overlay: /Users/antash/workspace/voice-dictation/target/release/sunoto-overlay
+  ✓ config:  /Users/antash/Library/Application Support/sunoto/config.json (left untouched)
+  ✓ history: on; the text of each dictation (never audio) stays on this Mac for 90 days in /Users/antash/Library/Application Support/sunoto/history
+  set "history_enabled": false in the config to turn it off; `sunoto-daemon history clear --yes` deletes it
+  ✓ ASR runtime imports: mlx + parakeet_mlx
+== speech model ==
+  ✓ speech model ready: /Users/antash/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v2-bf16
+== bundle ==
+  ✓ assembled /Users/antash/workspace/voice-dictation/target/release/Sunoto.app
+== install ==
+  ✓ installed /Users/antash/Applications/Sunoto.app
+/Users/antash/Applications/Sunoto.app: replacing existing signature
+  ✓ signed with the stable local identity B7B77719D4A88C3F509F8539561F6DC096CBB22A
+  ✓ Login Item left as it is (on)
+  ✓ started Sunoto; log: /Users/antash/Library/Logs/sunoto/daemon.log
+== permissions ==
+  waiting for the app to report its own health over the control socket...
+  hotkey: verified | microphone: idle | speech model: loading | polish: disabled => loading_asr
+  hotkey: verified | microphone: idle | speech model: ready | polish: disabled => ready
+  ✓ Sunoto 0.1.15 is ready. In any app, tap Right Option, speak, and tap it again to paste. Esc cancels.

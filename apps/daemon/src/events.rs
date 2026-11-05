@@ -12,7 +12,18 @@ use sunoto_ipc::SidecarMessage;
 use crate::insertion::UiReport;
 use crate::system_worker::SystemWorkerEvent;
 
+pub struct PreparedSettings {
+    pub settings: Box<crate::settings::Settings>,
+    pub bindings: Option<crate::sidecars::PreparedBindings>,
+    pub warning: Option<String>,
+}
+
 pub enum DaemonEvent {
+    SettingsSaved {
+        request_id: String,
+        result: Result<PreparedSettings, String>,
+    },
+
     Hotkey(ModeHotkeyEvent),
     Audio(AudioEvent),
     Sidecar(SidecarMessage),
@@ -65,6 +76,8 @@ pub enum DaemonEvent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ControlCommand {
+    UserControl { action: String, #[serde(default)] confirmed: bool },
+
     Polish {
         text: String,
     },

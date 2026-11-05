@@ -60,6 +60,13 @@ const RECORDING_LIMIT: Duration = Duration::from_secs(5 * 60);
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Practice lasts as long as its window, which promises that nothing is pasted.
+/// Pause and sleep cancel the session in progress but leave the window open, so
+/// the next shortcut after Resume or wake must still land in that window.
+fn control_ends_practice(action: &str) -> bool {
+    matches!(action, "practice_stop" | "quit")
+}
+
 /// The first try at the speech model download of a first start is retried
 /// after this, doubling up to the cap: a Mac set up before it is online.
 const MODEL_RETRY_START: Duration = Duration::from_secs(10);
@@ -145,7 +152,7 @@ fn install_signal_handlers() {
     }
 }
 
-pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
+pub fn run(mut settings: Settings) -> Result<(), Box<dyn Error>> {
     install_signal_handlers();
     if !keep_process_responsive("Sunoto listens for the push-to-talk shortcut") {
         logging::warn("could not opt out of App Nap; the hotkey may be throttled while idle");
@@ -179,8 +186,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let system_worker = SystemWorker::spawn(events_tx.clone(), settings.system_search_root_paths());
     // Only the Parakeet-MLX sidecar can favour words; other backends would
     // pay for reading the screen and gain nothing.
-    let word_worker = (settings.word_list_enabled && settings.backend == "parakeet_mlx_offline")
-        .then(|| {
+    let mut word_worker =
+        (settings.word_list_enabled && settings.backend == "parakeet_mlx_offline").then(|| {
             WordWorker::spawn(
                 settings.word_list.clone(),
                 settings.word_sources(),
@@ -201,8 +208,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     let control_handle = spawn_control_thread(events_tx.clone(), Arc::clone(&control_stop))?;
 
     // Hotkey thread (second X11 connection, blocking with poll timeouts).
-    let hotkey_stop = Arc::new(AtomicBool::new(false));
-    let hotkey_handles = shortcuts
+    let mut hotkey_stop = Arc::new(AtomicBool::new(false));
+    let mut hotkey_handles = shortcuts
         .into_iter()
         .map(|(mode, shortcut)| {
             spawn_hotkey_thread(mode, shortcut, events_tx.clone(), Arc::clone(&hotkey_stop))
@@ -230,11 +237,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             "microphone access granted; the microphone stays off until a dictation starts",
         );
     }
+    let capture_device = Arc::new(std::sync::Mutex::new(settings.microphone.clone()));
+    let capture_active = Arc::new(AtomicBool::new(false));
     let capture_handle = spawn_capture_thread(
-        &settings,
+        capture_device.clone(),
         events_tx.clone(),
         Arc::clone(&capture_stop),
         Arc::clone(&capture_wanted),
+        Arc::clone(&capture_active),
     )?;
 
     // Status UI: GTK overlay sidecar when enabled and startable, X11 bubble
@@ -407,6 +417,18 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     }
     // A verified newer release, installed at the first long idle moment.
     let mut pending_update: Option<crate::update::Staged> = None;
+    let mut pending_preferences = None;
+    let mut recording_shortcut = false;
+    let mut paused = false;
+    let mut preview_until: Option<Instant> = None;
+    let mut preview_meter_at = Instant::now();
+    let mut preview_peak = 0.0f64;
+    let mut practice_results = 0u64;
+    let mut practice = false;
+    let mut practice_session: Option<u64> = None;
+    let mut controls_poll = Instant::now() - Duration::from_secs(2);
+    let mut settings_revision = 0u64;
+    let mut settings_saving = false;
     let mut gestures = TriggerGestures::new();
     // Set when a recording hits RECORDING_LIMIT: the next loop turn finishes
     // it through the ordinary release path.
@@ -416,12 +438,34 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         history.reap(machine.current_session());
         let forced = forced_finish.take();
-        let received = match forced {
-            Some(mode) => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
-                mode,
-                edge: HotkeyEvent::Released,
-            })),
-            None => events.recv_timeout(TICK),
+        let received = if machine.current_session().is_none()
+            && preview_until.is_none()
+            && pending_preferences.is_some()
+        {
+            let (request_id, revision, preferences) = pending_preferences.take().unwrap();
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(
+                SidecarEvent::ApplySettings {
+                    request_id,
+                    revision,
+                    preferences,
+                },
+            )))
+        } else {
+            match forced {
+                Some(mode) => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
+                    mode,
+                    edge: HotkeyEvent::Released,
+                })),
+                None => events.recv_timeout(TICK),
+            }
+        };
+        let received = match received {
+            Ok(DaemonEvent::Hotkey(_))
+                if paused || recording_shortcut || preview_until.is_some() || settings_saving =>
+            {
+                continue;
+            }
+            other => other,
         };
         // Tap to start, tap again to paste, Esc to cancel. The router turns
         // raw key edges into the press and release the arms below already
@@ -432,7 +476,11 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
             {
                 let input = trigger_input(edge).expect("checked above");
                 let recording = recording_mode(&machine);
-                match gestures.route(mode, input, recording, Instant::now()) {
+                match if mode == SessionMode::Dictation && settings.interaction == "hold" {
+                    gestures.route_hold(mode, input, recording, Instant::now())
+                } else {
+                    gestures.route(mode, input, recording, Instant::now())
+                } {
                     TriggerAction::Start => Ok(DaemonEvent::Hotkey(ModeHotkeyEvent {
                         mode,
                         edge: HotkeyEvent::Pressed,
@@ -558,10 +606,16 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         continue;
                     }
                 }
+                if practice && mode != SessionMode::Dictation {
+                    continue;
+                }
+                if pending_preferences.is_some() {
+                    continue;
+                }
                 if let SessionAction::Started { session_id, .. } = machine.press_mode(mode) {
                     if mode == SessionMode::System {
                         system_worker.activate_session(session_id);
-                    } else {
+                    } else if !practice {
                         history.begin(session_id);
                         gaps_at_press = sunoto_audio::input_gaps();
                         crate::diag::spawn_snapshot(
@@ -569,6 +623,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                             mic_device.clone(),
                             events_tx.clone(),
                         );
+                    }
+                    crate::insertion::allow_insertion(!practice);
+                    if practice {
+                        practice_session = Some(session_id);
                     }
                     last_pressed_at = Some(Instant::now());
                     last_activity = Instant::now();
@@ -599,6 +657,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     // The pill says how to finish; the first partial
                     // transcript replaces it.
                     let recording_label = match (mode, cfg!(target_os = "macos")) {
+                        (SessionMode::Dictation, true) if settings.interaction == "hold" => {
+                            "Release to paste, Esc to cancel"
+                        }
                         (SessionMode::Dictation, true) => "Tap again to paste, Esc to cancel",
                         (SessionMode::Dictation, false) => "Tap again to paste",
                         (SessionMode::System, _) => "System — tap again to finish",
@@ -695,7 +756,7 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                                 .unwrap_or_default(),
                         ));
                     }
-                    if mode == SessionMode::Dictation {
+                    if mode == SessionMode::Dictation && !practice {
                         // Focus is captured only for dictation. System mode
                         // never inserts its transcript into the active app.
                         let _ = ui_tx.send(UiCommand::CaptureFocus);
@@ -730,6 +791,15 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            Ok(DaemonEvent::Audio(AudioEvent::Frame(samples))) if preview_until.is_some() => {
+                if preview_meter_at.elapsed() >= Duration::from_millis(80) {
+                    let (peak, rms) = frame_levels(&samples);
+                    preview_peak = preview_peak.max(peak);
+                    ui.overlay_send(OverlayRequest::PreviewLevel { peak, rms });
+                    preview_meter_at = Instant::now();
+                }
+            }
+            Ok(DaemonEvent::Audio(AudioEvent::Frame(_))) if paused => {}
             Ok(DaemonEvent::Audio(AudioEvent::Frame(samples))) => match machine.state() {
                 SessionState::Recording { session_id, .. } => {
                     let session_id = *session_id;
@@ -768,12 +838,14 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         );
                     }
                 }
-                _ => preroll.push(&samples),
+                _ if !capture_idle && !practice => preroll.push(&samples),
+                _ => {}
             },
             Ok(DaemonEvent::Audio(AudioEvent::Started {
                 device,
                 description,
             })) => {
+                if !capture_wanted.load(Ordering::SeqCst) { mic = MicState::Idle; continue; }
                 let description = description.unwrap_or_else(|| "<unknown>".to_string());
                 let after_request = capture_requested_at
                     .take()
@@ -869,6 +941,34 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     } = machine.finalize(session_id, text)
                     {
                         transcribe_deadline = None;
+                        if practice_session == Some(session_id) {
+                            practice_session = None;
+                            let mut output = if settings.polish_enabled {
+                                polish(&text, &settings.polish).text
+                            } else {
+                                text
+                            };
+                            if settings.llm_polish_enabled
+                                && let Some(client) = llm_polish.as_mut()
+                                && let Ok(polished) = client.polish(
+                                    session_id,
+                                    &output,
+                                    settings.llm_polish_timeout_ms,
+                                )
+                            {
+                                output = polished.text;
+                            }
+                            practice_results += 1;
+                            ui.overlay_send(OverlayRequest::PracticeResult { text: output });
+                            audio_stats = None;
+                            timing = None;
+                            capture_wanted.store(false, Ordering::SeqCst);
+                            capture_idle = true;
+                            mic = MicState::Idle;
+                            preroll.clear();
+                            ui.hide();
+                            continue;
+                        }
                         if text.is_empty() {
                             let summary = audio_stats
                                 .as_ref()
@@ -1286,7 +1386,10 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                         ));
                     }
                 }
-                SidecarEvent::SystemSelection { .. }
+                SidecarEvent::UserControl { .. }
+                | SidecarEvent::GetSettings { .. }
+                | SidecarEvent::ApplySettings { .. }
+                | SidecarEvent::SystemSelection { .. }
                 | SidecarEvent::SystemCancelled { .. }
                 | SidecarEvent::PermissionAction { .. }
                 | SidecarEvent::OnboardingDone
@@ -1342,6 +1445,9 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 // permission state on the next poll.
                 last_onboarding = None;
                 menu.changed();
+                if !settings.setup_completed {
+                    ui.overlay_send(OverlayRequest::OpenSettings { setup: true });
+                }
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::SystemSelection {
                 session_id,
@@ -1533,11 +1639,283 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 }
                 menu.changed();
             }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::UserControl {
+                action,
+                confirmed,
+            }))) => {
+                let busy = machine.current_session().is_some() || timing.is_some();
+                let needs_discard =
+                    matches!(action.as_str(), "pause" | "quit") && busy && !confirmed;
+                let mut error = None;
+                if needs_discard {
+                    ui.overlay_send(OverlayRequest::ControlsResult {
+                        action,
+                        error: None,
+                        confirmation: true,
+                    });
+                    continue;
+                }
+                match action.as_str() {
+                    "practice_stop" if !practice => {}
+                    "pause" | "quit" | "practice_stop" | "interrupt" => {
+                        crate::insertion::allow_insertion(false);
+                        if let Some(session_id) = machine.current_session() {
+                            if let Some(client) = sidecar.as_mut() {
+                                let _ = client.send(&SidecarRequest::CancelSession { session_id });
+                            }
+                            machine.fail("cancelled by user control");
+                            history.finish(session_id, Status::Cancelled, None, None, None);
+                        }
+                        gestures = TriggerGestures::new();
+                        system_worker.invalidate_sessions();
+                        pending_system = None;
+                        active_system_resolution = None;
+                        if control_ends_practice(&action) {
+                            practice = false;
+                        }
+                        practice_session = None;
+                        preview_until = None;
+                        capture_wanted.store(false, Ordering::SeqCst);
+                        capture_handle.thread().unpark();
+                        capture_idle = true;
+                        mic = MicState::Idle;
+                        capture_requested_at = None;
+                        preroll.clear();
+                        timing = None;
+                        audio_stats = None;
+                        transcribe_deadline = None;
+                        ui.hide();
+                        ui.overlay_send(OverlayRequest::PracticeResult {
+                            text: String::new(),
+                        });
+                        if action == "pause" {
+                            paused = true;
+                        }
+                        if action == "quit" {
+                            STOP_REQUESTED.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    "cancel_control" => { crate::insertion::allow_insertion(!practice && !paused); }
+                    "resume" => {
+                        paused = false;
+                        gestures = TriggerGestures::new();
+                    }
+                    "preview_start" if !busy && !paused && !practice => {
+                        if microphone_authorized() {
+                            preroll.clear();
+                            preview_peak = 0.0;
+                            preview_until = Some(Instant::now() + Duration::from_secs(30));
+                            capture_idle = false;
+                            capture_wanted.store(true, Ordering::SeqCst);
+                            capture_handle.thread().unpark();
+                        } else {
+                            error = Some("Allow Microphone access before testing.".into());
+                        }
+                    }
+                    "preview_stop" | "settings_closed" => {
+                        recording_shortcut = false;
+                        preview_until = None;
+                        if !busy {
+                            capture_wanted.store(false, Ordering::SeqCst);
+                            capture_handle.thread().unpark();
+                            capture_idle = true;
+                            mic = MicState::Idle;
+                            preroll.clear();
+                        }
+                    }
+                    "practice_start" if !busy && !paused && preview_until.is_none() => {
+                        practice = true;
+                        ui.overlay_send(OverlayRequest::PracticeResult {
+                            text: String::new(),
+                        });
+                    }
+                    "login_on" => error = crate::first_open::change_login(true).err(),
+                    "login_off" => error = crate::first_open::change_login(false).err(),
+                    "cancel_pending" if !settings_saving => {
+                        pending_preferences = None;
+                    }
+                    "recorder_start" if !busy && preview_until.is_none() && !settings_saving => {
+                        recording_shortcut = true;
+                        gestures = TriggerGestures::new();
+                    }
+                    "recorder_stop" => {
+                        recording_shortcut = false;
+                        gestures = TriggerGestures::new();
+                    }
+                    "setup_complete" => {
+                        let mut candidate = settings.clone();
+                        candidate.setup_completed = true;
+                        match candidate.save_changes(&crate::settings::config_path()) {
+                            Ok(()) => settings.setup_completed = true,
+                            Err(e) => error = Some(e),
+                        }
+                    }
+                    "open_settings" => ui.overlay_send(OverlayRequest::OpenSettings { setup: false }),
+                    "refresh" => {}
+                    _ => error = Some(
+                        "This action is unavailable during a session, microphone test, or pause."
+                            .into(),
+                    ),
+                }
+                controls_poll = Instant::now() - Duration::from_secs(2);
+                ui.overlay_send(OverlayRequest::ControlsResult {
+                    action,
+                    error,
+                    confirmation: false,
+                });
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::GetSettings {
+                request_id,
+            }))) => {
+                ui.overlay_send(OverlayRequest::SettingsState {
+                    request_id,
+                    revision: settings_revision,
+                    preferences: settings.user_preferences(),
+                    error: None,
+                });
+            }
+            Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ApplySettings {
+                request_id,
+                revision,
+                preferences,
+            }))) => {
+                if (machine.current_session().is_some() || preview_until.is_some())
+                    && revision == settings_revision
+                    && !settings_saving
+                {
+                    pending_preferences = Some((request_id, revision, preferences));
+                    ui.overlay_send(OverlayRequest::ControlsResult {
+                        action: "settings_pending".into(),
+                        error: None,
+                        confirmation: false,
+                    });
+                    continue;
+                }
+                let candidate = if revision != settings_revision {
+                    Err("Settings changed. Reopen Settings and try again.".into())
+                } else if settings_saving {
+                    Err("A settings save is already in progress.".into())
+                } else {
+                    settings.with_user_preferences(preferences)
+                };
+                match candidate {
+                    Ok(candidate) => {
+                        settings_saving = true;
+                        let tx = events_tx.clone();
+                        let rebind = candidate.shortcut != settings.shortcut;
+                        let microphone_changed = candidate.microphone != settings.microphone;
+                        let retention_changed = candidate.history_retention_days != settings.history_retention_days;
+                        history.flush();
+                        capture_wanted.store(false, Ordering::SeqCst);
+                        capture_handle.thread().unpark();
+                        capture_idle = true;
+                        mic = MicState::Idle;
+                        let sink = tx.clone();
+                        let capture_active = capture_active.clone();
+                        std::thread::spawn(move || {
+                            let result = (|| {
+                                if microphone_changed {
+                                    let deadline = Instant::now() + Duration::from_secs(3);
+                                    while capture_active.load(Ordering::SeqCst) {
+                                        if Instant::now() >= deadline { return Err("Microphone is still stopping; try again.".into()); }
+                                        std::thread::sleep(Duration::from_millis(10));
+                                    }
+                                    let probe =
+                                        sunoto_audio::start_capture(sunoto_audio::CaptureConfig {
+                                            device: candidate.microphone.clone(),
+                                            ..Default::default()
+                                        })
+                                        .map_err(|e| e.to_string())?;
+                                    probe.stop();
+                                }
+                                let prepared = if rebind {
+                                    Some(crate::sidecars::prepare_bindings(&candidate, sink)?)
+                                } else {
+                                    None
+                                };
+                                if let Err(error) =
+                                    candidate.save_user_preferences(&crate::settings::config_path())
+                                {
+                                    if let Some(bindings) = prepared {
+                                        bindings.stop.store(true, Ordering::SeqCst);
+                                        for handle in bindings.handles {
+                                            let _ = handle.join();
+                                        }
+                                    }
+                                    return Err(error);
+                                }
+                                let warning = if retention_changed {
+                                    crate::history::prune(&history_dictations_dir(), candidate.history_retention_days, (crate::history::now_ms() / 86_400_000) as i64)
+                                        .err().map(|error| format!("Preferences were saved, but retention cleanup was incomplete: {error}. Some expired history may remain."))
+                                } else { None };
+                                Ok(crate::events::PreparedSettings { settings: Box::new(candidate), bindings: prepared, warning })
+                            })();
+                            let _ = tx.send(DaemonEvent::SettingsSaved { request_id, result });
+                        });
+                    }
+                    Err(error) => ui.overlay_send(OverlayRequest::SettingsState {
+                        request_id,
+                        revision: settings_revision,
+                        preferences: settings.user_preferences(),
+                        error: Some(error),
+                    }),
+                }
+            }
+            Ok(DaemonEvent::SettingsSaved { request_id, result }) => {
+                settings_saving = false;
+                let error = match result {
+                    Ok(crate::events::PreparedSettings { settings: candidate, bindings: prepared, warning }) => {
+                        if let Some(warning) = warning { menu.alert(&ui, "History cleanup incomplete".into(), warning, false); }
+                        if let Some(bindings) = prepared {
+                            hotkey_stop.store(true, Ordering::SeqCst);
+                            let old = std::mem::replace(&mut hotkey_handles, bindings.handles);
+                            hotkey_stop = bindings.stop;
+                            bindings.active.store(true, Ordering::SeqCst);
+                            std::thread::spawn(move || {
+                                for handle in old {
+                                    let _ = handle.join();
+                                }
+                            });
+                        }
+                        *capture_device.lock().unwrap() = candidate.microphone.clone();
+                        settings = *candidate;
+                        history.flush();
+                        history = crate::history::HistoryRecorder::start(&settings);
+                        gestures = TriggerGestures::new();
+                        menu.changed();
+                        word_worker = (settings.word_list_enabled
+                            && settings.backend == "parakeet_mlx_offline")
+                            .then(|| {
+                                WordWorker::spawn(
+                                    settings.word_list.clone(),
+                                    settings.word_sources(),
+                                    events_tx.clone(),
+                                )
+                            });
+                        settings_revision += 1;
+                        None
+                    }
+                    Err(error) => { history = crate::history::HistoryRecorder::start(&settings); Some(error) },
+                };
+                ui.overlay_send(OverlayRequest::SettingsState {
+                    request_id,
+                    revision: settings_revision,
+                    preferences: settings.user_preferences(),
+                    error,
+                });
+            }
             Ok(DaemonEvent::Overlay(SidecarMessage::Event(SidecarEvent::ClearHistory))) => {
+                if machine.current_session().is_some() {
+                    menu.alert(
+                        &ui,
+                        "History is in use".into(),
+                        "Finish the current session before clearing history.".into(),
+                        false,
+                    );
+                    continue;
+                }
                 match history.clear() {
-                    Ok(files) => logging::info(&format!(
-                        "dictation history cleared from the menu bar ({files} day files)"
-                    )),
+                    Ok(files) => menu.alert(&ui, "History cleared".into(), format!("Removed {files} history day files. Reports and diagnostic logs were not removed."), false),
                     Err(error) => {
                         logging::warn(&format!("could not clear the dictation history: {error}"));
                         menu.alert(
@@ -1654,6 +2032,21 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 logging::warn(&format!("ignored non-protocol overlay output: {line}"));
             }
             Ok(DaemonEvent::Overlay(SidecarMessage::Closed)) => {
+                recording_shortcut = false;
+                preview_until = None;
+                capture_wanted.store(false, Ordering::SeqCst);
+                capture_idle = true;
+                preroll.clear();
+                if practice {
+                    machine.fail("practice view closed");
+                    practice = false;
+                    practice_session = None;
+                    crate::insertion::allow_insertion(false);
+                    timing = None;
+                    audio_stats = None;
+                    transcribe_deadline = None;
+                }
+
                 pending_system = None;
                 system_worker.invalidate_sessions();
                 if ui.overlay.is_none() {
@@ -2007,9 +2400,18 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                 let payload = serde_json::json!({
                     "type": "status",
                     "ok": true,
-                    "health": current.name(),
+                    "health": if paused { "paused" } else { current.name() },
+                    "paused": paused,
+                    "preview": preview_until.is_some(),
+                    "preview_peak": preview_peak,
+                    "practice_results": practice_results,
+                    "practice": practice,
+                    "settings_revision": settings_revision,
+                    "settings_pending": pending_preferences.is_some() || settings_saving,
+                    "interaction": settings.interaction,
+                    "input_devices": sunoto_audio::input_devices().into_iter().map(|device| serde_json::json!({"uid": device.uid, "name": device.name})).collect::<Vec<_>>(),
                     "detail": current.caption(),
-                    "ready": current.is_ready(),
+                    "ready": current.is_ready() && !paused && preview_until.is_none(),
                     "hotkey": hotkey,
                     "hotkey_reason": if hotkey == "blocked" { hotkey_block_reason() } else { String::new() },
                     "microphone": mic.name(),
@@ -2335,7 +2737,8 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     logging::warn(&format!("LLM keepalive stop failed: {error}"));
                 }
             }
-            if !capture_idle
+            if preview_until.is_none()
+                && !capture_idle
                 && mic == MicState::Capturing
                 && !onboarding_in_progress
                 && idle_for >= Duration::from_secs(settings.capture_idle_stop_secs)
@@ -2353,6 +2756,37 @@ pub fn run(settings: Settings) -> Result<(), Box<dyn Error>> {
                     ));
                 }
             }
+        }
+        if preview_until.is_some_and(|deadline| {
+            Instant::now() >= deadline || !microphone_authorized() || mic == MicState::Unavailable
+        }) {
+            preview_until = None;
+            capture_wanted.store(false, Ordering::SeqCst);
+            capture_handle.thread().unpark();
+            capture_idle = true;
+            mic = MicState::Idle;
+            preroll.clear();
+            controls_poll = Instant::now() - Duration::from_secs(2);
+        }
+        if controls_poll.elapsed() >= Duration::from_secs(1) {
+            controls_poll = Instant::now();
+            ui.overlay_send(OverlayRequest::InputDevices {
+                devices: sunoto_audio::input_devices()
+                    .into_iter()
+                    .map(|device| (format!("uid:{}", device.uid), device.name))
+                    .collect(),
+            });
+            ui.overlay_send(OverlayRequest::ControlsState {
+                status: if paused { "Paused".into() } else if preview_until.is_some() { "Microphone test running — dictation disabled (30-second limit)".into() } else if machine.current_session().is_some() { "Dictation session active".into() } else { health.current().menu_status().into() },
+                paused,
+                busy: machine.current_session().is_some(),
+                preview: preview_until.is_some(),
+                practice,
+                microphone: microphone_authorized(),
+                accessibility: accessibility_granted(),
+                login: crate::first_open::login_status_text(),
+                contacts: crate::first_open::contacts_status_text(),
+            });
         }
         if let Some(next) = health.refresh(health_inputs(
             sidecar_ready,
@@ -2534,6 +2968,21 @@ fn run_llm_warmup(
             *llm_post_asr_warmed = true;
             show_error(ui, "LLM polish unavailable", bubble_hide_at);
         }
+    }
+}
+
+#[cfg(test)]
+mod practice_tests {
+    use super::control_ends_practice;
+
+    #[test]
+    fn only_closing_the_window_or_quitting_ends_practice() {
+        assert!(control_ends_practice("practice_stop"));
+        assert!(control_ends_practice("quit"));
+        // Ending practice here would turn the next shortcut into a real paste
+        // while the window still says nothing leaves it.
+        assert!(!control_ends_practice("pause"));
+        assert!(!control_ends_practice("interrupt"));
     }
 }
 

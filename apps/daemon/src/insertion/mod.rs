@@ -54,6 +54,13 @@ pub(crate) struct StreamSession {
     accumulated: String,
 }
 
+static INSERTION_GATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub(crate) fn allow_insertion(on: bool) {
+    INSERTION_GATE.store(if on { 0 } else { 2 }, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn suspend_insertion() { INSERTION_GATE.store(1, std::sync::atomic::Ordering::SeqCst); }
+
 pub enum UiCommand {
     CaptureFocus,
     ShowBubble(BubbleKind, String),
@@ -264,8 +271,29 @@ pub(crate) fn ui_thread(
     // focus_at_release and chooses Typing vs ClipboardFallback; the End
     // commit finalizes.
     let mut stream: Option<StreamSession> = None;
+    let mut deferred = std::collections::VecDeque::new();
     loop {
-        match commands.recv_timeout(Duration::from_millis(25)) {
+        let gate = INSERTION_GATE.load(std::sync::atomic::Ordering::SeqCst);
+        if gate == 2 { deferred.clear(); }
+        let command = if gate == 0 && !deferred.is_empty() { Ok(deferred.pop_front().unwrap()) }
+            else { commands.recv_timeout(Duration::from_millis(25)) };
+        if gate == 1 && matches!(&command, Ok(UiCommand::Insert { .. } | UiCommand::InsertStreamChunk { .. } | UiCommand::InsertStreamEnd { .. })) {
+            deferred.push_back(command.unwrap());
+            continue;
+        }
+        if INSERTION_GATE.load(std::sync::atomic::Ordering::SeqCst) == 2
+            && matches!(
+                &command,
+                Ok(UiCommand::Insert { .. }
+                    | UiCommand::InsertStreamChunk { .. }
+                    | UiCommand::InsertStreamEnd { .. })
+            )
+        {
+            stream = None;
+            focus_at_release = None;
+            continue;
+        }
+        match command {
             Ok(UiCommand::CaptureFocus) => {
                 let focus = adapter.capture_focus();
                 focus_at_release = focus.token;
