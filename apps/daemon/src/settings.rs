@@ -555,8 +555,8 @@ impl Settings {
         self.runs_default_parakeet() && stopgap_parakeet_model().is_some()
     }
 
-    /// No speech model is on disk at all: an app opened from a disk image,
-    /// with no installer run before it. The app fetches Sunoto's copy before
+    /// No speech model is on disk at all: a new install, from the installer
+    /// or a disk image. The app fetches Sunoto's copy before
     /// it starts the sidecar, which would otherwise download the 2.5 GB
     /// original itself, with nothing to show for it.
     pub fn needs_model_download(&self) -> bool {
@@ -1006,7 +1006,7 @@ pub fn model_dir_complete(dir: &Path) -> bool {
 /// while Sunoto's copy of the current one is missing and the Hugging Face
 /// cache has no original: Sunoto's v3 copy, else the v3 original in the
 /// cache. An update has minutes to start the new version (update.rs), too
-/// few for 1.24 GB, so the app runs this one while it fetches the copy in
+/// few for that download, so the app runs this one while it fetches the copy in
 /// the background, then moves to the copy and deletes what Sunoto
 /// downloaded for v3.
 pub fn stopgap_parakeet_model() -> Option<String> {

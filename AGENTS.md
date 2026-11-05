@@ -248,11 +248,16 @@ muted; check System Settings → Sound → Input.
   `nemotron_offline` accepts `"cpu"` or `"mps"`; use CPU if you fall back to
   Nemotron on macOS. Parakeet-MLX backends ignore `asr_device`; leave it unset
   and optionally set `asr_model` to override the default checkpoint. By
-  default the app loads setup's bf16 copy from
+  default the app loads Sunoto's bf16 copy from
   `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v2-bf16`
   (identical weights, half the download; made with
   `tools/make_model_copy.py`) and falls back to the Hugging Face original
-  when that folder is missing. setup deletes what Sunoto downloaded for v3
+  when that folder is missing. The app, not setup, downloads it on a first
+  start, so the permission panel never waits for it. It fetches
+  `model.safetensors.tar.xz` (851 MB, `tools/pack_model_copy.sh`) and macOS's
+  tar unpacks it while it downloads (unpacking alone takes ~54 s, so in
+  sequence it would cancel the saving); without that asset it takes the
+  plain file. Keep the plain files in the release: 0.1.16 and older use them. setup deletes what Sunoto downloaded for v3
   (its bf16 copy, and on release installs the original in Sunoto's own
   `sunoto/hf` cache), never the shared ~/.cache/huggingface.
   `parakeet_mlx_offline` is the **default macOS backend** (config init).

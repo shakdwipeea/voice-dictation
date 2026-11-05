@@ -266,9 +266,8 @@ pub fn run(mut settings: Settings) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // A first start with no speech model at all (an app opened from a disk
-    // image) downloads Sunoto's copy before the sidecar starts; the panel,
-    // the pill and the menu show how far it is.
+    // A first start with no speech model at all downloads Sunoto's copy before
+    // the sidecar starts; the panel, the pill and the menu show how far it is.
     let mut awaiting_model = settings.needs_model_download();
     let mut model_download: Option<ModelDownload> = None;
     let mut model_retry_at: Option<Instant> = None;
@@ -286,13 +285,13 @@ pub fn run(mut settings: Settings) -> Result<(), Box<dyn Error>> {
     let model_fetch_stop = Arc::new(AtomicBool::new(false));
     let mut model_fetch = if on_stopgap {
         logging::info(&format!(
-            "speech model: running {} while the new one (1.24 GB) downloads in the background",
+            "speech model: running {} while the new one (about 850 MB) downloads in the background",
             settings.parakeet_model()
         ));
         spawn_model_fetch(events_tx.clone(), Arc::clone(&model_fetch_stop))
     } else if awaiting_model {
         logging::info(
-            "speech model: none on this Mac yet; downloading it (1.24 GB) before the speech engine starts",
+            "speech model: none on this Mac yet; downloading it (about 850 MB) before the speech engine starts",
         );
         spawn_model_fetch(events_tx.clone(), Arc::clone(&model_fetch_stop))
     } else {
