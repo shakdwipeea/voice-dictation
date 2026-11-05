@@ -36,11 +36,9 @@ pub const ROOT_MARKER: &str = "sunoto-root";
 /// marker: services/, src/, a relocatable Python with both sidecars'
 /// packages, and the two venv-shaped symlinks the daemon resolves.
 pub const EMBEDDED_ROOT: &str = "Contents/Resources/root";
-/// Speech model fetched on first run; matches the daemon's default.
-const ASR_MODEL_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v2";
-/// Sunoto's bf16 copy of ASR_MODEL_REPO, published as release assets: the
-/// weights the sidecar ends up with after casting the original, at half the
-/// 2.5 GB download. Name, SHA-256 and size of each file.
+/// Sunoto's bf16 copy of the daemon's default speech model, published as
+/// release assets: the weights the sidecar ends up with after casting the
+/// original, at half the 2.5 GB download. Name, SHA-256 and size of each file.
 /// Made with tools/make_model_copy.py.
 const ASR_MODEL_RELEASE: &str = "https://github.com/shakdwipeea/voice-dictation/releases/download/model-parakeet-tdt-0.6b-v2-bf16";
 const ASR_MODEL_FILES: [(&str, &str, u64); 2] = [
@@ -55,6 +53,13 @@ const ASR_MODEL_FILES: [(&str, &str, u64); 2] = [
         1_235_819_917,
     ),
 ];
+/// The weights in `ASR_MODEL_FILES`, compressed, and the size of that asset.
+/// Made with tools/pack_model_copy.sh.
+const ASR_MODEL_PACK: Pack = Pack {
+    name: "model.safetensors.tar.xz",
+    bytes: 851_086_520,
+    holds: "model.safetensors",
+};
 const SIGNING_IDENTITY: &str = "Sunoto Local Code Signing";
 const SIGNING_IDENTITY_MARKER: &str = "signing-identity";
 
@@ -309,8 +314,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     } else {
         ensure_llm_model(loaded, &config_path, args.llm, args.dry_run)?
     };
-    if let Some(python) = asr_python.filter(|_| loaded.backend.starts_with("parakeet_mlx")) {
-        ensure_asr_model(&python, &loaded, args.update, args.dry_run)?;
+    if asr_python.is_some() {
+        report_asr_model(&loaded, args.dry_run);
     }
 
     section("bundle");
@@ -563,87 +568,30 @@ fn preflight_asr_runtime(
     Ok(Some(python))
 }
 
-/// Fetch the speech model now, with progress, instead of letting the first
-/// daemon start do it silently behind a "loading speech model..." pill.
-/// Prefers Sunoto's 1.24 GB bf16 copy; an install that already has the
-/// float32 original in the Hugging Face cache keeps using it. Once the model
-/// is in place, the copy of a model the app no longer uses is deleted. An
-/// update that still has its old model leaves the fetch to the app.
-fn ensure_asr_model(
-    python: &str,
-    settings: &Settings,
-    update: bool,
-    dry_run: bool,
-) -> Result<(), Box<dyn Error>> {
+/// Say where the speech model stands. Setup never waits for it: the app
+/// downloads a missing one itself (`Settings::needs_model_download`), so the
+/// permission panel opens right away and the download shows there, in the pill
+/// and in the menu bar. Once the model is in place, the copy of a model the app
+/// no longer uses is deleted.
+fn report_asr_model(settings: &Settings, dry_run: bool) {
     section("speech model");
-    if let Some(model) = settings
-        .asr_model
-        .as_deref()
-        .filter(|model| !model.is_empty())
-    {
+    if !settings.runs_default_parakeet() {
         note(&format!(
-            "asr_model is set to {model}; the app fetches it on first start"
+            "asr_model is set to {}; the app fetches it on first start",
+            settings.asr_model.as_deref().unwrap_or_default()
         ));
-        return Ok(());
-    }
-    let local = settings::local_parakeet_model_dir();
-    if let Some(dir) = local
-        .as_deref()
-        .filter(|dir| settings::model_dir_complete(dir))
-    {
-        ok(&format!("speech model ready: {}", dir.display()));
-        remove_retired_models(dry_run);
-        return Ok(());
-    }
-    if update && let Some(old) = settings::stopgap_parakeet_model() {
-        // The updater gives the new version minutes to start, which 1.24 GB
-        // may not fit in. The app runs the old model meanwhile.
+    } else if settings.needs_model_download() {
+        note("the app downloads the speech model (about 850 MB, one time) when it opens");
+    } else if let Some(old) = settings::stopgap_parakeet_model() {
+        // The updater gives the new version minutes to start, which the
+        // download may not fit in. The app runs the old model meanwhile.
         note(&format!(
-            "the app keeps {old} until it has downloaded the new speech model (about 1.24 GB) in the background"
+            "the app keeps {old} until it has downloaded the new speech model (about 850 MB) in the background"
         ));
-        return Ok(());
-    }
-    let script = format!(
-        "from huggingface_hub import snapshot_download\nimport sys\np = snapshot_download('{ASR_MODEL_REPO}', local_files_only=True) if '--check' in sys.argv else snapshot_download('{ASR_MODEL_REPO}')\nprint(p)"
-    );
-    let cached = Command::new(python)
-        .args(["-c", &script, "--check"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if cached {
-        ok(&format!("{ASR_MODEL_REPO} already cached"));
+    } else {
+        ok("speech model ready");
         remove_retired_models(dry_run);
-        return Ok(());
     }
-    if dry_run {
-        note("would download the speech model (about 1.24 GB)");
-        return Ok(());
-    }
-    if let Some(dir) = &local {
-        note("downloading the speech model (about 1.24 GB, one time)...");
-        match fetch_speech_model(dir, Progress::Shown) {
-            Ok(()) => {
-                ok(&format!("speech model ready: {}", dir.display()));
-                remove_retired_models(dry_run);
-                return Ok(());
-            }
-            Err(error) => warn(&format!(
-                "could not fetch Sunoto's copy of the speech model ({error}); using the Hugging Face original instead"
-            )),
-        }
-    }
-    note(&format!(
-        "downloading {ASR_MODEL_REPO} (about 2.5 GB, one time)..."
-    ));
-    let status = Command::new(python).args(["-c", &script]).status()?;
-    if !status.success() {
-        return Err("speech model download failed; rerun setup to resume".into());
-    }
-    ok("speech model ready");
-    remove_retired_models(dry_run);
-    Ok(())
 }
 
 /// Fetch Sunoto's copy of the speech model into `dir`. A file already there
@@ -652,39 +600,193 @@ fn ensure_asr_model(
 pub(crate) fn fetch_speech_model(dir: &Path, progress: Progress) -> Result<(), Box<dyn Error>> {
     let release =
         std::env::var("SUNOTO_MODEL_RELEASE").unwrap_or_else(|_| ASR_MODEL_RELEASE.to_string());
-    ASR_MODEL_FILES
-        .iter()
-        .try_for_each(|(name, sha256, bytes)| {
-            let destination = dir.join(name);
-            if destination.is_file() {
-                return Ok(());
+    for (name, sha256, bytes) in ASR_MODEL_FILES {
+        let destination = dir.join(name);
+        if destination.is_file() {
+            continue;
+        }
+        if name == ASR_MODEL_PACK.holds
+            && fetch_packed(dir, &release, ASR_MODEL_PACK, sha256, progress)?
+        {
+            continue;
+        }
+        download_verified(
+            &format!("{release}/{name}"),
+            &destination,
+            sha256,
+            bytes,
+            progress,
+        )?;
+    }
+    Ok(())
+}
+
+/// One file of a release, compressed into a tar.xz asset of its own.
+#[derive(Clone, Copy)]
+struct Pack {
+    name: &'static str,
+    bytes: u64,
+    holds: &'static str,
+}
+
+/// Download `pack` and unpack it at the same time, with macOS's own tar.
+/// Unpacking takes about 54 s, which would cancel what the smaller download
+/// saves if it came afterwards; run side by side, the slower of the two sets
+/// the time. curl still writes a `.part` file and tar reads it as it grows, so
+/// an interrupted download resumes where it was. tar sees the bytes before
+/// anything has checked them; it extracts only `pack.holds`, into a folder of
+/// its own, and the file moves into place only after its SHA-256 is checked.
+///
+/// `Ok(false)`: this pack is no use (not published, or it unpacked to the wrong
+/// file), so the caller should download the plain file. `Err`: the network
+/// failed or the app quit, and the next try resumes.
+fn fetch_packed(
+    dir: &Path,
+    release: &str,
+    pack: Pack,
+    sha256: &str,
+    progress: Progress,
+) -> Result<bool, Box<dyn Error>> {
+    // A plain download left unfinished by an older version keeps going.
+    if part_path(&dir.join(pack.holds)).exists() {
+        return Ok(false);
+    }
+    let part = part_path(&dir.join(pack.name));
+    let unpacking = dir.join("unpacking");
+    let _ = fs::remove_dir_all(&unpacking);
+    fs::create_dir_all(&unpacking)?;
+    if fs::metadata(&part).is_ok_and(|meta| meta.len() > pack.bytes) {
+        fs::remove_file(&part)?;
+    }
+    let mut tar = Command::new("/usr/bin/tar")
+        .args(["-xf", "-", "-C"])
+        .arg(&unpacking)
+        .arg(pack.holds)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let sink = tar.stdin.take().ok_or("tar has no stdin")?;
+    let downloaded = AtomicBool::new(false);
+    let abandoned = AtomicBool::new(false);
+    let unpacked = std::thread::scope(|scope| {
+        scope.spawn(|| feed_growing_file(&part, sink, &downloaded, &abandoned));
+        let have_all = fs::metadata(&part).is_ok_and(|meta| meta.len() == pack.bytes);
+        let status = if have_all {
+            None
+        } else {
+            match run_curl(&format!("{release}/{}", pack.name), &part, progress) {
+                Ok(status) => Some(status),
+                Err(error) => {
+                    abandoned.store(true, Ordering::SeqCst);
+                    let _ = tar.kill();
+                    let _ = tar.wait();
+                    return Err(error);
+                }
             }
-            download_verified(
-                &format!("{release}/{name}"),
-                &destination,
-                sha256,
-                *bytes,
-                progress,
+        };
+        if let Some(status) = status.filter(|status| !status.success()) {
+            abandoned.store(true, Ordering::SeqCst);
+            let _ = tar.kill();
+            let _ = tar.wait();
+            // 22: the server refused (not published). 37: no such file://.
+            if matches!(status.code(), Some(22 | 37)) {
+                let _ = fs::remove_file(&part);
+                return Ok(None);
+            }
+            return Err(format!(
+                "download of {} failed ({status}); it resumes on the next try",
+                pack.name
             )
-        })
+            .into());
+        }
+        downloaded.store(true, Ordering::SeqCst);
+        let finished = match progress {
+            Progress::Shown => tar.wait()?,
+            Progress::Quiet { stop } => wait_unless_stopped(tar, stop)?,
+        };
+        Ok(Some(finished))
+    });
+    let finished = match unpacked {
+        Ok(Some(finished)) => finished,
+        Ok(None) => {
+            let _ = fs::remove_dir_all(&unpacking);
+            return Ok(false);
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&unpacking);
+            return Err(error);
+        }
+    };
+    let file = unpacking.join(pack.holds);
+    let good = finished.success() && file.is_file() && sha256_of(&file)? == sha256;
+    if good {
+        fs::rename(&file, dir.join(pack.holds))?;
+    }
+    let _ = fs::remove_file(&part);
+    let _ = fs::remove_dir_all(&unpacking);
+    Ok(good)
+}
+
+/// Copy `path` into `sink` as it grows, until `downloaded` is set and the end
+/// is reached, or `abandoned` is set. A failed write means tar has gone; its
+/// exit status says why.
+fn feed_growing_file(
+    path: &Path,
+    mut sink: impl Write,
+    downloaded: &AtomicBool,
+    abandoned: &AtomicBool,
+) {
+    let mut block = vec![0u8; 1 << 20];
+    let mut file = None;
+    while !abandoned.load(Ordering::SeqCst) {
+        // Read this first: once it is set, an empty read is really the end.
+        let complete = downloaded.load(Ordering::SeqCst);
+        if file.is_none() {
+            file = fs::File::open(path).ok();
+        }
+        let count = file
+            .as_mut()
+            .and_then(|file: &mut fs::File| file.read(&mut block).ok())
+            .unwrap_or(0);
+        if count > 0 {
+            if sink.write_all(&block[..count]).is_err() {
+                return;
+            }
+        } else if complete {
+            return;
+        } else {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 /// How much of Sunoto's copy of the speech model is in `dir`, and how big it
-/// is in all, in bytes. A finished file counts whole; one still downloading
-/// counts its `.part`, which curl grows in place.
+/// is in all, in bytes, counting what actually comes over the network. A
+/// finished file counts whole; one still downloading counts its `.part`,
+/// which curl grows in place.
 pub(crate) fn speech_model_progress(dir: &Path) -> (u64, u64) {
+    let part_len = |file: &Path, whole: u64| {
+        fs::metadata(part_path(file)).map_or(0, |meta| meta.len().min(whole))
+    };
     ASR_MODEL_FILES
         .iter()
         .fold((0, 0), |(done, total), (name, _, bytes)| {
             let file = dir.join(name);
-            let have = if file.is_file() {
-                *bytes
+            let packed = *name == ASR_MODEL_PACK.holds && !part_path(&file).exists();
+            let (have, whole) = if packed {
+                let have = if file.is_file() {
+                    ASR_MODEL_PACK.bytes
+                } else {
+                    part_len(&dir.join(ASR_MODEL_PACK.name), ASR_MODEL_PACK.bytes)
+                };
+                (have, ASR_MODEL_PACK.bytes)
+            } else if file.is_file() {
+                (*bytes, *bytes)
             } else {
-                let mut partial = file.into_os_string();
-                partial.push(".part");
-                fs::metadata(partial).map_or(0, |meta| meta.len().min(*bytes))
+                (part_len(&file, *bytes), *bytes)
             };
-            (done + have, total + bytes)
+            (done + have, total + whole)
         })
 }
 
@@ -832,27 +934,8 @@ fn download_verified(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut partial = destination.as_os_str().to_owned();
-    partial.push(".part");
-    let partial = PathBuf::from(partial);
-    let mut curl = Command::new("curl");
-    curl.args(["-L", "--fail", "-C", "-", "-o"])
-        .arg(&partial)
-        .arg(url);
-    let status = match progress {
-        Progress::Shown => {
-            note(&format!("downloading {url}"));
-            curl.arg("--progress-bar").status()?
-        }
-        Progress::Quiet { stop } => {
-            let child = curl
-                .args(["--silent", "--show-error"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .spawn()?;
-            wait_unless_stopped(child, stop)?
-        }
-    };
+    let partial = part_path(destination);
+    let status = run_curl(url, &partial, progress)?;
     if !status.success() {
         return Err(
             format!("download of {url} failed ({status}); it resumes on the next try").into(),
@@ -869,15 +952,7 @@ fn download_verified(
     if let Progress::Shown = progress {
         note("verifying checksum...");
     }
-    let output = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(&partial)
-        .output()?;
-    let digest = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let digest = sha256_of(&partial)?;
     if digest != sha256 {
         let _ = fs::remove_file(&partial);
         return Err(
@@ -886,6 +961,47 @@ fn download_verified(
     }
     fs::rename(&partial, destination)?;
     Ok(())
+}
+
+/// Where a download of `destination` is kept until it is checked.
+fn part_path(destination: &Path) -> PathBuf {
+    let mut partial = destination.as_os_str().to_owned();
+    partial.push(".part");
+    PathBuf::from(partial)
+}
+
+/// `curl` into `partial`, continuing what is already there.
+fn run_curl(url: &str, partial: &Path, progress: Progress) -> Result<ExitStatus, Box<dyn Error>> {
+    let mut curl = Command::new("curl");
+    curl.args(["-L", "--fail", "-C", "-", "-o"])
+        .arg(partial)
+        .arg(url);
+    match progress {
+        Progress::Shown => {
+            note(&format!("downloading {url}"));
+            Ok(curl.arg("--progress-bar").status()?)
+        }
+        Progress::Quiet { stop } => {
+            let child = curl
+                .args(["--silent", "--show-error"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()?;
+            wait_unless_stopped(child, stop)
+        }
+    }
+}
+
+fn sha256_of(path: &Path) -> Result<String, Box<dyn Error>> {
+    let output = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string())
 }
 
 /// Wait for `child`, killing it first if `stop` is set.
@@ -1469,8 +1585,9 @@ pub fn query_status() -> Option<serde_json::Value> {
 }
 
 fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>> {
-    let deadline = Instant::now() + timeout;
+    let mut deadline = Instant::now() + timeout;
     let mut last: Option<(String, String, String, String, String)> = None;
+    let mut download_tenths = None;
     let mut panes_opened = false;
     let mut last_reply = Instant::now();
     note("waiting for the app to report its own health over the control socket...");
@@ -1518,6 +1635,20 @@ fn watch_until_ready(timeout: Duration, app: &Path) -> Result<(), Box<dyn Error>
                     app.display()
                 ));
                 note("When every row says Allowed, click Done; Sunoto will relaunch once.");
+            }
+            if snapshot.3 == "downloading" {
+                // A slow connection is not a failed install.
+                deadline = Instant::now() + timeout;
+                let percent = status
+                    .get("model_download_percent")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                if download_tenths != Some(percent / 10) {
+                    download_tenths = Some(percent / 10);
+                    note(&format!(
+                        "speech model: {percent}% downloaded. It continues in the app if you close this window."
+                    ));
+                }
             }
             if snapshot.0 == "mic_starting" && snapshot.3 == "ready" {
                 note("macOS should be showing the Microphone prompt; click Allow.");
@@ -1831,21 +1962,232 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
-    #[test]
-    fn download_progress_counts_finished_files_and_the_part_being_written() {
-        let dir = std::env::temp_dir().join(format!("sunoto-progress-{}", std::process::id()));
+    /// A folder of its own, emptied, removed by the test when it passes.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sunoto-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let total: u64 = ASR_MODEL_FILES.iter().map(|(_, _, bytes)| bytes).sum();
-        assert_eq!(speech_model_progress(&dir), (0, total));
         fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn download_progress_counts_what_comes_over_the_network() {
+        let dir = test_dir("progress");
+        let config = ASR_MODEL_FILES[0].2;
+        let total = config + ASR_MODEL_PACK.bytes;
+        assert_eq!(speech_model_progress(&dir), (0, total));
         fs::write(dir.join("config.json"), "{}").unwrap();
-        fs::write(dir.join("model.safetensors.part"), vec![0u8; 1000]).unwrap();
-        assert_eq!(
-            speech_model_progress(&dir),
-            (ASR_MODEL_FILES[0].2 + 1000, total)
-        );
+        fs::write(dir.join("model.safetensors.tar.xz.part"), vec![0u8; 1000]).unwrap();
+        assert_eq!(speech_model_progress(&dir), (config + 1000, total));
+        fs::remove_file(dir.join("model.safetensors.tar.xz.part")).unwrap();
         fs::write(dir.join("model.safetensors"), "").unwrap();
         assert_eq!(speech_model_progress(&dir), (total, total));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn download_progress_counts_a_plain_download_when_there_is_one() {
+        let dir = test_dir("progress-plain");
+        let plain = ASR_MODEL_FILES[1].2;
+        let total = ASR_MODEL_FILES[0].2 + plain;
+        fs::write(dir.join("model.safetensors.part"), vec![0u8; 1000]).unwrap();
+        assert_eq!(speech_model_progress(&dir), (1000, total));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_feeder_follows_a_file_until_the_download_ends() {
+        let dir = test_dir("feeder");
+        let part = dir.join("growing");
+        let downloaded = AtomicBool::new(false);
+        let abandoned = AtomicBool::new(false);
+        let mut copied = Vec::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| feed_growing_file(&part, &mut copied, &downloaded, &abandoned));
+            std::thread::sleep(Duration::from_millis(120));
+            fs::write(&part, "first ").unwrap();
+            std::thread::sleep(Duration::from_millis(120));
+            let mut file = fs::OpenOptions::new().append(true).open(&part).unwrap();
+            file.write_all(b"second").unwrap();
+            downloaded.store(true, Ordering::SeqCst);
+        });
+        assert_eq!(copied, b"first second");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_feeder_stops_when_abandoned() {
+        let downloaded = AtomicBool::new(false);
+        let abandoned = AtomicBool::new(true);
+        let mut copied = Vec::new();
+        feed_growing_file(
+            Path::new("/nonexistent/part"),
+            &mut copied,
+            &downloaded,
+            &abandoned,
+        );
+        assert!(copied.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    mod packed {
+        use super::*;
+
+        const SMALL_MODEL: &[u8] = b"the weights of a very small speech model";
+
+        /// A release folder holding `model.bin` packed, as a `file://` URL,
+        /// with the pack's description and the file's SHA-256.
+        fn release_with_pack(name: &str) -> (PathBuf, String, Pack, String) {
+            let release = test_dir(name);
+            fs::write(release.join("model.bin"), SMALL_MODEL).unwrap();
+            assert!(
+                Command::new("/usr/bin/tar")
+                    .args(["-cJf", "model.bin.tar.xz", "model.bin"])
+                    .current_dir(&release)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let bytes = fs::metadata(release.join("model.bin.tar.xz"))
+                .unwrap()
+                .len();
+            let sha256 = sha256_of(&release.join("model.bin")).unwrap();
+            fs::remove_file(release.join("model.bin")).unwrap();
+            let pack = Pack {
+                name: "model.bin.tar.xz",
+                bytes,
+                holds: "model.bin",
+            };
+            let url = format!("file://{}", release.display());
+            (release, url, pack, sha256)
+        }
+
+        fn quiet(stop: &AtomicBool) -> Progress<'_> {
+            Progress::Quiet { stop }
+        }
+
+        #[test]
+        fn a_pack_unpacks_into_place_and_leaves_nothing_else() {
+            let (release, url, pack, sha256) = release_with_pack("pack-good");
+            let dir = test_dir("pack-good-out");
+            let stop = AtomicBool::new(false);
+            assert!(fetch_packed(&dir, &url, pack, &sha256, quiet(&stop)).unwrap());
+            assert_eq!(fs::read(dir.join("model.bin")).unwrap(), SMALL_MODEL);
+            let left: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+            assert_eq!(left.len(), 1, "left behind: {left:?}");
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_finished_part_is_unpacked_without_downloading_again() {
+            let (release, url, pack, sha256) = release_with_pack("pack-part");
+            let dir = test_dir("pack-part-out");
+            fs::copy(
+                release.join(pack.name),
+                dir.join(format!("{}.part", pack.name)),
+            )
+            .unwrap();
+            fs::remove_file(release.join(pack.name)).unwrap();
+            let stop = AtomicBool::new(false);
+            assert!(fetch_packed(&dir, &url, pack, &sha256, quiet(&stop)).unwrap());
+            assert_eq!(fs::read(dir.join("model.bin")).unwrap(), SMALL_MODEL);
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn an_unpublished_pack_asks_for_the_plain_file() {
+            let (release, url, pack, sha256) = release_with_pack("pack-missing");
+            fs::remove_file(release.join(pack.name)).unwrap();
+            let dir = test_dir("pack-missing-out");
+            let stop = AtomicBool::new(false);
+            assert!(!fetch_packed(&dir, &url, pack, &sha256, quiet(&stop)).unwrap());
+            assert!(!dir.join("model.bin").exists());
+            assert!(!dir.join("unpacking").exists());
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_pack_with_the_wrong_contents_is_thrown_away() {
+            let (release, url, pack, _) = release_with_pack("pack-wrong");
+            let dir = test_dir("pack-wrong-out");
+            let stop = AtomicBool::new(false);
+            assert!(!fetch_packed(&dir, &url, pack, &"0".repeat(64), quiet(&stop)).unwrap());
+            assert!(!dir.join("model.bin").exists());
+            let left: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+            assert!(left.is_empty(), "left behind: {left:?}");
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_pack_that_is_not_an_archive_is_thrown_away() {
+            let (release, url, pack, sha256) = release_with_pack("pack-junk");
+            fs::write(release.join(pack.name), vec![7u8; pack.bytes as usize]).unwrap();
+            let dir = test_dir("pack-junk-out");
+            let stop = AtomicBool::new(false);
+            assert!(!fetch_packed(&dir, &url, pack, &sha256, quiet(&stop)).unwrap());
+            assert!(!dir.join("model.bin").exists());
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn an_unfinished_plain_download_keeps_going() {
+            let (release, url, pack, sha256) = release_with_pack("pack-plain");
+            let dir = test_dir("pack-plain-out");
+            fs::write(dir.join("model.bin.part"), "half").unwrap();
+            let stop = AtomicBool::new(false);
+            assert!(!fetch_packed(&dir, &url, pack, &sha256, quiet(&stop)).unwrap());
+            assert_eq!(fs::read(dir.join("model.bin.part")).unwrap(), b"half");
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn quitting_keeps_the_part_for_the_next_start() {
+            let (release, url, pack, sha256) = release_with_pack("pack-stop");
+            // curl blocks reading a fifo, so the stop is what ends it.
+            fs::remove_file(release.join(pack.name)).unwrap();
+            assert!(
+                Command::new("mkfifo")
+                    .arg(release.join(pack.name))
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let dir = test_dir("pack-stop-out");
+            let part = dir.join(format!("{}.part", pack.name));
+            fs::write(&part, "half").unwrap();
+            let stop = AtomicBool::new(true);
+            assert!(fetch_packed(&dir, &url, pack, &sha256, quiet(&stop)).is_err());
+            assert_eq!(fs::read(&part).unwrap(), b"half");
+            assert!(!dir.join("model.bin").exists());
+            assert!(!dir.join("unpacking").exists());
+            fs::remove_dir_all(&release).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        /// The real asset, for timing by hand: serve a folder holding it and
+        /// run with SUNOTO_MODEL_RELEASE and SUNOTO_TEST_MODEL_DIR set.
+        #[test]
+        #[ignore = "needs the real 851 MB pack"]
+        fn the_real_model_downloads() {
+            let dir = PathBuf::from(std::env::var("SUNOTO_TEST_MODEL_DIR").unwrap());
+            fs::create_dir_all(&dir).unwrap();
+            let stop = AtomicBool::new(false);
+            let started = Instant::now();
+            // As the app does: a failed try resumes on the next.
+            for _ in 0..3 {
+                match fetch_speech_model(&dir, quiet(&stop)) {
+                    Ok(()) => break,
+                    Err(error) => println!("try failed: {error}"),
+                }
+            }
+            println!("fetched in {:.1} s", started.elapsed().as_secs_f64());
+            assert!(crate::settings::model_dir_complete(&dir));
+        }
     }
 }

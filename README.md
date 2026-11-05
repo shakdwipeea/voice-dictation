@@ -16,10 +16,11 @@ or account.
 curl -fsSL https://raw.githubusercontent.com/shakdwipeea/voice-dictation/master/install-macos.sh | bash
 ```
 
-This installs **Sunoto.app** in `~/Applications`, starts it at login, and
-downloads the English speech model (1.24 GB, once). A setup panel then asks for two
-permissions: **Accessibility** (to notice the shortcut and paste) and
-**Microphone**. Click **Allow** on each, then **Done**. No `sudo` needed.
+This installs **Sunoto.app** in `~/Applications` and starts it at login. A
+setup panel asks for two permissions: **Accessibility** (to notice the
+shortcut and paste) and **Microphone**. Click **Allow** on each, then
+**Done**. Meanwhile the app downloads the English speech model (about
+850 MB, once) and shows how far it is. No `sudo` needed.
 
 Optional AI polish merges mid-sentence corrections ("Tuesday, no, Wednesday").
 It is off by default because it adds about a second per dictation and a

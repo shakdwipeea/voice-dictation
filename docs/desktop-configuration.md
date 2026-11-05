@@ -413,10 +413,14 @@ existing macOS ASR venv:
 brew install ffmpeg
 ```
 
-Setup downloads the speech model, Parakeet TDT 0.6B v2 (English), as
-Sunoto's bf16 copy of `mlx-community/parakeet-tdt-0.6b-v2` (1.24 GB instead
-of 2.5 GB, from the `model-parakeet-tdt-0.6b-v2-bf16` GitHub release,
-checksums verified) into
+The app downloads the speech model on its first start, while the setup panel
+asks for permissions (setup itself does not wait for it): Parakeet TDT 0.6B v2
+(English), as Sunoto's bf16 copy of `mlx-community/parakeet-tdt-0.6b-v2`
+(1.24 GB instead of 2.5 GB, from the `model-parakeet-tdt-0.6b-v2-bf16` GitHub
+release, checksums verified). It comes as `model.safetensors.tar.xz`
+(851 MB, made with `tools/pack_model_copy.sh`), unpacked by macOS's tar while
+it downloads; when that asset is missing the app takes the plain
+`model.safetensors`. It goes into
 `~/Library/Application Support/sunoto/models/parakeet-tdt-0.6b-v2-bf16`, and
 deletes what it downloaded for the earlier v3 model: its bf16 copy and, on
 release installs, the original in Sunoto's own Hugging Face cache
@@ -523,7 +527,7 @@ An app opened straight from a disk image or Downloads (a release bundle,
 not a checkout build) first offers to move itself to /Applications, or to
 ~/Applications when an older copy is there or /Applications is not writable,
 then starts the moved copy and ejects the disk image. A first start with no
-speech model on disk downloads Sunoto's copy (1.24 GB) before the speech
+speech model on disk downloads Sunoto's copy (about 850 MB) before the speech
 engine starts; the setup panel, the pill and the menu bar show how far it is,
 and a failed try is retried after 10 s, doubling up to 2 minutes.
 
