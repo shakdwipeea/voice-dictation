@@ -13,7 +13,13 @@ permissions:
 
 jobs:
   macos-arm64:
-    runs-on: macos-14
+    # GitHub retired the macos-14 image (v0.1.17's first run was refused).
+    # Builds used to take the runner's macOS as their minimum; pin it so a
+    # newer runner does not drop Macs on 14 (cargo, cmake and
+    # build-overlay.sh read this).
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
