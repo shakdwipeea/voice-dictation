@@ -89,6 +89,6 @@ class Sunoto < Formula
     system bin/"sunoto", "config", "init"
     assert_path_exists testpath/"Library/Application Support/sunoto/config.json"
     output = shell_output("#{bin}/sunoto config show")
-    assert_match "parakeet_mlx_streaming", output
+    assert_match "parakeet_mlx_offline", output
   end
 end

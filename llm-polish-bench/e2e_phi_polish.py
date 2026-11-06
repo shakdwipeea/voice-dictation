@@ -5,7 +5,7 @@ This is a driven (not unit) integration test. It exercises the *real* dictation
 pipeline with the Phi-4-mini Q5 model that the post-ASR harness selected as the
 experimental default:
 
-  WAV -> parakeet_mlx_streaming final -> deterministic polish -> LLM polish
+  WAV -> parakeet_mlx_offline final -> deterministic polish -> LLM polish
 
 It has two parts, run strictly sequentially so they never share the GPU:
 
@@ -99,7 +99,7 @@ def check_prereqs() -> "None":
 
 def no_daemon_running() -> "None":
     result = subprocess.run(
-        ["pgrep", "-fl", "sunoto-daemon run|llm_polish_sidecar|parakeet_mlx_streaming"],
+        ["pgrep", "-fl", "sunoto-daemon run|llm_polish_sidecar|parakeet_mlx_offline"],
         capture_output=True,
         text=True,
     )
@@ -140,7 +140,7 @@ def write_config(path: Path, socket: Path) -> "None":
     config = {
         "shortcut": "Ctrl+F1",
         "microphone": "auto",
-        "backend": "parakeet_mlx_streaming",
+        "backend": "parakeet_mlx_offline",
         "profile_ms": 560,
         "preroll_ms": 300,
         "final_timeout_ms": 8000,
