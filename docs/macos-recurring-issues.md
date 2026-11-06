@@ -285,8 +285,8 @@ it's back to a different value, and behavior changed.
 - macOS recommended: `backend = "parakeet_mlx_offline"` with `asr_device`
   unset (it is the config-init default on macOS). It uses parakeet-mlx + MLX on
   Apple GPU/Metal and transcribes long dictations in pieces while you talk.
-  `parakeet_mlx_streaming` adds live partials but re-decodes the whole
-  dictation on release. The older
+  The old `parakeet_mlx_streaming` backend is gone; a config naming it runs
+  offline. The older
   `nemotron_offline` CPU backend still works but is much slower; the streaming
   `nemotron` backend on CPU measured ~7.4s turnaround in live testing and
   cannot keep up — do not use it on macOS.

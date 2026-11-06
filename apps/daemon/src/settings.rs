@@ -104,6 +104,13 @@ fn default_shortcut() -> &'static str {
     }
 }
 
+/// The macOS default from 0.1.0 to 0.1.9, which setup wrote into every
+/// config. It decoded each chunk while you talked, threw that text away and
+/// decoded everything again after the tap, so the wait grew with length,
+/// and it never got the word list. It is gone: a config that names it runs
+/// `parakeet_mlx_offline`, and setup rewrites the config.
+pub const RETIRED_STREAMING_BACKEND: &str = "parakeet_mlx_streaming";
+
 /// The shortcut as people read it: "Right Option", "Control-F1".
 pub fn shortcut_label(shortcut: &str) -> String {
     let squashed: String = shortcut
@@ -405,12 +412,16 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
-        match std::fs::read_to_string(path) {
+        let mut settings: Self = match std::fs::read_to_string(path) {
             Ok(contents) => serde_json::from_str(&contents)
-                .map_err(|error| format!("invalid settings file {}: {error}", path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(format!("cannot read {}: {error}", path.display())),
+                .map_err(|error| format!("invalid settings file {}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        };
+        if settings.backend == RETIRED_STREAMING_BACKEND {
+            settings.backend = "parakeet_mlx_offline".to_string();
         }
+        Ok(settings)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -479,11 +490,6 @@ impl Settings {
                     root.join("services/asr/parakeet_mlx_offline_sidecar.py"),
                     self.parakeet_mlx_args(),
                 ),
-                "parakeet_mlx_streaming" => (
-                    "python3",
-                    root.join("services/asr/parakeet_mlx_streaming_sidecar.py"),
-                    self.parakeet_mlx_args(),
-                ),
                 other => return Err(format!("unknown ASR backend: {other}")),
             };
         let python = self.sidecar_python.clone().unwrap_or_else(|| {
@@ -499,10 +505,7 @@ impl Settings {
                     return venv.to_string_lossy().into_owned();
                 }
             }
-            if self.backend == "nemotron_offline"
-                || self.backend == "parakeet_mlx_offline"
-                || self.backend == "parakeet_mlx_streaming"
-            {
+            if self.backend == "nemotron_offline" || self.backend == "parakeet_mlx_offline" {
                 let venv = root.join(".venv-nemotron-mac/bin/python");
                 if venv.is_file() {
                     return venv.to_string_lossy().into_owned();
@@ -753,11 +756,7 @@ impl Settings {
             );
         }
         match self.backend.as_str() {
-            "mock"
-            | "nemotron"
-            | "nemotron_offline"
-            | "parakeet_mlx_offline"
-            | "parakeet_mlx_streaming" => {}
+            "mock" | "nemotron" | "nemotron_offline" | "parakeet_mlx_offline" => {}
             other => return Err(format!("unknown ASR backend: {other}")),
         }
         if !matches!(self.auto_update.as_str(), "install" | "notify" | "off") {
@@ -787,7 +786,7 @@ impl Settings {
                 }
                 // Parakeet-MLX uses MLX's default Apple GPU/CPU selection.
                 // It has no torch device concept.
-                "parakeet_mlx_offline" | "parakeet_mlx_streaming" => {
+                "parakeet_mlx_offline" => {
                     return Err(format!(
                         "asr_device {device:?} is not supported for {}; unset asr_device",
                         self.backend
@@ -1665,23 +1664,21 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_command_supports_parakeet_mlx_streaming_default_model() {
-        let settings = Settings {
-            backend: "parakeet_mlx_streaming".to_string(),
-            profile_ms: 80,
+    fn retired_streaming_backend_loads_as_offline_and_is_rejected_otherwise() {
+        let path = std::env::temp_dir().join(format!(
+            "sunoto-streaming-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"backend": "parakeet_mlx_streaming"}"#).unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded.backend, "parakeet_mlx_offline");
+        let streaming = Settings {
+            backend: RETIRED_STREAMING_BACKEND.to_string(),
             ..Settings::default()
         };
-        let (_python, args) = settings.sidecar_command().unwrap();
-        assert!(args[0].ends_with("services/asr/parakeet_mlx_streaming_sidecar.py"));
-        assert_eq!(
-            args[1..],
-            [
-                "--profile-ms".to_string(),
-                "80".to_string(),
-                "--model".to_string(),
-                settings.parakeet_model(),
-            ]
-        );
+        assert!(streaming.validate().is_err());
+        assert!(streaming.sidecar_command().is_err());
     }
 
     #[test]
@@ -1805,32 +1802,28 @@ mod tests {
 
     #[test]
     fn sidecar_command_supports_parakeet_mlx_model_override() {
-        for backend in ["parakeet_mlx_offline", "parakeet_mlx_streaming"] {
-            let settings = Settings {
-                backend: backend.to_string(),
-                asr_model: Some("mlx-community/parakeet-tdt-1.1b".to_string()),
-                ..Settings::default()
-            };
-            let (_python, args) = settings.sidecar_command().unwrap();
-            assert_eq!(args.last().unwrap(), "mlx-community/parakeet-tdt-1.1b");
-        }
+        let settings = Settings {
+            backend: "parakeet_mlx_offline".to_string(),
+            asr_model: Some("mlx-community/parakeet-tdt-1.1b".to_string()),
+            ..Settings::default()
+        };
+        let (_python, args) = settings.sidecar_command().unwrap();
+        assert_eq!(args.last().unwrap(), "mlx-community/parakeet-tdt-1.1b");
     }
 
     #[test]
     fn validation_rejects_asr_device_for_parakeet_mlx_backend() {
-        for backend in ["parakeet_mlx_offline", "parakeet_mlx_streaming"] {
-            let with_device = Settings {
-                backend: backend.to_string(),
-                asr_device: Some("mps".to_string()),
-                ..Settings::default()
-            };
-            assert!(with_device.validate().is_err());
-            let without = Settings {
-                backend: backend.to_string(),
-                ..Settings::default()
-            };
-            assert!(without.validate().is_ok());
-        }
+        let with_device = Settings {
+            backend: "parakeet_mlx_offline".to_string(),
+            asr_device: Some("mps".to_string()),
+            ..Settings::default()
+        };
+        assert!(with_device.validate().is_err());
+        let without = Settings {
+            backend: "parakeet_mlx_offline".to_string(),
+            ..Settings::default()
+        };
+        assert!(without.validate().is_ok());
     }
 
     #[test]

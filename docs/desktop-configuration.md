@@ -431,13 +431,11 @@ folder when it is there and the Hugging Face original otherwise; an install
 that already has the original keeps it. `asr_model` overrides both (for
 development; the app offers one model).
 
-`backend = "parakeet_mlx_streaming"` is the older alternative: the same model
-streams partials through `transcribe_stream()` while you talk (never shown;
-they back up the final when it comes out garbled), then re-decodes the whole
-buffered dictation on release. That release pass grows with the dictation
-(about 2.5 s and a 3 GB+ memory spike for a minute of speech), and the
-partials keep the GPU busy while you talk. `profile_ms = 560` sets its chunk
-size: larger chunks give more accurate partials at a slower cadence.
+`backend = "parakeet_mlx_streaming"`, the default from 0.1.0 to 0.1.9, has
+been removed. It re-decoded the whole dictation on release, so the wait grew
+with length, and it never got the word list. A config that still names it
+runs `parakeet_mlx_offline`, and setup (also run by each update) rewrites the
+file.
 
 `backend = "nemotron_offline"` remains available as the older whole-utterance
 RNNT/NeMo sidecar. If using it on macOS, set `asr_device = "cpu"`; MPS and CPU
@@ -584,8 +582,6 @@ Profiles:
 Use `"backend": "nemotron"` for streaming real ASR on Linux/CUDA,
 `"backend": "parakeet_mlx_offline"` for the default macOS Parakeet backend
 (no partials; long dictations transcribed in pieces while you talk),
-`"backend": "parakeet_mlx_streaming"` for streaming Parakeet partials with a
-whole-buffer final,
 `"backend": "nemotron_offline"` for the older macOS NeMo CPU backend, and
 `"mock"` only for plumbing tests.
 

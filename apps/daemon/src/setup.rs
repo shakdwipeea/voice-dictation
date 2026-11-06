@@ -275,7 +275,15 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let config_path = settings::config_path();
     let mut loaded = Settings::load(&config_path)?;
     if config_path.is_file() {
-        let changes = retire_old_defaults(&mut loaded);
+        let mut changes = retire_old_defaults(&mut loaded);
+        if config_names_retired_backend(&config_path) {
+            // Settings::load already runs it as offline; this cleans the file.
+            changes.push((
+                "backend",
+                loaded.backend.clone().into(),
+                "speech engine from the old streaming one to parakeet_mlx_offline, the default since 0.1.10".to_string(),
+            ));
+        }
         if changes.is_empty() {
             ok(&format!(
                 "config:  {} (left untouched)",
@@ -521,6 +529,18 @@ fn retire_old_defaults(settings: &mut Settings) -> Vec<(&'static str, serde_json
         ));
     }
     changes
+}
+
+/// Whether the config file still names the streaming backend, the default
+/// setup wrote from 0.1.0 to 0.1.9.
+fn config_names_retired_backend(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|config| {
+            config.get("backend").and_then(serde_json::Value::as_str)
+                == Some(settings::RETIRED_STREAMING_BACKEND)
+        })
 }
 
 /// Ctrl+F1 in any spelling: the macOS default before 0.1.7.
@@ -1800,14 +1820,17 @@ mod tests {
             r#"{"shortcut": "Ctrl+F1", "backend": "parakeet_mlx_streaming"}"#,
         )
         .unwrap();
+        assert!(config_names_retired_backend(&path));
         set_config_value(&path, "shortcut", "RightOption".into()).unwrap();
         let written: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        let _ = fs::remove_file(&path);
         assert_eq!(
             written,
             serde_json::json!({"shortcut": "RightOption", "backend": "parakeet_mlx_streaming"})
         );
+        set_config_value(&path, "backend", "parakeet_mlx_offline".into()).unwrap();
+        assert!(!config_names_retired_backend(&path));
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

@@ -280,9 +280,11 @@ muted; check System Settings → Sound → Input.
   warm and hide all of this. Tune with the sidecar's
   `--segment-min-s/--segment-max-s/--segment-overlap-s`
   (`--segment-min-s 0` = one pass on release) and `--no-pause-decode`.
-  `parakeet_mlx_streaming` is still selectable: it streams partials via
-  `transcribe_stream()` (never shown) and re-decodes the whole buffer on
-  release, so its wait and memory spike grow with dictation length.
+  `parakeet_mlx_streaming` (the default from 0.1.0 to 0.1.9, which setup
+  wrote into every config) is gone: it re-decoded the whole buffer on
+  release and never got the word list. `Settings::load` runs a config that
+  names it as `parakeet_mlx_offline`, and setup rewrites the file
+  (`settings::RETIRED_STREAMING_BACKEND`). Don't bring back a backend choice.
   Switch backend/model in config and restart — no rebuild needed.
 
 ## Runtime safety
